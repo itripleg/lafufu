@@ -1,0 +1,22 @@
+[project]
+name = "lafufu-animator"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "lafufu-shared",
+    "dynamixel-sdk>=3.7",
+    "numpy>=1.26",
+]
+
+[tool.uv.sources]
+lafufu-shared = { workspace = true }
+
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lafufu_animator"]
