@@ -2,6 +2,9 @@ import { Component, onCleanup, onMount } from "solid-js";
 import { NatsWs } from "../shared/nats_ws";
 import { ServiceStatus } from "./service_status";
 import { SettingsForm } from "./settings_form";
+import { PoseView } from "./pose_view";
+import { ServoSliders } from "./servo_sliders";
+import { ExpressionButtons } from "./expression_buttons";
 
 const Admin: Component = () => {
   const nats = new NatsWs();
@@ -16,7 +19,9 @@ const Admin: Component = () => {
       </header>
       <ServiceStatus nats={nats} />
       <SettingsForm />
-      {/* Other panels added in Tasks 33-34 */}
+      <PoseView nats={nats} />
+      <ServoSliders />
+      <ExpressionButtons />
     </div>
   );
 };
