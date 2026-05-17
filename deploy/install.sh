@@ -17,23 +17,25 @@ echo "==> lafufu install ($MODE)"
 # 1. System deps
 apt-get update
 
-# chromium package name differs: Bookworm/Pi-OS = chromium-browser, Trixie = chromium
-# Use `apt-cache madison` which only lists actually-installable versions
-# (apt-cache show returns true even for transitional/reverse-dep entries)
-if apt-cache madison chromium-browser 2>/dev/null | grep -q .; then
-    CHROMIUM_PKG=chromium-browser
-elif apt-cache madison chromium 2>/dev/null | grep -q .; then
-    CHROMIUM_PKG=chromium
-else
-    echo "ERROR: no chromium package available" >&2
-    exit 1
-fi
-echo "==> chromium package: $CHROMIUM_PKG"
-
 apt-get install -y python3.13 python3.13-venv python3-pip nodejs npm \
-                   cups "$CHROMIUM_PKG" \
+                   cups \
                    build-essential libasound2-dev portaudio19-dev \
                    curl ca-certificates git
+
+# chromium: only install if no chromium binary is already present.
+# Package name varies (chromium-browser on Bookworm/Pi-OS, chromium on Trixie),
+# but if either binary already exists we're done.
+if command -v chromium >/dev/null || command -v chromium-browser >/dev/null; then
+    echo "==> chromium already present, skipping install"
+else
+    if apt-get install -y chromium-browser 2>/dev/null; then
+        echo "==> installed chromium-browser"
+    elif apt-get install -y chromium 2>/dev/null; then
+        echo "==> installed chromium"
+    else
+        echo "WARN: could not install chromium; kiosk service will fail until manual fix" >&2
+    fi
+fi
 
 # 2. Install uv if missing
 if ! command -v uv >/dev/null; then
