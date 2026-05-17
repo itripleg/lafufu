@@ -16,8 +16,16 @@ echo "==> lafufu install ($MODE)"
 
 # 1. System deps
 apt-get update
+
+# chromium package name differs: Bookworm/Pi-OS = chromium-browser, Trixie = chromium
+CHROMIUM_PKG=chromium-browser
+if ! apt-cache show chromium-browser >/dev/null 2>&1; then
+    CHROMIUM_PKG=chromium
+fi
+echo "==> chromium package: $CHROMIUM_PKG"
+
 apt-get install -y python3.13 python3.13-venv python3-pip nodejs npm \
-                   cups chromium-browser \
+                   cups "$CHROMIUM_PKG" \
                    build-essential libasound2-dev portaudio19-dev \
                    curl ca-certificates git
 
