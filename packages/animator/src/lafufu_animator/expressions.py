@@ -31,7 +31,7 @@ def get_offsets(name: str, intensity: float = 1.0) -> ServoOffsets:
     """Return scaled offsets for the named expression. Unknown → neutral."""
     base = _EXPRESSIONS.get(name, _EXPRESSIONS["neutral"])
     intensity = max(0.0, min(1.0, intensity))
-    return {k: int(round(v * intensity)) for k, v in base.items()}
+    return {k: round(v * intensity) for k, v in base.items()}
 
 
 def apply_offsets(base_pose: AnimatorPose, offsets: ServoOffsets) -> AnimatorPose:

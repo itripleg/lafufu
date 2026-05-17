@@ -48,7 +48,7 @@ def dxl_from_deg(deg: float, *, deg_min: float, deg_max: float, pos_min: int, po
     """Map a degree value to a DXL position, clamped."""
     deg = max(deg_min, min(deg_max, deg))
     frac = (deg - deg_min) / (deg_max - deg_min)
-    return int(round(pos_min + frac * (pos_max - pos_min)))
+    return round(pos_min + frac * (pos_max - pos_min))
 
 
 def deg_from_dxl(
@@ -61,7 +61,7 @@ def deg_from_dxl(
 def lerp_int(a: int, b: int, t: float) -> int:
     """Linear interpolation, clamped to [0, 1], returned as int."""
     t = max(0.0, min(1.0, t))
-    return int(round(a + (b - a) * t))
+    return round(a + (b - a) * t)
 
 
 def idle_pose() -> AnimatorPose:

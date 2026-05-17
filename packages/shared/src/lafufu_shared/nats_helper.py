@@ -3,7 +3,6 @@
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from typing import TypeVar
 
 import nats
 from nats.aio.client import Client as NATS
@@ -11,8 +10,6 @@ from nats.aio.subscription import Subscription
 from pydantic import BaseModel, ValidationError
 
 log = logging.getLogger(__name__)
-
-T = TypeVar("T", bound=BaseModel)
 
 _RETRY_DELAYS_S = (1, 2, 5, 10, 30)
 
@@ -46,7 +43,7 @@ async def publish_model(nc: NATS, subject: str, model: BaseModel) -> None:
     await nc.publish(subject, model.model_dump_json().encode("utf-8"))
 
 
-async def subscribe_model(
+async def subscribe_model[T: BaseModel](
     nc: NATS,
     subject: str,
     schema: type[T],

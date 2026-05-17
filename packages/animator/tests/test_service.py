@@ -23,7 +23,7 @@ async def running_animator(nats_server):
 
 
 async def test_publishes_idle_state_on_startup(running_animator, nats_server):
-    svc, bus = running_animator
+    _svc, bus = running_animator
     nc = await nats.connect(nats_server)
     seen: list[schemas.AnimatorState] = []
 
@@ -43,7 +43,7 @@ async def test_publishes_idle_state_on_startup(running_animator, nats_server):
 
 
 async def test_preview_intent_moves_servo(running_animator, nats_server):
-    svc, bus = running_animator
+    _svc, bus = running_animator
     nc = await nats.connect(nats_server)
     await publish_model(
         nc,
@@ -56,7 +56,7 @@ async def test_preview_intent_moves_servo(running_animator, nats_server):
 
 
 async def test_play_expression_intent_applies_offsets(running_animator, nats_server):
-    svc, bus = running_animator
+    _svc, bus = running_animator
     bus.writes.clear()
     nc = await nats.connect(nats_server)
     await publish_model(
@@ -75,7 +75,7 @@ async def test_play_expression_intent_applies_offsets(running_animator, nats_ser
 
 
 async def test_tts_rms_drives_jaw_during_speaking(running_animator, nats_server):
-    svc, bus = running_animator
+    _svc, bus = running_animator
     bus.writes.clear()
     nc = await nats.connect(nats_server)
     # Simulate a sequence of RMS values
@@ -91,7 +91,7 @@ async def test_tts_rms_drives_jaw_during_speaking(running_animator, nats_server)
 
 
 async def test_degrades_gracefully_when_bus_disconnects(running_animator, nats_server):
-    svc, bus = running_animator
+    _svc, bus = running_animator
     nc = await nats.connect(nats_server)
     seen: list[schemas.AnimatorState] = []
 

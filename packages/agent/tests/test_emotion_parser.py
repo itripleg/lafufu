@@ -33,7 +33,7 @@ def test_multiline_body_preserved():
 
 
 def test_case_insensitive_tag():
-    e, t = parse("[HAPPY]\nWoo")
+    e, _t = parse("[HAPPY]\nWoo")
     assert e == "happy"
 
 
