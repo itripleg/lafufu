@@ -216,51 +216,110 @@ class AnimatorService(BaseService):
                 self.log.warning("lipsync_watchdog.error error=%s", e)
 
     async def _idle_animation_loop(self) -> None:
-        """Subtle living-presence motion when idle.
+        """Living-presence motion when idle — ported from the original monolith's
+        _idle_loop. Multi-segment random sinusoidal motion with occasional pauses.
 
-        Gentle sinusoidal head sway + occasional eye gaze shift. Deferred while
-        the user is driving (recent preview/set_pose) or Lafufu is speaking
-        (recent agent.tts.rms). Disabled entirely if servo bus is degraded.
+        Each segment lasts 2-5s with re-randomized amplitudes/frequencies/phases
+        per servo; 30% of segments are pause segments holding the idle pose.
+        Amplitudes are fractions of each servo's full range so motion is visible:
+          head_lr ±6%, head_ud ±5%, eye ±45%, brow ±16%.
+
+        Deferred while a user intent is recent (1.5s) or Lafufu is speaking (0.6s).
+        Disabled entirely if servo bus is degraded.
         """
         import math
         import random
 
-        SWAY_HEAD_LR = 18  # ticks of horizontal head sway
-        SWAY_HEAD_UD = 10  # ticks of vertical head bob
-        EYE_GAZE = 25  # how far the eye drifts in occasional looks
-        INTENT_QUIET_S = 1.5  # wait this long after last intent before animating
-        RMS_QUIET_S = 0.6  # wait this long after last RMS
+        HEAD_LR_RANGE = abs(pose.DXL_HEAD_LR_LEFT_POS - pose.DXL_HEAD_LR_RIGHT_POS)
+        HEAD_UD_RANGE = abs(pose.DXL_HEAD_UD_DOWN_POS - pose.DXL_HEAD_UD_UP_POS)
+        EYE_RANGE = abs(pose.DXL_EYE_RIGHT_POS - pose.DXL_EYE_LEFT_POS)
+        BROW_RANGE = abs(pose.DXL_BROW_UP_POS - pose.DXL_BROW_DOWN_POS)
 
+        IDLE_HEAD_LR_AMP = HEAD_LR_RANGE * 0.06
+        IDLE_HEAD_UD_AMP = HEAD_UD_RANGE * 0.05
+        IDLE_EYE_AMP = EYE_RANGE * 0.45
+        IDLE_BROW_AMP = BROW_RANGE * 0.16
+
+        IDLE_HEAD_FREQ = (0.08, 0.22)
+        IDLE_EYE_FREQ = (0.15, 0.45)
+        IDLE_SEG = (2.0, 5.0)
+        IDLE_PAUSE = (1.0, 3.5)
+        IDLE_PAUSE_CHANCE = 0.30
+        INTENT_QUIET_S = 1.5
+        RMS_QUIET_S = 0.6
+        TICK_DT = 0.05  # 20 Hz
+
+        rng = random.Random()
         idle = pose.idle_pose()
-        t = 0.0
-        eye_target = idle.eye
-        next_eye_shift = 4.0  # seconds from now
+        seg_end = 0.0
+        seg_start = 0.0
+        mode = "pause"
+        lr_amp = ud_amp = eye_amp = brow_amp = 0.0
+        lr_freq = ud_freq = eye_freq = brow_freq = 0.0
+        lr_phase = ud_phase = eye_phase = brow_phase = 0.0
 
         while not self._shutdown.is_set():
             try:
-                if (
-                    self.idle_animation_enabled
-                    and self._has_u2d2
-                    and (time.monotonic() - self._last_intent_mono) > INTENT_QUIET_S
-                    and (time.monotonic() - self._last_rms_ts) > RMS_QUIET_S
-                ):
-                    # Sine-driven micro-sway from idle baseline
-                    head_lr = idle.head_lr + int(SWAY_HEAD_LR * math.sin(t * 2 * math.pi / 6.5))
-                    head_ud = idle.head_ud + int(SWAY_HEAD_UD * math.sin(t * 2 * math.pi / 7.3))
+                if not (self.idle_animation_enabled and self._has_u2d2):
+                    seg_end = 0.0
+                else:
+                    now = time.monotonic()
+                    if (now - self._last_intent_mono) <= INTENT_QUIET_S or (
+                        now - self._last_rms_ts
+                    ) <= RMS_QUIET_S:
+                        seg_end = 0.0
+                    else:
+                        if now >= seg_end:
+                            seg_start = now
+                            if rng.random() < IDLE_PAUSE_CHANCE:
+                                mode = "pause"
+                                seg_end = now + rng.uniform(*IDLE_PAUSE)
+                            else:
+                                mode = "move"
+                                seg_end = now + rng.uniform(*IDLE_SEG)
+                                lr_amp = IDLE_HEAD_LR_AMP * rng.uniform(0.5, 1.0)
+                                ud_amp = IDLE_HEAD_UD_AMP * rng.uniform(0.4, 0.9)
+                                eye_amp = IDLE_EYE_AMP * rng.uniform(0.4, 1.0)
+                                brow_amp = IDLE_BROW_AMP * rng.uniform(0.4, 1.0)
+                                lr_freq = rng.uniform(*IDLE_HEAD_FREQ)
+                                ud_freq = rng.uniform(*IDLE_HEAD_FREQ)
+                                eye_freq = rng.uniform(*IDLE_EYE_FREQ)
+                                brow_freq = rng.uniform(*IDLE_EYE_FREQ)
+                                lr_phase = rng.uniform(0.0, math.tau)
+                                ud_phase = rng.uniform(0.0, math.tau)
+                                eye_phase = rng.uniform(0.0, math.tau)
+                                brow_phase = rng.uniform(0.0, math.tau)
 
-                    # Occasional eye gaze shift
-                    if t >= next_eye_shift:
-                        eye_target = idle.eye + random.randint(-EYE_GAZE, EYE_GAZE)
-                        next_eye_shift = t + random.uniform(3.5, 8.0)
-                    eye = self._current_pose.eye + int((eye_target - self._current_pose.eye) * 0.15)
-
-                    new_pose = self._current_pose.model_copy(
-                        update={"head_lr": head_lr, "head_ud": head_ud, "eye": eye}
-                    )
-                    await self._safe_apply(new_pose)
+                        if mode == "pause":
+                            target = idle.model_copy(update={"jaw": self._current_pose.jaw})
+                        else:
+                            t = now - seg_start
+                            target = schemas.AnimatorPose(
+                                head_lr=pose.clamp_dxl(
+                                    "head_lr",
+                                    idle.head_lr
+                                    + lr_amp * math.sin(math.tau * lr_freq * t + lr_phase),
+                                ),
+                                head_ud=pose.clamp_dxl(
+                                    "head_ud",
+                                    idle.head_ud
+                                    + ud_amp * math.sin(math.tau * ud_freq * t + ud_phase),
+                                ),
+                                eye=pose.clamp_dxl(
+                                    "eye",
+                                    idle.eye
+                                    + eye_amp * math.sin(math.tau * eye_freq * t + eye_phase),
+                                ),
+                                jaw=self._current_pose.jaw,
+                                brow=pose.clamp_dxl(
+                                    "brow",
+                                    idle.brow
+                                    + brow_amp * math.sin(math.tau * brow_freq * t + brow_phase),
+                                ),
+                            )
+                        await self._safe_apply(target)
             except Exception as e:
                 self.log.warning("idle_animation.error error=%s", e)
 
-            t += 0.1
             with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(self._shutdown.wait(), timeout=0.1)
+                await asyncio.wait_for(self._shutdown.wait(), timeout=TICK_DT)
