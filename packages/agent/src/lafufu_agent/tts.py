@@ -33,8 +33,11 @@ class Piper:
         """
         if self._voice is None:
             self.load()
-        # Piper streams audio_int16_bytes
-        audio = b"".join(self._voice.synthesize_stream_raw(text))
+        # piper-tts API: voice.synthesize(text) yields AudioChunk objects with
+        # .audio_int16_bytes (raw little-endian int16 PCM at config.sample_rate).
+        # We join all chunks then rechunkify into fixed-duration windows for
+        # smooth NATS publishing and lipsync RMS calculation.
+        audio = b"".join(c.audio_int16_bytes for c in self._voice.synthesize(text))
         return self._chunkify(audio)
 
     def _chunkify(self, audio: bytes) -> list[tuple[bytes, float]]:
