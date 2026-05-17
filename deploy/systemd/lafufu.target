@@ -1,0 +1,7 @@
+[Unit]
+Description=Lafufu (all services)
+Requires=nats.service
+After=nats.service
+
+[Install]
+WantedBy=multi-user.target

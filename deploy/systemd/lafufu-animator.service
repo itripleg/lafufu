@@ -1,0 +1,22 @@
+[Unit]
+Description=Lafufu Animator (servos + lipsync)
+After=nats.service
+Wants=nats.service
+PartOf=lafufu.target
+
+[Service]
+Type=simple
+User=lafufu
+Group=lafufu
+WorkingDirectory=/srv/lafufu
+Environment=LAFUFU_NATS_URL=nats://localhost:4222
+Environment=LAFUFU_DATA_DIR=/var/lafufu
+ExecStart=/srv/lafufu/.venv/bin/python -m lafufu_animator
+Restart=on-failure
+RestartSec=5s
+StartLimitBurst=5
+StartLimitIntervalSec=60
+TimeoutStopSec=10s
+
+[Install]
+WantedBy=lafufu.target

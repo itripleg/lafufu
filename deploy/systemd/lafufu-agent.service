@@ -1,0 +1,26 @@
+[Unit]
+Description=Lafufu Agent (voice pipeline)
+After=nats.service
+Wants=nats.service
+PartOf=lafufu.target
+
+[Service]
+Type=simple
+User=lafufu
+Group=lafufu
+WorkingDirectory=/srv/lafufu
+Environment=LAFUFU_NATS_URL=nats://localhost:4222
+Environment=LAFUFU_DATA_DIR=/var/lafufu
+Environment=LAFUFU_WHISPER_MODEL=tiny
+Environment=LAFUFU_LLM_MODEL=qwen2.5:7b
+Environment=LAFUFU_OLLAMA_URL=http://localhost:11434
+Environment=LAFUFU_PIPER_MODEL=/srv/lafufu/models/lafufu_voice.onnx
+ExecStart=/srv/lafufu/.venv/bin/python -m lafufu_agent
+Restart=on-failure
+RestartSec=5s
+StartLimitBurst=5
+StartLimitIntervalSec=60
+TimeoutStopSec=15s
+
+[Install]
+WantedBy=lafufu.target

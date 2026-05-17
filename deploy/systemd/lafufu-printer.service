@@ -1,0 +1,18 @@
+[Unit]
+Description=Lafufu Printer (CUPS bridge)
+After=nats.service cups.service
+Wants=nats.service
+PartOf=lafufu.target
+
+[Service]
+Type=simple
+User=lafufu
+Group=lp
+WorkingDirectory=/srv/lafufu
+Environment=LAFUFU_NATS_URL=nats://localhost:4222
+ExecStart=/srv/lafufu/.venv/bin/python -m lafufu_printer
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=lafufu.target

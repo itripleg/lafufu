@@ -1,0 +1,19 @@
+[Unit]
+Description=Lafufu Kiosk Browser (face view)
+After=lafufu-control.service graphical-session.target
+Wants=lafufu-control.service
+PartOf=lafufu.target
+
+[Service]
+Type=simple
+User=lafufu
+Group=lafufu
+Environment=DISPLAY=:0
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+ExecStartPre=/bin/sh -c 'until curl -sf http://localhost:8080/api/state/snapshot >/dev/null; do sleep 1; done'
+ExecStart=/usr/bin/chromium --kiosk --noerrdialogs --disable-restore-session-state --disable-infobars http://localhost:8080/face
+Restart=on-failure
+RestartSec=10s
+
+[Install]
+WantedBy=lafufu.target

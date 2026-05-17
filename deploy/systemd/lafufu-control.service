@@ -1,0 +1,20 @@
+[Unit]
+Description=Lafufu Control (HTTP API + WS bridge)
+After=nats.service lafufu-animator.service
+Wants=nats.service
+PartOf=lafufu.target
+
+[Service]
+Type=simple
+User=lafufu
+Group=lafufu
+WorkingDirectory=/srv/lafufu
+Environment=LAFUFU_NATS_URL=nats://localhost:4222
+Environment=LAFUFU_DATA_DIR=/var/lafufu
+Environment=LAFUFU_CONTROL_PORT=8080
+ExecStart=/srv/lafufu/.venv/bin/python -m lafufu_control
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=lafufu.target
