@@ -3,7 +3,8 @@
 from collections.abc import Callable
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .routers import agent as agent_router
@@ -27,6 +28,22 @@ def create_app(*, engine, nats_publish: Callable[[str, dict], None]) -> FastAPI:
     app.include_router(agent_router.router, prefix="/api/agent", tags=["agent"])
 
     if STATIC_PATH.exists():
-        app.mount("/", StaticFiles(directory=str(STATIC_PATH), html=True), name="spa")
+        # Serve hashed Vite assets directly
+        app.mount("/assets", StaticFiles(directory=str(STATIC_PATH / "assets")), name="assets")
+
+        index_file = STATIC_PATH / "index.html"
+
+        # SPA fallback: any non-API GET that isn't a real asset returns index.html
+        # so SolidJS client-side router takes over for /face, /admin, /admin/xyz, etc.
+        @app.get("/{full_path:path}", include_in_schema=False)
+        async def spa_fallback(full_path: str):
+            # Reject API/WS paths (shouldn't reach here, but defensive)
+            if full_path.startswith(("api/", "ws")):
+                raise HTTPException(404)
+            # If a real file exists at the path, serve it (e.g. favicon.ico)
+            candidate = STATIC_PATH / full_path
+            if candidate.is_file():
+                return FileResponse(str(candidate))
+            return FileResponse(str(index_file))
 
     return app
