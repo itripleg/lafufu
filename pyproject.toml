@@ -3,6 +3,8 @@ name = "lafufu-workspace"
 version = "0.1.0"
 requires-python = ">=3.13"
 description = "Lafufu — composable robot platform (Phase 0 foundation)"
+license = "MIT"
+authors = [{ name = "Joshua Bell", email = "maven@motherhaven.app" }]
 
 [tool.uv.workspace]
 members = ["packages/*"]

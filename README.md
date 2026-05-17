@@ -16,3 +16,7 @@ uv sync
 ## Architecture
 
 4 Python services on a NATS bus + SolidJS admin/face SPA. See spec for full detail.
+
+## License
+
+MIT © 2026 Joshua Bell, Motherhaven LLC. See [LICENSE](LICENSE).
