@@ -6,8 +6,11 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+from .routers import agent as agent_router
+from .routers import animator as animator_router
 from .routers import settings as settings_router
 from .routers import snapshot as snapshot_router
+from .routers import system as system_router
 
 STATIC_PATH = Path(__file__).parent.parent / "static"
 
@@ -19,6 +22,9 @@ def create_app(*, engine, nats_publish: Callable[[str, dict], None]) -> FastAPI:
 
     app.include_router(settings_router.router, prefix="/api/settings", tags=["settings"])
     app.include_router(snapshot_router.router, prefix="/api/state", tags=["state"])
+    app.include_router(system_router.router, prefix="/api/system", tags=["system"])
+    app.include_router(animator_router.router, prefix="/api/animator", tags=["animator"])
+    app.include_router(agent_router.router, prefix="/api/agent", tags=["agent"])
 
     if STATIC_PATH.exists():
         app.mount("/", StaticFiles(directory=str(STATIC_PATH), html=True), name="spa")
