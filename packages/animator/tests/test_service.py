@@ -13,7 +13,9 @@ nats_server = nats_server_fixture("4240")
 @pytest.fixture
 async def running_animator(nats_server):
     bus = FakeDxlBus()
-    svc = AnimatorService(bus=bus, nats_url=nats_server)
+    # Use near-zero taus + high stepper rate so tests don't wait on easing.
+    fast_taus = {name: 0.001 for name in ("head_lr", "head_ud", "eye", "jaw", "brow")}
+    svc = AnimatorService(bus=bus, nats_url=nats_server, taus=fast_taus, stepper_hz=200.0)
     task = asyncio.create_task(svc.run())
     # Wait for service ready
     await asyncio.sleep(0.4)
@@ -52,7 +54,8 @@ async def test_preview_intent_moves_servo(running_animator, nats_server):
     )
     await asyncio.sleep(0.15)
     await nc.drain()
-    assert bus.last_position("head_lr") == 2100
+    # Easing converges asymptotically + integer clamp → expect within ±1 of target
+    assert abs(bus.last_position("head_lr") - 2100) <= 1
 
 
 async def test_play_expression_intent_applies_offsets(running_animator, nats_server):

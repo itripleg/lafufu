@@ -39,6 +39,7 @@ class FakeDxlBus:
         self._positions: dict[str, int] = {}
         self._connected = True
         self.torque_disabled_count = 0
+        self.torque_enabled_count = 0
 
     def write(self, name: str, position: int) -> None:
         if not self._connected:
@@ -65,6 +66,9 @@ class FakeDxlBus:
 
     def disable_torque(self) -> None:
         self.torque_disabled_count += 1
+
+    def enable_torque(self) -> None:
+        self.torque_enabled_count += 1
 
 
 class FakeWhisper:

@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import math
 import time
 from typing import Protocol
 
@@ -18,16 +19,39 @@ class DxlBusProtocol(Protocol):
     def open(self) -> None: ...
 
 
+# Per-servo first-order easing time constants (seconds).
+# Smaller = snappier. Jaw must be near-instant for lipsync responsiveness.
+DEFAULT_TAUS: dict[str, float] = {
+    "head_lr": 0.25,
+    "head_ud": 0.25,
+    "eye": 0.12,
+    "brow": 0.10,
+    "jaw": 0.02,
+}
+
+
 class AnimatorService(BaseService):
     name = "animator"
     heartbeat_interval_s = 5.0
 
-    def __init__(self, bus: DxlBusProtocol, nats_url: str | None = None) -> None:
+    def __init__(
+        self,
+        bus: DxlBusProtocol,
+        nats_url: str | None = None,
+        taus: dict[str, float] | None = None,
+        stepper_hz: float = 30.0,
+    ) -> None:
         super().__init__()
         self._bus = bus
         self._nats_url = nats_url
         self._envelope = lipsync.LipsyncEnvelope()
+        # _current_pose = what we last actually wrote to the bus.
+        # _target_pose = where intent/idle-anim/etc wants us to go.
+        # _stepper_loop eases current toward target at stepper_hz and writes.
         self._current_pose = pose.idle_pose()
+        self._target_pose = pose.idle_pose()
+        self._taus = taus or DEFAULT_TAUS
+        self._stepper_dt = 1.0 / max(1.0, stepper_hz)
         self._has_u2d2 = True  # set False on disconnect
         self._last_rms_ts = 0.0
         self._last_intent_mono = 0.0  # monotonic timestamp of last intent/preview/reply
@@ -35,6 +59,7 @@ class AnimatorService(BaseService):
         self._pose_publish_task: asyncio.Task | None = None
         self._lipsync_watchdog_task: asyncio.Task | None = None
         self._idle_animation_task: asyncio.Task | None = None
+        self._stepper_task: asyncio.Task | None = None
 
     @property
     def nats_url(self) -> str:
@@ -62,8 +87,10 @@ class AnimatorService(BaseService):
                 self.log.warning("dxl.torque.enable_failed error=%s", e)
                 self._has_u2d2 = False
 
+        # Seed current+target at idle and write once so the servos snap there
+        self._target_pose = pose.idle_pose()
         try:
-            self._move_to_pose(self._current_pose)
+            self._move_to_pose(self._target_pose)
         except OSError:
             self._has_u2d2 = False
 
@@ -113,9 +140,15 @@ class AnimatorService(BaseService):
         self._pose_publish_task = asyncio.create_task(self._pose_publish_loop())
         self._lipsync_watchdog_task = asyncio.create_task(self._lipsync_watchdog())
         self._idle_animation_task = asyncio.create_task(self._idle_animation_loop())
+        self._stepper_task = asyncio.create_task(self._stepper_loop())
 
     async def on_shutdown(self) -> None:
-        for t in (self._pose_publish_task, self._lipsync_watchdog_task, self._idle_animation_task):
+        for t in (
+            self._pose_publish_task,
+            self._lipsync_watchdog_task,
+            self._idle_animation_task,
+            self._stepper_task,
+        ):
             if t:
                 t.cancel()
         with contextlib.suppress(Exception):
@@ -153,16 +186,59 @@ class AnimatorService(BaseService):
         self._current_pose = p
 
     async def _safe_apply(self, target_pose: schemas.AnimatorPose) -> None:
+        """Set the target pose. The stepper loop eases current → target and writes."""
+        self._target_pose = target_pose
+
+    async def _safe_apply_immediate(self, target_pose: schemas.AnimatorPose) -> None:
+        """Snap directly to a pose, bypassing easing. Used for startup pose only."""
         try:
             self._move_to_pose(target_pose)
+            self._target_pose = target_pose
             if not self._has_u2d2:
-                # Recovered
                 self._has_u2d2 = True
                 await self._publish_state("idle")
         except OSError as e:
             self.log.warning("dxl.write.failed error=%s", e)
             self._has_u2d2 = False
             await self._publish_state("degraded", detail=str(e))
+
+    async def _stepper_loop(self) -> None:
+        """Ease current pose toward target pose at 30Hz and write to bus.
+
+        Each servo uses its own time constant (DEFAULT_TAUS). Jaw is near-zero
+        tau so it tracks lipsync RMS closely; head/eye/brow are smoothed for
+        non-tweaky motion.
+        """
+        last = time.monotonic()
+        while not self._shutdown.is_set():
+            try:
+                if self._has_u2d2:
+                    now = time.monotonic()
+                    dt = now - last
+                    last = now
+
+                    # First-order exponential easing per servo
+                    new_vals: dict[str, int] = {}
+                    for name in ("head_lr", "head_ud", "eye", "jaw", "brow"):
+                        tau = self._taus.get(name, 0.15)
+                        a = 1.0 - math.exp(-dt / max(1e-6, tau))
+                        cv = float(getattr(self._current_pose, name))
+                        tv = float(getattr(self._target_pose, name))
+                        nv = cv + (tv - cv) * a
+                        new_vals[name] = pose.clamp_dxl(name, nv)
+
+                    new_pose = schemas.AnimatorPose(**new_vals)
+                    try:
+                        self._move_to_pose(new_pose)
+                    except OSError as e:
+                        self.log.warning("dxl.write.failed error=%s", e)
+                        self._has_u2d2 = False
+                        await self._publish_state("degraded", detail=str(e))
+            except Exception as e:
+                self.log.warning("stepper.error error=%s", e)
+
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._shutdown.wait(), timeout=self._stepper_dt)
 
     async def _on_preview(self, subject: str, msg: schemas.AnimatorIntentPreview) -> None:
         self._last_intent_mono = time.monotonic()
