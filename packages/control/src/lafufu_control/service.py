@@ -9,6 +9,7 @@ from lafufu_shared import nats_helper, schemas, settings, topics
 from lafufu_shared.base_service import BaseService
 
 from .api.app import create_app
+from .api.ws_bridge import WsBridge
 from .db import create_engine_for_path, init_db
 
 
@@ -42,6 +43,9 @@ class ControlService(BaseService):
         self._app = create_app(engine=engine, nats_publish=publish_sync)
         self._app.state.service_status = {}
         self._app.state.last_pose = None
+
+        bridge = WsBridge(self.nats)
+        bridge.mount(self._app)
 
         async def on_hb(subject: str, msg: schemas.SystemHeartbeat) -> None:
             self._app.state.service_status[msg.service] = {
