@@ -30,4 +30,5 @@ dev = [
     "hypothesis>=6.0",
     "ruff>=0.4",
     "pre-commit>=3.0",
+    "nats-py>=2.14.0",
 ]
