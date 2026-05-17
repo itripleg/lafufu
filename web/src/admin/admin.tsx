@@ -5,6 +5,8 @@ import { SettingsForm } from "./settings_form";
 import { PoseView } from "./pose_view";
 import { ServoSliders } from "./servo_sliders";
 import { ExpressionButtons } from "./expression_buttons";
+import { ChatLog } from "./chat_log";
+import { SystemPulse } from "./system_pulse";
 
 const Admin: Component = () => {
   const nats = new NatsWs();
@@ -22,6 +24,8 @@ const Admin: Component = () => {
       <PoseView nats={nats} />
       <ServoSliders />
       <ExpressionButtons />
+      <ChatLog nats={nats} />
+      <SystemPulse nats={nats} />
     </div>
   );
 };
