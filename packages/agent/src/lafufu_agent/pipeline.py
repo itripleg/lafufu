@@ -1,0 +1,86 @@
+"""VoicePipeline: orchestrates one listen → think → speak cycle.
+
+Decoupled from concrete mic/Whisper/Ollama/Piper — uses Protocol-style duck typing.
+"""
+
+import asyncio
+import logging
+import time
+from typing import Protocol
+
+from lafufu_shared import nats_helper, schemas, topics
+
+log = logging.getLogger(__name__)
+
+
+class MicProtocol(Protocol):
+    def listen_once(self) -> str:
+        """Block until utterance ends; return transcribed text."""
+
+
+class OllamaProtocol(Protocol):
+    async def chat(self, user_text: str) -> str: ...
+
+
+class PiperProtocol(Protocol):
+    def synthesize(self, text: str) -> list[tuple[bytes, float]]: ...
+
+
+class VoicePipeline:
+    def __init__(self, nats_client, mic, ollama, piper, speaker_play=None) -> None:
+        self.nats = nats_client
+        self.mic = mic
+        self.ollama = ollama
+        self.piper = piper
+        self.speaker_play = speaker_play  # callable(chunk_bytes) → None
+
+    async def _publish_state(self, state_name: str) -> None:
+        await nats_helper.publish_model(
+            self.nats,
+            f"{topics.AGENT_STATE}.{state_name}",
+            schemas.AgentState(state=state_name),  # type: ignore[arg-type]
+        )
+
+    async def run_one_cycle(self) -> None:
+        # ---- Listening ----
+        await self._publish_state("listening")
+        # Run blocking mic call in executor
+        loop = asyncio.get_running_loop()
+        transcript = await loop.run_in_executor(None, self.mic.listen_once)
+        await nats_helper.publish_model(
+            self.nats,
+            topics.AGENT_TRANSCRIPT,
+            schemas.AgentTranscript(text=transcript, timestamp=time.time()),
+        )
+
+        # ---- Thinking ----
+        await self._publish_state("thinking")
+        reply_raw = await self.ollama.chat(transcript)
+
+        from .emotion_parser import parse
+
+        emotion, body = parse(reply_raw)
+        await nats_helper.publish_model(
+            self.nats,
+            topics.AGENT_REPLY,
+            schemas.AgentReply(text=body, emotion=emotion),  # type: ignore[arg-type]
+        )
+
+        # ---- Speaking ----
+        await self._publish_state("speaking")
+        chunks = self.piper.synthesize(body)
+        start_ts = time.monotonic()
+        for _i, (audio_bytes, mouth_target) in enumerate(chunks):
+            if self.speaker_play:
+                self.speaker_play(audio_bytes)
+            await nats_helper.publish_model(
+                self.nats,
+                topics.AGENT_TTS_RMS,
+                schemas.AgentTtsRms(
+                    ts=time.monotonic() - start_ts,
+                    rms=mouth_target,
+                    mouth_target=mouth_target,
+                ),
+            )
+
+        await self._publish_state("idle")
