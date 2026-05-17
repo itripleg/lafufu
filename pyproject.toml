@@ -1,0 +1,24 @@
+[project]
+name = "lafufu-workspace"
+version = "0.1.0"
+requires-python = ">=3.13"
+description = "Lafufu — composable robot platform (Phase 0 foundation)"
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["packages"]
+addopts = "-ra --strict-markers"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+ignore = ["E501"]

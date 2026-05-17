@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+build/
+dist/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
+# Node / web
+node_modules/
+web/dist/
+web/src/shared/types.gen.ts
+
+# Logs + runtime
+*.log
+/var/lafufu/
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
