@@ -1,0 +1,33 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - name: Install NATS server
+        run: |
+          curl -L https://github.com/nats-io/nats-server/releases/download/v2.10.20/nats-server-v2.10.20-linux-amd64.tar.gz | tar xz
+          sudo mv nats-server-v2.10.20-linux-amd64/nats-server /usr/local/bin/
+      - run: uv sync --all-packages
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pytest -v
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: cd web && npm ci
+      - run: cd web && npm run typecheck
+      - run: cd web && npm test --run
