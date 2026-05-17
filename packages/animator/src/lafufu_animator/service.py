@@ -51,6 +51,17 @@ class AnimatorService(BaseService):
             self.log.warning("dxl.open.failed error=%s", e)
             self._has_u2d2 = False
 
+        # Enable torque so the servos actually hold and move to commanded positions.
+        # Without this, writes silently no-op physically — code thinks it commanded a
+        # position but the servo is freewheeling.
+        if self._has_u2d2:
+            try:
+                self._bus.enable_torque()
+                self.log.info("dxl.torque.enabled")
+            except Exception as e:
+                self.log.warning("dxl.torque.enable_failed error=%s", e)
+                self._has_u2d2 = False
+
         try:
             self._move_to_pose(self._current_pose)
         except OSError:
