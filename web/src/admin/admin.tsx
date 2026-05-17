@@ -1,6 +1,7 @@
 import { Component, onCleanup, onMount } from "solid-js";
 import { NatsWs } from "../shared/nats_ws";
 import { ServiceStatus } from "./service_status";
+import { SettingsForm } from "./settings_form";
 
 const Admin: Component = () => {
   const nats = new NatsWs();
@@ -14,7 +15,8 @@ const Admin: Component = () => {
         <span class="text-sm text-slate-400">v0.1.0 · Phase 0</span>
       </header>
       <ServiceStatus nats={nats} />
-      {/* Other panels added in Tasks 32-34 */}
+      <SettingsForm />
+      {/* Other panels added in Tasks 33-34 */}
     </div>
   );
 };
