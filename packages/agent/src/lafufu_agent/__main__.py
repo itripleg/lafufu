@@ -110,11 +110,23 @@ def _aplay_player():
     return play
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("true", "1", "yes", "on")
+
+
 def main() -> None:
     whisper_model = os.environ.get("LAFUFU_WHISPER_MODEL", "tiny")
     qwen_model = os.environ.get("LAFUFU_LLM_MODEL", "qwen2.5:7b")
     piper_model_path = Path(os.environ.get("LAFUFU_PIPER_MODEL", "models/lafufu_voice.onnx"))
     ollama_url = os.environ.get("LAFUFU_OLLAMA_URL", "http://localhost:11434")
+    # Default false: mic loop OFF unless explicitly enabled. Prevents the
+    # ambient-noise → garbage transcript → reply → print runaway feedback.
+    # Set LAFUFU_AGENT_AUTO_LISTEN=true (or toggle via admin in a later phase)
+    # to enable continuous listening.
+    auto_listen = _env_bool("LAFUFU_AGENT_AUTO_LISTEN", False)
 
     whisper = Whisper(model_name=whisper_model)
     ollama = Ollama(base_url=ollama_url, model=qwen_model, system_prompt=SYSTEM_PROMPT)
@@ -125,10 +137,11 @@ def main() -> None:
     svc = AgentService(mic=mic, ollama=ollama, piper=piper, speaker_play=player)
 
     async def run():
-        # Run base lifecycle + start mic loop after startup
+        # Run base lifecycle. Mic loop only started if auto_listen is on.
         run_task = asyncio.create_task(svc.run())
         await asyncio.sleep(0.5)  # let startup complete
-        svc.start_mic_loop()
+        if auto_listen:
+            svc.start_mic_loop()
         await run_task
 
     asyncio.run(run())
