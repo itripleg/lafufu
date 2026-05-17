@@ -1,0 +1,110 @@
+"""Process-wide PyAudio singleton + flexible mic device selection."""
+
+import atexit
+import contextlib
+import logging
+import os
+
+import pyaudio
+
+log = logging.getLogger(__name__)
+
+_DEFAULT_PREFER = ("shure", "jabra")
+_DEFAULT_AVOID = ("soundbar", "monitor of", "output", "playback")
+
+_pa_singleton: "pyaudio.PyAudio | None" = None
+_selector_logged: bool = False
+
+
+def get_pyaudio() -> pyaudio.PyAudio:
+    """Return a process-wide PyAudio instance, suppressing ALSA stderr on first init."""
+    global _pa_singleton
+    if _pa_singleton is not None:
+        return _pa_singleton
+
+    devnull = None
+    old_fd = None
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        old_fd = os.dup(2)
+        os.dup2(devnull, 2)
+    except OSError:
+        pass
+    try:
+        _pa_singleton = pyaudio.PyAudio()
+    finally:
+        if old_fd is not None:
+            os.dup2(old_fd, 2)
+            os.close(old_fd)
+        if devnull is not None:
+            os.close(devnull)
+    return _pa_singleton
+
+
+@atexit.register
+def _terminate_pyaudio():
+    global _pa_singleton
+    if _pa_singleton is not None:
+        with contextlib.suppress(Exception):
+            _pa_singleton.terminate()
+        _pa_singleton = None
+
+
+def _env_list(name: str, fallback: tuple[str, ...]) -> tuple[str, ...]:
+    raw = os.environ.get(name)
+    if not raw:
+        return fallback
+    return tuple(s.strip().lower() for s in raw.split(",") if s.strip())
+
+
+def select_input_device(p: pyaudio.PyAudio) -> int | None:
+    """Pick a pyaudio input device index. None → system default.
+
+    Order: LAFUFU_INPUT_DEVICE → PREFER list → first non-AVOID → None.
+    """
+    global _selector_logged
+    devices: list[tuple[int, str]] = []
+    for i in range(p.get_device_count()):
+        info = p.get_device_info_by_index(i)
+        if info.get("maxInputChannels", 0) > 0:
+            devices.append((i, info.get("name", "")))
+
+    avoid = _env_list("LAFUFU_INPUT_DEVICE_AVOID", _DEFAULT_AVOID)
+    prefer = _env_list("LAFUFU_INPUT_DEVICE_PREFER", _DEFAULT_PREFER)
+    forced = (os.environ.get("LAFUFU_INPUT_DEVICE") or "").strip()
+
+    chosen: int | None = None
+    reason = "system default"
+
+    if forced:
+        if forced.isdigit():
+            idx = int(forced)
+            if any(i == idx for i, _ in devices):
+                chosen = idx
+                reason = f"LAFUFU_INPUT_DEVICE={forced}"
+        else:
+            needle = forced.lower()
+            for i, name in devices:
+                if needle in name.lower():
+                    chosen, reason = i, f"LAFUFU_INPUT_DEVICE~={forced!r} → {name!r}"
+                    break
+
+    if chosen is None:
+        for needle in prefer:
+            for i, name in devices:
+                if needle in name.lower():
+                    chosen, reason = i, f"prefer={needle!r} → {name!r}"
+                    break
+            if chosen is not None:
+                break
+
+    if chosen is None:
+        for i, name in devices:
+            if not any(s in name.lower() for s in avoid):
+                chosen, reason = i, f"first non-avoided → {name!r}"
+                break
+
+    if not _selector_logged:
+        log.info("mic.selected reason=%s", reason)
+        _selector_logged = True
+    return chosen
