@@ -10,6 +10,7 @@ User=lafufu
 Group=lp
 WorkingDirectory=/srv/lafufu
 Environment=LAFUFU_NATS_URL=nats://localhost:4222
+Environment=LAFUFU_PRINTER_AUTO=false
 ExecStart=/srv/lafufu/.venv/bin/python -m lafufu_printer
 Restart=on-failure
 RestartSec=5s

@@ -10,6 +10,7 @@ from lafufu_shared.base_service import BaseService
 
 from .api.app import create_app
 from .api.ws_bridge import WsBridge
+from .bootstrap import seed_default_settings
 from .db import create_engine_for_path, init_db
 
 
@@ -33,6 +34,7 @@ class ControlService(BaseService):
     async def on_startup(self) -> None:
         engine = create_engine_for_path(str(settings.db_path()))
         init_db(engine)
+        seed_default_settings(engine)
         loop = asyncio.get_running_loop()
 
         def publish_sync(subject: str, payload: dict) -> None:

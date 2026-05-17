@@ -30,8 +30,11 @@ class AnimatorService(BaseService):
         self._current_pose = pose.idle_pose()
         self._has_u2d2 = True  # set False on disconnect
         self._last_rms_ts = 0.0
+        self._last_intent_mono = 0.0  # monotonic timestamp of last intent/preview/reply
+        self.idle_animation_enabled = True  # toggleable via settings (Phase 0 default: on)
         self._pose_publish_task: asyncio.Task | None = None
         self._lipsync_watchdog_task: asyncio.Task | None = None
+        self._idle_animation_task: asyncio.Task | None = None
 
     @property
     def nats_url(self) -> str:
@@ -87,17 +90,33 @@ class AnimatorService(BaseService):
             self._on_agent_reply,
         )
 
+        # Subscribe to settings changes so idle animation can be toggled live
+        await nats_helper.subscribe_model(
+            self.nats,
+            f"{topics.CONFIG_CHANGED}.animator.idle_animation.enabled",
+            schemas.ConfigChanged,
+            self._on_config_idle_animation,
+        )
+
         # Background tasks
         self._pose_publish_task = asyncio.create_task(self._pose_publish_loop())
         self._lipsync_watchdog_task = asyncio.create_task(self._lipsync_watchdog())
+        self._idle_animation_task = asyncio.create_task(self._idle_animation_loop())
 
     async def on_shutdown(self) -> None:
-        if self._pose_publish_task:
-            self._pose_publish_task.cancel()
-        if self._lipsync_watchdog_task:
-            self._lipsync_watchdog_task.cancel()
+        for t in (self._pose_publish_task, self._lipsync_watchdog_task, self._idle_animation_task):
+            if t:
+                t.cancel()
         with contextlib.suppress(Exception):
             self._bus.disable_torque()
+
+    async def _on_config_idle_animation(self, subject: str, msg: schemas.ConfigChanged) -> None:
+        # value may be bool, "true"/"false" str, or 0/1
+        v = msg.value
+        if isinstance(v, str):
+            v = v.lower() in ("true", "1", "yes", "on")
+        self.idle_animation_enabled = bool(v)
+        self.log.info("idle_animation.set enabled=%s", self.idle_animation_enabled)
 
     async def _publish_state(self, state_name: str, detail: str | None = None) -> None:
         topic = f"{topics.ANIMATOR_STATE}.{state_name}"
@@ -135,17 +154,20 @@ class AnimatorService(BaseService):
             await self._publish_state("degraded", detail=str(e))
 
     async def _on_preview(self, subject: str, msg: schemas.AnimatorIntentPreview) -> None:
+        self._last_intent_mono = time.monotonic()
         new = self._current_pose.model_copy(
             update={msg.name: pose.clamp_dxl(msg.name, msg.position)}
         )
         await self._safe_apply(new)
 
     async def _on_set_pose(self, subject: str, msg: schemas.AnimatorIntentSetPose) -> None:
+        self._last_intent_mono = time.monotonic()
         await self._safe_apply(msg.pose)
 
     async def _on_play_expression(
         self, subject: str, msg: schemas.AnimatorIntentPlayExpression
     ) -> None:
+        self._last_intent_mono = time.monotonic()
         offsets = expressions.get_offsets(msg.name, msg.intensity)
         target = expressions.apply_offsets(pose.idle_pose(), offsets)
         await self._safe_apply(target)
@@ -157,6 +179,7 @@ class AnimatorService(BaseService):
 
     async def _on_agent_reply(self, subject: str, msg: schemas.AgentReply) -> None:
         """When agent emits a reply with an emotion, set the matching expression."""
+        self._last_intent_mono = time.monotonic()
         offsets = expressions.get_offsets(msg.emotion, intensity=1.0)
         target = expressions.apply_offsets(pose.idle_pose(), offsets)
         await self._safe_apply(target)
@@ -191,3 +214,53 @@ class AnimatorService(BaseService):
                     await self._safe_apply(new)
             except Exception as e:
                 self.log.warning("lipsync_watchdog.error error=%s", e)
+
+    async def _idle_animation_loop(self) -> None:
+        """Subtle living-presence motion when idle.
+
+        Gentle sinusoidal head sway + occasional eye gaze shift. Deferred while
+        the user is driving (recent preview/set_pose) or Lafufu is speaking
+        (recent agent.tts.rms). Disabled entirely if servo bus is degraded.
+        """
+        import math
+        import random
+
+        SWAY_HEAD_LR = 18  # ticks of horizontal head sway
+        SWAY_HEAD_UD = 10  # ticks of vertical head bob
+        EYE_GAZE = 25  # how far the eye drifts in occasional looks
+        INTENT_QUIET_S = 1.5  # wait this long after last intent before animating
+        RMS_QUIET_S = 0.6  # wait this long after last RMS
+
+        idle = pose.idle_pose()
+        t = 0.0
+        eye_target = idle.eye
+        next_eye_shift = 4.0  # seconds from now
+
+        while not self._shutdown.is_set():
+            try:
+                if (
+                    self.idle_animation_enabled
+                    and self._has_u2d2
+                    and (time.monotonic() - self._last_intent_mono) > INTENT_QUIET_S
+                    and (time.monotonic() - self._last_rms_ts) > RMS_QUIET_S
+                ):
+                    # Sine-driven micro-sway from idle baseline
+                    head_lr = idle.head_lr + int(SWAY_HEAD_LR * math.sin(t * 2 * math.pi / 6.5))
+                    head_ud = idle.head_ud + int(SWAY_HEAD_UD * math.sin(t * 2 * math.pi / 7.3))
+
+                    # Occasional eye gaze shift
+                    if t >= next_eye_shift:
+                        eye_target = idle.eye + random.randint(-EYE_GAZE, EYE_GAZE)
+                        next_eye_shift = t + random.uniform(3.5, 8.0)
+                    eye = self._current_pose.eye + int((eye_target - self._current_pose.eye) * 0.15)
+
+                    new_pose = self._current_pose.model_copy(
+                        update={"head_lr": head_lr, "head_ud": head_ud, "eye": eye}
+                    )
+                    await self._safe_apply(new_pose)
+            except Exception as e:
+                self.log.warning("idle_animation.error error=%s", e)
+
+            t += 0.1
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._shutdown.wait(), timeout=0.1)

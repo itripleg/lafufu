@@ -61,6 +61,20 @@ class PrinterService(BaseService):
             schemas.AgentReply,
             self._on_test_page,
         )
+        # Subscribe to live config changes so auto_print toggle takes effect without restart.
+        await nats_helper.subscribe_model(
+            self.nats,
+            f"{topics.CONFIG_CHANGED}.printer.auto_print",
+            schemas.ConfigChanged,
+            self._on_config_auto_print,
+        )
+
+    async def _on_config_auto_print(self, subject: str, msg: schemas.ConfigChanged) -> None:
+        v = msg.value
+        if isinstance(v, str):
+            v = v.lower() in ("true", "1", "yes", "on")
+        self.auto_print = bool(v)
+        self.log.info("printer.auto_print.set value=%s", self.auto_print)
 
     async def _publish_state(
         self, state_name: str | None = None, detail: str | None = None
