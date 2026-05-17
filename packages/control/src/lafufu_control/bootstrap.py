@@ -67,6 +67,25 @@ DEFAULTS: list[tuple[str, str, str, str]] = [
         "float",
         "Piper length scale. Less than 1 = faster speech, greater than 1 = slower.",
     ),
+    # Speaker
+    (
+        "speaker.volume",
+        "80",
+        "int",
+        "USB speaker playback volume (0-100%). Applied to ALSA mixer 'PCM' on card 'USB'.",
+    ),
+    (
+        "speaker.alsa_card",
+        "USB",
+        "str",
+        "ALSA card name for the playback device (run `aplay -l` to see options).",
+    ),
+    (
+        "speaker.alsa_control",
+        "PCM",
+        "str",
+        "ALSA simple mixer control name on speaker.alsa_card (run `amixer -c <card> scontrols`).",
+    ),
 ]
 
 

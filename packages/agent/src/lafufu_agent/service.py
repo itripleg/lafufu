@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import subprocess
 
 from lafufu_shared import nats_helper, schemas, topics
 from lafufu_shared.base_service import BaseService
@@ -9,6 +10,24 @@ from lafufu_shared.base_service import BaseService
 from .pipeline import VoicePipeline
 
 log = logging.getLogger(__name__)
+
+
+def _set_alsa_volume(card: str, control: str, pct: int) -> tuple[bool, str]:
+    """Set ALSA mixer volume. Returns (ok, message)."""
+    pct = max(0, min(100, int(pct)))
+    try:
+        result = subprocess.run(
+            ["amixer", "-q", "-c", card, "sset", control, f"{pct}%"],
+            capture_output=True,
+            timeout=3,
+        )
+    except FileNotFoundError:
+        return False, "amixer not installed"
+    except subprocess.SubprocessError as e:
+        return False, str(e)
+    if result.returncode != 0:
+        return False, result.stderr.decode(errors="replace").strip() or f"exit {result.returncode}"
+    return True, f"set {card}/{control} to {pct}%"
 
 
 class AgentService(BaseService):
@@ -24,6 +43,9 @@ class AgentService(BaseService):
         self._pipeline: VoicePipeline | None = None
         self._cycle_lock = asyncio.Lock()
         self._mic_loop_task: asyncio.Task | None = None
+        # Speaker mixer settings; updated live by config.changed.speaker.* subscribers.
+        self._speaker_card = "USB"
+        self._speaker_control = "PCM"
 
     @property
     def nats_url(self) -> str:
@@ -51,8 +73,49 @@ class AgentService(BaseService):
             self._on_text_message,
         )
 
+        # Speaker volume + ALSA routing — wired to settings so a slider in admin
+        # can adjust playback volume live without restart.
+        await nats_helper.subscribe_model(
+            self.nats,
+            f"{topics.CONFIG_CHANGED}.speaker.volume",
+            schemas.ConfigChanged,
+            self._on_config_volume,
+        )
+        await nats_helper.subscribe_model(
+            self.nats,
+            f"{topics.CONFIG_CHANGED}.speaker.alsa_card",
+            schemas.ConfigChanged,
+            self._on_config_card,
+        )
+        await nats_helper.subscribe_model(
+            self.nats,
+            f"{topics.CONFIG_CHANGED}.speaker.alsa_control",
+            schemas.ConfigChanged,
+            self._on_config_control_name,
+        )
+
         # Note: we do NOT auto-start the mic loop in tests (FakeMicForService blocks).
         # Real `main.py` calls start_mic_loop() explicitly after construction.
+
+    async def _on_config_volume(self, subject: str, msg: schemas.ConfigChanged) -> None:
+        try:
+            pct = int(msg.value)
+        except (TypeError, ValueError):
+            self.log.warning("speaker.volume.bad_value value=%r", msg.value)
+            return
+        ok, detail = _set_alsa_volume(self._speaker_card, self._speaker_control, pct)
+        if ok:
+            self.log.info("speaker.volume.set pct=%d", pct)
+        else:
+            self.log.warning("speaker.volume.failed detail=%s", detail)
+
+    async def _on_config_card(self, subject: str, msg: schemas.ConfigChanged) -> None:
+        self._speaker_card = str(msg.value)
+        self.log.info("speaker.card.set value=%s", self._speaker_card)
+
+    async def _on_config_control_name(self, subject: str, msg: schemas.ConfigChanged) -> None:
+        self._speaker_control = str(msg.value)
+        self.log.info("speaker.control.set value=%s", self._speaker_control)
 
     async def on_shutdown(self) -> None:
         await self._publish_state("shutdown")
