@@ -18,9 +18,15 @@ echo "==> lafufu install ($MODE)"
 apt-get update
 
 # chromium package name differs: Bookworm/Pi-OS = chromium-browser, Trixie = chromium
-CHROMIUM_PKG=chromium-browser
-if ! apt-cache show chromium-browser >/dev/null 2>&1; then
+# Use `apt-cache madison` which only lists actually-installable versions
+# (apt-cache show returns true even for transitional/reverse-dep entries)
+if apt-cache madison chromium-browser 2>/dev/null | grep -q .; then
+    CHROMIUM_PKG=chromium-browser
+elif apt-cache madison chromium 2>/dev/null | grep -q .; then
     CHROMIUM_PKG=chromium
+else
+    echo "ERROR: no chromium package available" >&2
+    exit 1
 fi
 echo "==> chromium package: $CHROMIUM_PKG"
 
