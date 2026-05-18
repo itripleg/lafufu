@@ -49,18 +49,48 @@ class ControlService(BaseService):
         bridge = WsBridge(self.nats)
         bridge.mount(self._app)
 
+        def _ensure_row(name: str) -> dict:
+            row = self._app.state.service_status.get(name)
+            if row is None:
+                row = {"service": name, "last_seen": None, "uptime_s": 0}
+                self._app.state.service_status[name] = row
+            return row
+
         async def on_hb(subject: str, msg: schemas.SystemHeartbeat) -> None:
-            self._app.state.service_status[msg.service] = {
-                "service": msg.service,
-                "last_seen": time.time(),
-                "uptime_s": msg.uptime_s,
-            }
+            row = _ensure_row(msg.service)
+            row["last_seen"] = time.time()
+            row["uptime_s"] = msg.uptime_s
 
         await nats_helper.subscribe_model(
             self.nats,
             f"{topics.SYSTEM_HEARTBEAT}.>",
             schemas.SystemHeartbeat,
             on_hb,
+        )
+
+        # Track operational state per service (animator.state.idle, agent.state.warming, ...)
+        # We subscribe with a raw NATS callback so we don't have to know each service's
+        # schema; the topic itself encodes service + state.
+        async def on_state_raw(msg) -> None:
+            parts = msg.subject.split(".")
+            if len(parts) < 3 or parts[1] != "state":
+                return
+            name, state = parts[0], ".".join(parts[2:])
+            row = _ensure_row(name)
+            row["state"] = state
+
+        await self.nats.subscribe("*.state.>", cb=on_state_raw)
+
+        # Lifecycle events (BaseService publishes system.service.{starting|ready|...} for every service)
+        async def on_lifecycle(subject: str, msg: schemas.SystemServiceEvent) -> None:
+            row = _ensure_row(msg.service)
+            row["lifecycle"] = msg.event
+
+        await nats_helper.subscribe_model(
+            self.nats,
+            f"{topics.SYSTEM_SERVICE}.>",
+            schemas.SystemServiceEvent,
+            on_lifecycle,
         )
 
         async def on_pose(subject: str, msg: schemas.AnimatorPose) -> None:
@@ -72,6 +102,10 @@ class ControlService(BaseService):
             schemas.AnimatorPose,
             on_pose,
         )
+
+        # Also track server's notion of "now" so the snapshot can return a clock
+        # the client can trust without skew worries.
+        self._app.state.server_now = lambda: time.time()
 
         config = uvicorn.Config(
             self._app,

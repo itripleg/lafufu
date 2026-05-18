@@ -4,17 +4,22 @@ import { api } from "../shared/api";
 
 interface ServiceRow {
   name: string;
-  last_seen: number;
+  last_seen: number | null;
   uptime_s: number;
   state?: string;
-  lifecycle?: string; // starting | ready | restarting | stopped
+  lifecycle?: string;
 }
 
 const KNOWN_SERVICES = ["agent", "animator", "printer", "control"];
 
 export const ServiceStatus: Component<{ nats: NatsWs }> = (props) => {
   const [rows, setRows] = createSignal<Record<string, ServiceRow>>({});
-  const [now, setNow] = createSignal(Date.now() / 1000);
+  // serverNow is "the Pi's wall clock when the page seeded", clientAtSeed is
+  // the browser's wall clock at the same moment. The offset between them lets
+  // us interpret snapshot.last_seen (server timestamps) without clock skew.
+  const [serverNow, setServerNow] = createSignal(0);
+  const [clientAtSeed, setClientAtSeed] = createSignal(0);
+  const [tick, setTick] = createSignal(Date.now() / 1000);
 
   let interval: number | undefined;
   let unsubHb: (() => void) | undefined;
@@ -22,23 +27,39 @@ export const ServiceStatus: Component<{ nats: NatsWs }> = (props) => {
   let unsubSvc: (() => void) | undefined;
 
   const ensureRow = (rs: Record<string, ServiceRow>, name: string): ServiceRow =>
-    rs[name] ?? { name, last_seen: 0, uptime_s: 0 };
+    rs[name] ?? { name, last_seen: null, uptime_s: 0 };
+
+  // Convert a server-wall-clock timestamp to "seconds ago" in a way that's
+  // immune to clock skew between the Pi and the browser.
+  const ageSeconds = (lastSeen: number | null): number | null => {
+    if (lastSeen === null || lastSeen === 0) return null;
+    if (serverNow() === 0) return null;
+    const elapsedSinceSeed = tick() - clientAtSeed();
+    return serverNow() + elapsedSinceSeed - lastSeen;
+  };
 
   onMount(async () => {
-    // Pre-seed all known services so they appear even before first heartbeat.
     const seeded: Record<string, ServiceRow> = {};
     for (const name of KNOWN_SERVICES) {
-      seeded[name] = { name, last_seen: 0, uptime_s: 0 };
+      seeded[name] = { name, last_seen: null, uptime_s: 0 };
     }
     try {
-      const snap = await api.snapshot();
+      const snap: any = await api.snapshot();
+      setServerNow(snap.server_now ?? Date.now() / 1000);
+      setClientAtSeed(Date.now() / 1000);
       for (const [name, info] of Object.entries(snap.services ?? {})) {
         seeded[name] = { ...seeded[name], ...(info as any), name };
       }
     } catch {
-      /* ignore */
+      setServerNow(Date.now() / 1000);
+      setClientAtSeed(Date.now() / 1000);
     }
     setRows(seeded);
+
+    // Stamp live heartbeats with server-relative time too, so age math stays
+    // consistent across snapshot-seeded rows and live-updated rows.
+    const serverNowLive = () =>
+      serverNow() + (Date.now() / 1000 - clientAtSeed());
 
     unsubHb = props.nats.subscribe("system.heartbeat.*", (f) => {
       const name = f.topic.split(".").pop()!;
@@ -46,22 +67,20 @@ export const ServiceStatus: Component<{ nats: NatsWs }> = (props) => {
         ...r,
         [name]: {
           ...ensureRow(r, name),
-          last_seen: Date.now() / 1000,
+          last_seen: serverNowLive(),
           uptime_s: f.payload.uptime_s,
         },
       }));
     });
 
-    // Service-specific operational state (animator.state.idle, agent.state.listening, etc.)
     unsubState = props.nats.subscribe("*.state.*", (f) => {
       const parts = f.topic.split(".");
-      if (parts[1] !== "state") return; // skip e.g. agent.tts.rms
+      if (parts[1] !== "state") return;
       const name = parts[0];
       const state = parts.slice(2).join(".");
       setRows((r) => ({ ...r, [name]: { ...ensureRow(r, name), state } }));
     });
 
-    // Lifecycle (BaseService publishes for every service, including control)
     unsubSvc = props.nats.subscribe("system.service.*", (f) => {
       const lifecycle = f.topic.split(".").pop()!;
       const name = f.payload?.service;
@@ -69,8 +88,9 @@ export const ServiceStatus: Component<{ nats: NatsWs }> = (props) => {
       setRows((r) => ({ ...r, [name]: { ...ensureRow(r, name), lifecycle } }));
     });
 
-    interval = window.setInterval(() => setNow(Date.now() / 1000), 1000);
+    interval = window.setInterval(() => setTick(Date.now() / 1000), 1000);
   });
+
   onCleanup(() => {
     if (interval) clearInterval(interval);
     unsubHb?.();
@@ -78,16 +98,17 @@ export const ServiceStatus: Component<{ nats: NatsWs }> = (props) => {
     unsubSvc?.();
   });
 
-  const ageColor = (age: number, lastSeen: number) =>
-    lastSeen === 0
-      ? "bg-slate-600"
-      : age < 10
-      ? "bg-emerald-500"
-      : age < 20
-      ? "bg-amber-500"
-      : "bg-red-500";
+  const ageColor = (age: number | null) => {
+    if (age === null) return "bg-slate-600";
+    const a = Math.max(0, age);
+    return a < 10 ? "bg-emerald-500" : a < 20 ? "bg-amber-500" : "bg-red-500";
+  };
 
-  // Choose the most informative label: operational state > lifecycle > "—"
+  const ageLabel = (age: number | null) => {
+    if (age === null) return "no heartbeat yet";
+    return `${Math.max(0, age).toFixed(0)}s ago`;
+  };
+
   const stateLabel = (r: ServiceRow): string => r.state ?? r.lifecycle ?? "—";
 
   const stateClass = (r: ServiceRow): string => {
@@ -118,21 +139,14 @@ export const ServiceStatus: Component<{ nats: NatsWs }> = (props) => {
         <tbody>
           <For each={Object.values(rows()).sort((a, b) => a.name.localeCompare(b.name))}>
             {(r) => {
-              const age = now() - r.last_seen;
+              const age = ageSeconds(r.last_seen);
               return (
                 <tr class="border-t border-slate-800">
                   <td class="py-2 font-mono">{r.name}</td>
                   <td class={stateClass(r)}>{stateLabel(r)}</td>
                   <td>
-                    <span
-                      class={`inline-block w-2 h-2 rounded-full mr-2 ${ageColor(
-                        age,
-                        r.last_seen,
-                      )}`}
-                    />
-                    <span class="text-slate-400">
-                      {r.last_seen === 0 ? "no heartbeat yet" : `${age.toFixed(0)}s ago`}
-                    </span>
+                    <span class={`inline-block w-2 h-2 rounded-full mr-2 ${ageColor(age)}`} />
+                    <span class="text-slate-400">{ageLabel(age)}</span>
                   </td>
                   <td class="text-slate-400">{(r.uptime_s ?? 0).toFixed(0)}s</td>
                   <td>
