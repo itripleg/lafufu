@@ -16,8 +16,15 @@ const EMOTIONS = Object.keys(EMOTION_COLORS) as Array<keyof typeof EMOTION_COLOR
 export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
   const [entries, setEntries] = createSignal<Entry[]>([]);
   const [tab, setTab] = createSignal<Tab>("chat");
+  const DEFAULT_PUPPET = (
+    "Hello! I'm Lafufu, a little mischievous creature. " +
+    "If you can hear me clearly through the speaker right now, then the " +
+    "whole voice pipeline is working end to end. Try changing my emotion " +
+    "with the dropdown and sending this again — my expression should shift " +
+    "to match. Pretty neat, right?"
+  );
   const [chatInput, setChatInput] = createSignal("");
-  const [speakInput, setSpeakInput] = createSignal("");
+  const [speakInput, setSpeakInput] = createSignal(DEFAULT_PUPPET);
   const [speakEmotion, setSpeakEmotion] = createSignal<string>("neutral");
   const [sending, setSending] = createSignal(false);
 
@@ -58,18 +65,38 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
     const text = speakInput().trim();
     if (!text || sending()) return;
     setSending(true);
-    // Echo to local log as a "puppet" entry so the user sees what they sent
+    // Echo to local log as a "puppet" entry so the user sees what they sent.
+    // We deliberately do NOT clear speakInput — operator may want to re-send,
+    // tweak the emotion, or iterate on phrasing.
     setEntries((e) => [
       ...e.slice(-99),
       { role: "puppet", text, emotion: speakEmotion() },
     ]);
-    setSpeakInput("");
     try {
       await api.agentSpeakText(text, speakEmotion());
     } catch (err: any) {
       alert(err.message);
     } finally {
       setSending(false);
+    }
+  };
+
+  // Insert literal Tab in the textarea instead of moving focus.
+  const handleTextareaKeyDown = (e: KeyboardEvent & { currentTarget: HTMLTextAreaElement }) => {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      sendSpeak();
+      return;
+    }
+    if (e.key === "Tab") {
+      e.preventDefault();
+      const ta = e.currentTarget;
+      const start = ta.selectionStart;
+      const end = ta.selectionEnd;
+      const v = ta.value;
+      ta.value = v.slice(0, start) + "\t" + v.slice(end);
+      ta.selectionStart = ta.selectionEnd = start + 1;
+      setSpeakInput(ta.value);
     }
   };
 
@@ -143,15 +170,13 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
       <Show when={tab() === "speak"}>
         <div class="space-y-2">
           <textarea
-            class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm resize-y"
-            rows="3"
-            placeholder="Type exactly what Lafufu should say (long text OK; ctrl+Enter to send)..."
+            class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm resize-y font-sans leading-relaxed"
+            rows="5"
+            placeholder="Type exactly what Lafufu should say (long text OK; Tab inserts a tab; ctrl+Enter to send)..."
             value={speakInput()}
             disabled={sending()}
             onInput={(e) => setSpeakInput(e.currentTarget.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) sendSpeak();
-            }}
+            onKeyDown={handleTextareaKeyDown}
           />
           <div class="flex items-center gap-2">
             <label class="text-xs text-slate-400">emotion:</label>
