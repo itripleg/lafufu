@@ -92,7 +92,7 @@ export const SystemPulse: Component<{ nats: NatsWs }> = (props) => {
             <div
               style={{
                 display: "grid",
-                "grid-template-columns": "84px 200px 1fr",
+                "grid-template-columns": "68px minmax(0, 1.4fr) minmax(0, 2fr)",
                 gap: "10px",
                 "padding": "2px 0",
               }}

@@ -16,7 +16,6 @@ from .llm import Ollama
 from .service import AgentService
 from .stt import Whisper
 from .tts import Piper
-from .vad import SilenceDetector
 
 SYSTEM_PROMPT = (
     "You are Lafufu, a mischievous and playful humanoid creature. "
@@ -27,7 +26,20 @@ SYSTEM_PROMPT = (
 
 
 class RealMic:
-    """Records from mic until silence, returns transcribed text via Whisper."""
+    """Records from mic until silence using pre-roll + started-flag VAD, then
+    transcribes via Whisper. Only commits audio AROUND detected speech — silent
+    waiting time is discarded so Whisper doesn't hallucinate words from
+    minutes of ambient noise.
+
+    Port of the original monolith's `record_until_silence` pattern.
+    """
+
+    SILENCE_THRESHOLD = 800
+    SILENCE_TAIL_S = 1.5  # trailing silence that ends the utterance
+    PRE_ROLL_S = 0.35  # audio kept BEFORE detected speech onset
+    MAX_RECORD_S = 10.0  # hard cap on a single utterance
+    MAX_WAIT_S = 30.0  # hard cap waiting for speech onset before giving up
+    MIN_VOICED_CHUNKS = 5  # ignore sub-200ms blips (clicks, taps, brief sounds)
 
     def __init__(self, whisper: Whisper, *, rate: int = 44100, chunk_ms: int = 40):
         self.whisper = whisper
@@ -36,6 +48,8 @@ class RealMic:
         self.tmp_wav = Path("/tmp/lafufu_capture.wav")
 
     def listen_once(self) -> str:
+        import collections
+
         p = get_pyaudio()
         device = select_input_device(p)
         eff_rate = self.rate
@@ -52,9 +66,12 @@ class RealMic:
                 eff_rate = int(p.get_device_info_by_index(device).get("defaultSampleRate", 16000))
 
         eff_chunk = max(1, int(eff_rate * 0.04))
-        det = SilenceDetector(
-            silence_threshold=800, silent_chunks_required=int(1.5 * eff_rate / eff_chunk)
-        )
+        chunks_per_s = eff_rate / eff_chunk
+        silence_chunks_end = int(self.SILENCE_TAIL_S * chunks_per_s)
+        pre_roll_size = int(self.PRE_ROLL_S * chunks_per_s)
+        max_chunks_recording = int(self.MAX_RECORD_S * chunks_per_s)
+        max_chunks_waiting = int(self.MAX_WAIT_S * chunks_per_s)
+
         stream = p.open(
             format=pyaudio.paInt16,
             channels=1,
@@ -63,19 +80,50 @@ class RealMic:
             input_device_index=device,
             frames_per_buffer=eff_chunk,
         )
+
+        pre_roll: collections.deque[bytes] = collections.deque(maxlen=pre_roll_size)
         frames: list[bytes] = []
+        started = False
+        voiced_chunks = 0
+        silent_chunks = 0
+        waiting_chunks = 0
+
         try:
             while True:
                 data = stream.read(eff_chunk, exception_on_overflow=False)
-                det.observe(data)
+                rms = audio_rms_bytes(data)
+                loud = rms >= self.SILENCE_THRESHOLD
+
+                if not started:
+                    pre_roll.append(data)
+                    if loud:
+                        voiced_chunks += 1
+                        if voiced_chunks >= self.MIN_VOICED_CHUNKS:
+                            # Real speech — flush pre-roll into frames and switch
+                            # to recording mode.
+                            started = True
+                            frames.extend(pre_roll)
+                            pre_roll.clear()
+                    else:
+                        voiced_chunks = 0
+                        waiting_chunks += 1
+                        if waiting_chunks > max_chunks_waiting:
+                            # Gave up waiting — nothing said.
+                            return ""
+                    continue
+
                 frames.append(data)
-                if det.is_done(0):
+                silent_chunks = silent_chunks + 1 if not loud else 0
+                if silent_chunks > silence_chunks_end:
                     break
-                if len(frames) * eff_chunk / eff_rate > 10:  # max 10s
+                if len(frames) > max_chunks_recording:
                     break
         finally:
             stream.stop_stream()
             stream.close()
+
+        if not started or not frames:
+            return ""
 
         import audioop
 
@@ -88,6 +136,17 @@ class RealMic:
             wf.setframerate(16000)
             wf.writeframes(raw)
         return self.whisper.transcribe(self.tmp_wav)
+
+
+def audio_rms_bytes(pcm16_bytes: bytes) -> float:
+    """Local copy so we don't pull in the whole VAD module just for this."""
+    try:
+        import audioop
+    except ModuleNotFoundError:
+        import audioop_lts as audioop  # type: ignore[no-redef]
+    if not pcm16_bytes:
+        return 0.0
+    return float(audioop.rms(pcm16_bytes, 2))
 
 
 class _AplayPlayer:

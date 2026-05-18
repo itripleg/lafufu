@@ -62,6 +62,9 @@ const Admin: Component = () => {
         "padding": "32px clamp(16px, 4vw, 56px) 80px",
         "max-width": "1600px",
         margin: "0 auto",
+        /* Belt-and-suspenders: clip the decorative blobs locally so any
+           animated transform / blur halo can't escape this container. */
+        overflow: "hidden",
       }}
     >
       <Blob size="50vmin" color="var(--c-amber)" opacity={.08} blur={90}
@@ -74,12 +77,17 @@ const Admin: Component = () => {
         style={{
           position: "relative",
           display: "flex",
+          "flex-wrap": "wrap",
           "align-items": "flex-end",
           "justify-content": "space-between",
           gap: "24px",
           "margin-bottom": "36px",
           "padding-bottom": "20px",
           "border-bottom": "1px solid var(--c-edge)",
+          /* Title + actions together easily exceed a phone's width — without
+             wrap + min-width allowance the header forces page-wide overflow. */
+          "min-width": 0,
+          "max-width": "100%",
         }}
       >
         <div>
@@ -173,37 +181,18 @@ const Admin: Component = () => {
           "margin-bottom": "20px",
         }}
       >
-        <div
-          style={{
-            display: "grid",
-            "grid-template-columns": "repeat(auto-fit, minmax(360px, 1fr))",
-            gap: "20px",
-          }}
-        >
+        <div class="cards-grid">
           <ServiceStatus nats={nats} />
           <PoseView nats={nats} />
         </div>
-        <div
-          style={{
-            display: "grid",
-            "grid-template-columns": "repeat(auto-fit, minmax(360px, 1fr))",
-            gap: "20px",
-          }}
-        >
+        <div class="cards-grid">
           <ExpressionButtons />
           <ServoSliders nats={nats} />
         </div>
       </div>
 
       {/* CHAT + SETTINGS — side by side on wide screens --------------- */}
-      <div
-        style={{
-          display: "grid",
-          "grid-template-columns": "repeat(auto-fit, minmax(420px, 1fr))",
-          gap: "20px",
-          "margin-bottom": "20px",
-        }}
-      >
+      <div class="cards-grid--wide" style={{ "margin-bottom": "20px" }}>
         <ChatLog nats={nats} />
         <SettingsForm onDraftCountChange={refreshDraftCount} />
       </div>

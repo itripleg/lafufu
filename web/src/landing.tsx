@@ -77,7 +77,8 @@ export const Landing: Component = () => {
         "justify-content": "center",
         background:
           "radial-gradient(ellipse at 30% 20%, #2a2018 0%, #1a1410 60%, #0c0907 100%)",
-        overflow: "hidden",
+        /* `clip` is stricter than `hidden` for animated transforms on iOS. */
+        overflow: "clip",
       }}
     >
       <Blob size="60vmin" color="var(--c-amber)" opacity={.18} blur={80}

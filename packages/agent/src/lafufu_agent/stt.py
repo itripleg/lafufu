@@ -25,5 +25,19 @@ class Whisper:
     def transcribe(self, audio_path: str | Path) -> str:
         if self._model is None:
             self.load()
-        result = self._model.transcribe(str(audio_path), fp16=False, language="en")
+        # condition_on_previous_text=False: stops Whisper from compounding
+        #   hallucinations across short clips.
+        # no_speech_threshold=0.6: anything Whisper thinks is <40% likely to
+        #   actually contain speech gets returned as empty — cuts down on
+        #   "Thanks for watching!"-style noise transcripts.
+        # temperature=0: deterministic, no fallback to higher-temp resampling
+        #   on low-confidence decodes (where the hallucinations come from).
+        result = self._model.transcribe(
+            str(audio_path),
+            fp16=False,
+            language="en",
+            condition_on_previous_text=False,
+            no_speech_threshold=0.6,
+            temperature=0.0,
+        )
         return result.get("text", "").strip()

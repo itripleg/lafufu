@@ -143,7 +143,8 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
       title="Chat"
       eyebrow="agent.transcript · agent.reply"
       accent="var(--c-moss)"
-      style={{ height: "62vh", display: "flex", "flex-direction": "column" }}
+      fullHeight
+      style={{ "min-height": "62vh", display: "flex", "flex-direction": "column" }}
       actions={
         <div
           style={{
@@ -190,6 +191,11 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
           "margin-bottom": "14px",
           display: "flex",
           "flex-direction": "column",
+          /* When messages don't fill the panel, push them to the bottom edge
+             (just above the input) so the empty space appears above instead
+             of awkwardly between the last message and the input. Standard
+             chat-app feel — messages "rise" from the input as they arrive. */
+          "justify-content": "flex-end",
           gap: "10px",
           "min-height": "180px",
         }}

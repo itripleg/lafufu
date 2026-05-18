@@ -47,15 +47,22 @@ class VoicePipeline:
         # Run blocking mic call in executor
         loop = asyncio.get_running_loop()
         transcript = await loop.run_in_executor(None, self.mic.listen_once)
+        # Skip the rest if mic returned empty (no speech detected) or if Whisper
+        # gave us a near-empty / trivial transcript — saves an LLM round-trip
+        # and prevents Lafufu from "replying to silence".
+        clean = (transcript or "").strip()
+        if len(clean) < 2:
+            await self._publish_state("idle")
+            return
         await nats_helper.publish_model(
             self.nats,
             topics.AGENT_TRANSCRIPT,
-            schemas.AgentTranscript(text=transcript, timestamp=time.time()),
+            schemas.AgentTranscript(text=clean, timestamp=time.time()),
         )
 
         # ---- Thinking ----
         await self._publish_state("thinking")
-        reply_raw = await self.ollama.chat(transcript)
+        reply_raw = await self.ollama.chat(clean)
 
         from .emotion_parser import parse
 

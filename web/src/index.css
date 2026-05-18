@@ -55,6 +55,29 @@
 
 html, body, #root { height: 100%; margin: 0; }
 
+html, body {
+  /* Decorative absolute-positioned blobs extend past the page edge — without
+     this, mobile viewports get a horizontal scroll bar plus an auto-zoom-out
+     and a phantom side gutter. `overflow: clip` is the iOS Safari-safe form
+     of `overflow-x: hidden` for animated transforms. */
+  overflow-x: clip;
+  max-width: 100vw;
+  width: 100%;
+  position: relative;
+}
+#root {
+  /* Defensive cap so no descendant can push the document wider than the
+     viewport, regardless of what they animate. */
+  max-width: 100vw;
+  overflow-x: clip;
+}
+
+/* Toggle this on (e.g. via dev tools: document.body.classList.add('debug-overflow'))
+   to find which element is pushing the page wider than the viewport — every
+   element gets a 1px red outline and the offender will be visibly extending
+   past the right edge. */
+.debug-overflow * { outline: 1px solid rgba(255, 0, 0, .4) !important; }
+
 body {
   font-family: var(--f-sans);
   font-feature-settings: "ss01", "ss02", "cv11";
@@ -62,6 +85,31 @@ body {
   color: var(--c-bone);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+}
+
+/* Card grid that ACTUALLY collapses to one column on phones. minmax(min(N, 100%))
+   has spotty browser behavior; this media-query approach is bulletproof. */
+.cards-grid          { display: grid; grid-template-columns: 1fr; gap: 20px; }
+.cards-grid--wide    { display: grid; grid-template-columns: 1fr; gap: 20px; }
+@media (min-width: 760px) {
+  .cards-grid       { grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); }
+  .cards-grid--wide { grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); }
+}
+/* Grid items default to min-width: auto which means they refuse to shrink
+   below their content's natural width — any wide child (long eyebrow text,
+   non-wrapping flex row) then pushes the column wider than the viewport.
+   Forcing min-width: 0 lets the column win. */
+.cards-grid > *,
+.cards-grid--wide > * {
+  min-width: 0;
+}
+
+/* Eyebrow text needs to wrap on narrow viewports too. The inline-flex default
+   prevents it from breaking, so long eyebrows ("drag to preview · save sets…")
+   force their parent grid cell wider. */
+.eyebrow {
+  flex-wrap: wrap;
+  max-width: 100%;
 }
 
 /* Page-level film-grain overlay — gives every surface a "lab-grown" texture */
@@ -248,10 +296,14 @@ input[type="range"].slider::-moz-range-thumb {
   50%      { transform: scale(1.04); opacity: 1; }
 }
 @keyframes drift {
-  0%   { transform: translate(0,    0)   rotate(0deg); }
-  33%  { transform: translate(2vw,  -1vh) rotate(40deg); }
-  66%  { transform: translate(-1vw, 1.5vh) rotate(-30deg); }
-  100% { transform: translate(0,    0)   rotate(0deg); }
+  /* Vertical-only, no rotation. Rotation makes the bounding box swing wider
+     and narrower as the angle changes; iOS Safari paints that animated
+     bounding box past body overflow-x: hidden, producing a phantom horizontal
+     scrollbar that pulses with the rotation. */
+  0%   { transform: translateY(0);     }
+  33%  { transform: translateY(-1vh);  }
+  66%  { transform: translateY(1.5vh); }
+  100% { transform: translateY(0);     }
 }
 @keyframes blink {
   0%, 92%, 100% { transform: scaleY(1); }

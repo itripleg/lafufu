@@ -10,6 +10,10 @@ interface Props {
   scroll?: boolean;
   /** When set, panel inner content uses fixed height with scroll-warm overflow. */
   height?: string;
+  /** Make the inner body a flex column that fills remaining vertical space.
+   *  Use when the consumer has a fixed-height panel (e.g. chat) and wants
+   *  its content (scroll area + input row) to share the leftover height. */
+  fullHeight?: boolean;
 }
 
 /** Shared biomorphic panel chrome — used by every admin section. */
@@ -77,6 +81,17 @@ export const Panel: Component<Props> = (props) => {
           "overflow-y": props.scroll || props.height ? "auto" : undefined,
           "max-height": props.height,
           "padding-right": props.scroll || props.height ? "6px" : undefined,
+          /* fullHeight: make the body a flex column that takes the leftover
+             vertical space in a fixed-height panel. Required for the chat's
+             scroll-area-plus-pinned-input layout to actually fill the panel. */
+          ...(props.fullHeight
+            ? {
+                flex: "1 1 0",
+                "min-height": "0",
+                display: "flex",
+                "flex-direction": "column",
+              }
+            : {}),
         }}
       >
         {props.children}
