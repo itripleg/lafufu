@@ -85,9 +85,8 @@ class PrinterService(BaseService):
     ) -> None:
         if state_name is None:
             state_name = "idle" if self._cups.default_printer() else "offline"
-        await nats_helper.publish_model(
-            self.nats,
-            f"{topics.PRINTER_STATE}.{state_name}",
+        await self.publish_state(
+            state_name,
             schemas.PrinterState(
                 state=state_name,  # type: ignore[arg-type]
                 detail=detail,

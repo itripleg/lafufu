@@ -167,10 +167,8 @@ class AnimatorService(BaseService):
         self.log.info("idle_animation.set enabled=%s", self.idle_animation_enabled)
 
     async def _publish_state(self, state_name: str, detail: str | None = None) -> None:
-        topic = f"{topics.ANIMATOR_STATE}.{state_name}"
-        await nats_helper.publish_model(
-            self.nats,
-            topic,
+        await self.publish_state(
+            state_name,
             schemas.AnimatorState(state=state_name, detail=detail, has_u2d2=self._has_u2d2),  # type: ignore[arg-type]
         )
 

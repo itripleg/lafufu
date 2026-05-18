@@ -197,11 +197,7 @@ class AgentService(BaseService):
             self._mic_loop_task.cancel()
 
     async def _publish_state(self, name: str) -> None:
-        await nats_helper.publish_model(
-            self.nats,
-            f"{topics.AGENT_STATE}.{name}",
-            schemas.AgentState(state=name),  # type: ignore[arg-type]
-        )
+        await self.publish_state(name, schemas.AgentState(state=name))  # type: ignore[arg-type]
 
     async def _on_text_message(self, subject: str, msg: schemas.AgentIntentTextMessage) -> None:
         async with self._cycle_lock:

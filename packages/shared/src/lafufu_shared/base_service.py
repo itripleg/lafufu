@@ -25,6 +25,13 @@ class BaseService:
         self._heartbeat_task: asyncio.Task | None = None
         self._start_ts: float = 0.0
         self.log = logging.getLogger(f"lafufu.{self.name}")
+        # Cached last-published state + lifecycle so the heartbeat loop can
+        # re-emit them. Without this, a fast-starting service publishes its
+        # state/lifecycle before control's subscription is active and those
+        # events are lost — the admin UI then shows blank state forever.
+        self._last_state_subject: str | None = None
+        self._last_state_payload = None
+        self._last_lifecycle_event: str | None = None
 
     @property
     def nats_url(self) -> str:
@@ -59,6 +66,24 @@ class BaseService:
                 )
             except Exception as e:
                 self.log.warning("heartbeat.failed error=%s", e)
+            # Re-emit cached state + lifecycle each tick so control eventually
+            # catches up even if it was slow to subscribe at boot.
+            if self._last_state_subject and self._last_state_payload is not None:
+                try:
+                    await nats_helper.publish_model(
+                        self.nats, self._last_state_subject, self._last_state_payload
+                    )
+                except Exception as e:
+                    self.log.warning("state.republish_failed error=%s", e)
+            if self._last_lifecycle_event:
+                try:
+                    await nats_helper.publish_model(
+                        self.nats,
+                        f"{topics.SYSTEM_SERVICE}.{self._last_lifecycle_event}",
+                        SystemServiceEvent(service=self.name, event=self._last_lifecycle_event),  # type: ignore[arg-type]
+                    )
+                except Exception as e:
+                    self.log.warning("lifecycle.republish_failed error=%s", e)
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._shutdown.wait(), timeout=self.heartbeat_interval_s)
 
@@ -86,12 +111,23 @@ class BaseService:
         except Exception as e:
             self.log.warning("config.snapshot_request.failed error=%s", e)
 
+    async def publish_state(self, state_name: str, payload) -> None:
+        """Publish a state event AND cache it so the heartbeat loop re-emits
+        it later. Use this from subclasses instead of raw publish so the
+        state survives a control restart that happens after this service."""
+        subject = f"{self.name}.state.{state_name}"
+        self._last_state_subject = subject
+        self._last_state_payload = payload
+        await nats_helper.publish_model(self.nats, subject, payload)
+
     async def _publish_service_event(self, event_subject: str) -> None:
         try:
+            event_name = event_subject.rsplit(".", 1)[-1]
+            self._last_lifecycle_event = event_name
             await nats_helper.publish_model(
                 self.nats,
                 event_subject,
-                SystemServiceEvent(service=self.name, event=event_subject.rsplit(".", 1)[-1]),  # type: ignore[arg-type]
+                SystemServiceEvent(service=self.name, event=event_name),  # type: ignore[arg-type]
             )
         except Exception as e:
             self.log.warning("service_event.publish_failed event=%s error=%s", event_subject, e)

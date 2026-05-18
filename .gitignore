@@ -17,6 +17,8 @@ dist/
 node_modules/
 web/dist/
 web/src/shared/types.gen.ts
+# Large media assets deployed out-of-band to the Pi
+web/public/lafufu-bg.mp4
 
 # Logs + runtime
 *.log
