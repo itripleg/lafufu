@@ -27,7 +27,7 @@ def restart_service(name: str, req: Request):
     )
     try:
         result = subprocess.run(
-            ["systemctl", "restart", unit],
+            ["sudo", "-n", "systemctl", "restart", unit],
             capture_output=True,
             timeout=15,
         )

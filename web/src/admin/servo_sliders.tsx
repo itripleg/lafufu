@@ -1,7 +1,8 @@
-import { Component, createSignal, onMount, For, Show, createMemo } from "solid-js";
+import { Component, createSignal, onMount, onCleanup, For, Show, createMemo } from "solid-js";
 import { api } from "../shared/api";
 import { lsGet, lsSet, lsRemove } from "../shared/local_storage";
 import { toast } from "../shared/toast";
+import { NatsWs } from "../shared/nats_ws";
 import { Panel } from "./panel";
 
 const RANGES: Array<{ name: string; lo: number; hi: number }> = [
@@ -18,25 +19,43 @@ const FACTORY_DEFAULTS: Record<string, number> = {
 
 const DRAFT_KEY = "sliders/values";
 
-export const ServoSliders: Component = () => {
-  // Live preview values — driven by sliders, throttled to the server.
+export const ServoSliders: Component<{ nats: NatsWs }> = (props) => {
+  // Local intent — what the user is currently dragging toward. Persisted as a
+  // draft so a refresh mid-edit doesn't lose unsaved positions.
   const [vals, setVals] = createSignal<Record<string, number>>({ ...FACTORY_DEFAULTS });
-  // Last-saved values per key (default position in the DB). Loaded from localStorage as a cache.
+  // Live animator.pose — what the servo is actually at right now. Streamed
+  // from NATS so the slider follows real motion (expressions, idle anim, etc).
+  const [live, setLive] = createSignal<Record<string, number>>({});
+  // Last-saved DB defaults per key. Loaded from localStorage as a cache.
   const [savedVals, setSavedVals] = createSignal<Record<string, number>>({});
   const [saving, setSaving] = createSignal<string | null>(null);
+  // Per-servo monotonic timestamp of the last user drag. When recent (<800ms),
+  // the slider shows the user's intent; otherwise it follows the live pose so
+  // expressions/idle motion don't fight the operator's UI.
+  const [lastDragTs, setLastDragTs] = createSignal<Record<string, number>>({});
 
+  let unsub: (() => void) | undefined;
   onMount(() => {
-    // Hydrate from localStorage cache of saved values.
     const cached = lsGet<Record<string, number>>(DRAFT_KEY, {});
     if (Object.keys(cached).length > 0) {
       setVals((v) => ({ ...v, ...cached }));
       setSavedVals(cached);
     }
+    unsub = props.nats.subscribe("animator.pose", (f) => setLive(f.payload));
   });
+  onCleanup(() => unsub?.());
+
+  // Effective value: user intent while actively dragging, else live pose.
+  const effective = (name: string): number => {
+    const dragAge = performance.now() - (lastDragTs()[name] ?? 0);
+    if (dragAge < 800) return vals()[name] ?? FACTORY_DEFAULTS[name];
+    return live()[name] ?? vals()[name] ?? FACTORY_DEFAULTS[name];
+  };
 
   let pending: ReturnType<typeof setTimeout> | undefined;
   const onDrag = (name: string, position: number) => {
     setVals((v) => ({ ...v, [name]: position }));
+    setLastDragTs((t) => ({ ...t, [name]: performance.now() }));
     if (pending) clearTimeout(pending);
     pending = setTimeout(() => api.animatorPreview(name, position).catch(() => {}), 40);
   };
@@ -119,7 +138,7 @@ export const ServoSliders: Component = () => {
       <div style={{ display: "flex", "flex-direction": "column", gap: "14px" }}>
         <For each={RANGES}>
           {({ name, lo, hi }) => {
-            const v = () => vals()[name];
+            const v = () => effective(name);
             const frac = () => Math.max(0, Math.min(1, (v() - lo) / (hi - lo)));
             return (
               <div>

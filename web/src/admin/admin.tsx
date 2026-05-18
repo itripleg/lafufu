@@ -191,7 +191,7 @@ const Admin: Component = () => {
           }}
         >
           <ExpressionButtons />
-          <ServoSliders />
+          <ServoSliders nats={nats} />
         </div>
       </div>
 

@@ -1,0 +1,5 @@
+# Let the lafufu user restart its own systemd units without a password.
+# Installed by deploy/install.sh to /etc/sudoers.d/lafufu-services (mode 0440).
+# Without this, POST /api/system/services/{name}/restart returns 500 with
+# "Interactive authentication required".
+lafufu ALL=(root) NOPASSWD: /usr/bin/systemctl restart lafufu-agent.service, /usr/bin/systemctl restart lafufu-animator.service, /usr/bin/systemctl restart lafufu-printer.service, /usr/bin/systemctl restart lafufu-control.service
