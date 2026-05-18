@@ -140,9 +140,11 @@ def _prep_resized_copy(
     new_w, new_h = max(1, int(iw * scale)), max(1, int(ih * scale))
     resized = im.resize((new_w, new_h), Image.LANCZOS)
     canvas = Image.new("RGB", (tw, th), "white")
-    # Center horizontally; vertically center inside the printable band.
+    # Center horizontally; anchor to the TOP of the printable band so the
+    # image starts immediately after the dead zone, not floating in the
+    # middle. (Any aspect-mismatch slack becomes white space at the BOTTOM.)
     x = (tw - new_w) // 2
-    y = dead_zone_top_px + (printable_h - new_h) // 2
+    y = dead_zone_top_px
     canvas.paste(resized, (x, y))
     out = Path(tempfile.gettempdir()) / f"_lafufu_print_{src.stem}.png"
     canvas.save(out, "PNG")
