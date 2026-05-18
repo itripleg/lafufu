@@ -13,6 +13,11 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
 export const api = {
   snapshot: () => req<{ settings: Array<{ key: string; value: string; value_type: string }>; services: Record<string, any>; last_pose: any }>("GET", "/state/snapshot"),
   listSettings: () => req("GET", "/settings"),
+  listSettingDefaults: () =>
+    req<Array<{ key: string; value: string; value_type: string; description?: string | null }>>(
+      "GET",
+      "/settings/_defaults",
+    ),
   patchSetting: (key: string, body: { value: unknown; value_type?: string }) => req("PATCH", `/settings/${key}`, body),
   putSetting: (key: string, body: { value: unknown; value_type: string }) => req("PUT", `/settings/${key}`, body),
   restartService: (name: string) => req("POST", `/system/services/${name}/restart`),

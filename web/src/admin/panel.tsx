@@ -1,0 +1,86 @@
+import { Component, JSX, Show } from "solid-js";
+
+interface Props {
+  title: string;
+  eyebrow?: string;
+  accent?: string;
+  actions?: JSX.Element;
+  children?: JSX.Element;
+  style?: JSX.CSSProperties;
+  scroll?: boolean;
+  /** When set, panel inner content uses fixed height with scroll-warm overflow. */
+  height?: string;
+}
+
+/** Shared biomorphic panel chrome — used by every admin section. */
+export const Panel: Component<Props> = (props) => {
+  return (
+    <section
+      class="pebble"
+      style={{
+        padding: "20px 22px",
+        position: "relative",
+        overflow: "hidden",
+        ...(props.style ?? {}),
+      }}
+    >
+      {/* Soft accent slash on the top-left — subtle "premium" cue */}
+      <Show when={props.accent}>
+        <div
+          style={{
+            position: "absolute",
+            top: 0, left: 0,
+            width: "60px", height: "60px",
+            background: `radial-gradient(circle at top left, ${props.accent} 0%, transparent 70%)`,
+            opacity: .25,
+            "pointer-events": "none",
+          }}
+        />
+      </Show>
+
+      <header
+        style={{
+          display: "flex",
+          "align-items": "flex-start",
+          "justify-content": "space-between",
+          gap: "12px",
+          "margin-bottom": "16px",
+        }}
+      >
+        <div style={{ "min-width": 0 }}>
+          <Show when={props.eyebrow}>
+            <div class="eyebrow" style={{ "margin-bottom": "6px", color: props.accent ?? "var(--c-stone)" }}>
+              {props.eyebrow}
+            </div>
+          </Show>
+          <h2
+            class="f-display-roman"
+            style={{
+              margin: 0,
+              "font-size": "22px",
+              color: "var(--c-bone)",
+            }}
+          >
+            {props.title}
+          </h2>
+        </div>
+        <Show when={props.actions}>
+          <div style={{ display: "flex", gap: "8px", "align-items": "center", "flex-shrink": 0 }}>
+            {props.actions}
+          </div>
+        </Show>
+      </header>
+
+      <div
+        class={props.scroll || props.height ? "scroll-warm" : undefined}
+        style={{
+          "overflow-y": props.scroll || props.height ? "auto" : undefined,
+          "max-height": props.height,
+          "padding-right": props.scroll || props.height ? "6px" : undefined,
+        }}
+      >
+        {props.children}
+      </div>
+    </section>
+  );
+};

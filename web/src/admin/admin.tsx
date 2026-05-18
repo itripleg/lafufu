@@ -1,57 +1,215 @@
-import { Component, onCleanup, onMount } from "solid-js";
+import { Component, createSignal, onCleanup, onMount, Show } from "solid-js";
 import { NatsWs } from "../shared/nats_ws";
-import { ServiceStatus } from "./service_status";
-import { SettingsForm } from "./settings_form";
-import { PoseView } from "./pose_view";
-import { ServoSliders } from "./servo_sliders";
-import { ExpressionButtons } from "./expression_buttons";
+import { Blob } from "../shared/blob";
+import { lsClearAll, lsKeys } from "../shared/local_storage";
+import { toast } from "../shared/toast";
 import { ChatLog } from "./chat_log";
+import { ExpressionButtons } from "./expression_buttons";
+import { PoseView } from "./pose_view";
+import { ServiceStatus } from "./service_status";
+import { ServoSliders } from "./servo_sliders";
+import { SettingsForm } from "./settings_form";
 import { SystemPulse } from "./system_pulse";
 
+/**
+ * Control deck — premium organic surface, packs everything an operator (or
+ * developer) needs in a single pane. Layout is asymmetric on desktop and
+ * stacks cleanly on mobile.
+ */
 const Admin: Component = () => {
   const nats = new NatsWs();
-  onMount(() => nats.start());
-  onCleanup(() => nats.stop());
+  const [draftCount, setDraftCount] = createSignal(0);
+  const [connState, setConnState] = createSignal<"live" | "pending">("pending");
+
+  const refreshDraftCount = () => {
+    setDraftCount(lsKeys().filter((k) => k.startsWith("settings/draft/")).length);
+  };
+
+  onMount(() => {
+    nats.start();
+    refreshDraftCount();
+    window.addEventListener("storage", refreshDraftCount);
+    window.addEventListener("lafufu:drafts-changed", refreshDraftCount);
+    // Heuristic: if any heartbeat arrives within 3s, we say "live".
+    const off = nats.subscribe("system.heartbeat.*", () => setConnState("live"));
+    onCleanup(off);
+  });
+  onCleanup(() => {
+    nats.stop();
+    window.removeEventListener("storage", refreshDraftCount);
+    window.removeEventListener("lafufu:drafts-changed", refreshDraftCount);
+  });
+
+  const wipeAllDrafts = () => {
+    if (draftCount() === 0) {
+      toast.info("no drafts to clear");
+      return;
+    }
+    const n = draftCount();
+    lsClearAll();
+    window.dispatchEvent(new CustomEvent("lafufu:drafts-changed"));
+    window.dispatchEvent(new CustomEvent("lafufu:drafts-wiped"));
+    toast.ok("local drafts cleared", `${n} pending edit${n === 1 ? "" : "s"} discarded`);
+  };
 
   return (
-    <div class="min-h-screen p-4 lg:p-6 max-w-[1600px] mx-auto">
-      <header class="flex items-center justify-between mb-4 pb-3 border-b border-slate-800">
-        <h1 class="text-2xl font-bold">
-          Lafufu <span class="text-slate-500 font-normal text-base ml-2">admin</span>
-        </h1>
-        <span class="text-xs text-slate-500 font-mono">v0.1.0 · Phase 0</span>
+    <div
+      style={{
+        position: "relative",
+        "min-height": "100vh",
+        background:
+          "radial-gradient(ellipse at 20% -10%, #2a2018 0%, #1a1410 50%, #0c0907 100%)",
+        "padding": "32px clamp(16px, 4vw, 56px) 80px",
+        "max-width": "1600px",
+        margin: "0 auto",
+      }}
+    >
+      <Blob size="50vmin" color="var(--c-amber)" opacity={.08} blur={90}
+            style={{ top: "-20vmin", right: "-20vmin" }} drift />
+      <Blob size="40vmin" color="var(--c-moss)" opacity={.07} blur={90} variant={2}
+            style={{ bottom: "-15vmin", left: "-15vmin" }} drift delay={4} />
+
+      {/* HEADER ---------------------------------------------------------- */}
+      <header
+        style={{
+          position: "relative",
+          display: "flex",
+          "align-items": "flex-end",
+          "justify-content": "space-between",
+          gap: "24px",
+          "margin-bottom": "36px",
+          "padding-bottom": "20px",
+          "border-bottom": "1px solid var(--c-edge)",
+        }}
+      >
+        <div>
+          <div class="eyebrow" style={{ "margin-bottom": "10px" }}>
+            tinker studio · control deck
+          </div>
+          <h1
+            class="f-display"
+            style={{
+              "font-size": "clamp(48px, 7vw, 96px)",
+              margin: 0,
+              color: "var(--c-bone)",
+              "letter-spacing": "-0.025em",
+            }}
+          >
+            lafufu
+            <span
+              style={{
+                color: "var(--c-amber)",
+                "margin-left": "16px",
+                "font-size": ".4em",
+                "font-style": "normal",
+                "vertical-align": "middle",
+                "font-family": "var(--f-mono)",
+                "letter-spacing": ".05em",
+              }}
+            >
+              v0.2.0
+            </span>
+          </h1>
+        </div>
+        <div
+          style={{
+            display: "flex",
+            gap: "10px",
+            "align-items": "center",
+            "flex-wrap": "wrap",
+            "justify-content": "flex-end",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              "align-items": "center",
+              gap: "8px",
+              padding: "6px 12px",
+              "border-radius": "999px",
+              border: "1px solid var(--c-edge)",
+              background: "rgba(243,236,220,.03)",
+              "font-family": "var(--f-mono)",
+              "font-size": "11px",
+              color: "var(--c-mist)",
+            }}
+            title={connState() === "live" ? "NATS bridge online" : "waiting for first heartbeat"}
+          >
+            <span
+              style={{
+                width: "8px", height: "8px",
+                "border-radius": "50%",
+                background: connState() === "live" ? "var(--c-moss)" : "var(--c-amber)",
+                "box-shadow": connState() === "live"
+                  ? "0 0 8px var(--c-moss)"
+                  : "0 0 6px var(--c-amber)",
+                animation: connState() === "live" ? "breathe 2.4s ease-in-out infinite" : undefined,
+              }}
+            />
+            {connState() === "live" ? "live" : "waiting…"}
+          </div>
+
+          <Show when={draftCount() > 0}>
+            <button
+              class="btn btn--coral btn--tiny"
+              onClick={wipeAllDrafts}
+              title="Discard all unsaved local drafts"
+            >
+              wipe {draftCount()} draft{draftCount() === 1 ? "" : "s"}
+            </button>
+          </Show>
+
+          <a href="/face" class="btn btn--ghost btn--tiny">→ /face</a>
+          <a href="/pet"  class="btn btn--ghost btn--tiny">→ /pet</a>
+        </div>
       </header>
 
-      {/*
-        Two-column flex layout: each column packs panels at their natural
-        height, no row-alignment constraints. Below the columns: chat + pulse
-        get full width since they're the wider/taller content.
-
-        LEFT  | RIGHT
-        ──────┼──────
-        srv   | pose
-        expr  | sliders
-        ──────┴──────
-              chat
-            settings
-              pulse
-      */}
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-        <div class="flex flex-col gap-4">
+      {/* TOP ROW: 2 columns, packed at natural heights ------------------ */}
+      <div
+        style={{
+          display: "grid",
+          "grid-template-columns": "minmax(0, 1fr)",
+          gap: "20px",
+          "margin-bottom": "20px",
+        }}
+      >
+        <div
+          style={{
+            display: "grid",
+            "grid-template-columns": "repeat(auto-fit, minmax(360px, 1fr))",
+            gap: "20px",
+          }}
+        >
           <ServiceStatus nats={nats} />
-          <ExpressionButtons />
-        </div>
-        <div class="flex flex-col gap-4">
           <PoseView nats={nats} />
+        </div>
+        <div
+          style={{
+            display: "grid",
+            "grid-template-columns": "repeat(auto-fit, minmax(360px, 1fr))",
+            gap: "20px",
+          }}
+        >
+          <ExpressionButtons />
           <ServoSliders />
         </div>
       </div>
 
-      <div class="flex flex-col gap-4">
+      {/* CHAT + SETTINGS — side by side on wide screens --------------- */}
+      <div
+        style={{
+          display: "grid",
+          "grid-template-columns": "repeat(auto-fit, minmax(420px, 1fr))",
+          gap: "20px",
+          "margin-bottom": "20px",
+        }}
+      >
         <ChatLog nats={nats} />
-        <SettingsForm />
-        <SystemPulse nats={nats} />
+        <SettingsForm onDraftCountChange={refreshDraftCount} />
       </div>
+
+      {/* SYSTEM PULSE — full width ---------------------------------- */}
+      <SystemPulse nats={nats} />
     </div>
   );
 };

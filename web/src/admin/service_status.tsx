@@ -1,6 +1,8 @@
 import { Component, createSignal, onCleanup, onMount, For } from "solid-js";
 import { NatsWs } from "../shared/nats_ws";
 import { api } from "../shared/api";
+import { toast } from "../shared/toast";
+import { Panel } from "./panel";
 
 interface ServiceRow {
   name: string;
@@ -14,12 +16,10 @@ const KNOWN_SERVICES = ["agent", "animator", "printer", "control"];
 
 export const ServiceStatus: Component<{ nats: NatsWs }> = (props) => {
   const [rows, setRows] = createSignal<Record<string, ServiceRow>>({});
-  // serverNow is "the Pi's wall clock when the page seeded", clientAtSeed is
-  // the browser's wall clock at the same moment. The offset between them lets
-  // us interpret snapshot.last_seen (server timestamps) without clock skew.
   const [serverNow, setServerNow] = createSignal(0);
   const [clientAtSeed, setClientAtSeed] = createSignal(0);
   const [tick, setTick] = createSignal(Date.now() / 1000);
+  const [restarting, setRestarting] = createSignal<string | null>(null);
 
   let interval: number | undefined;
   let unsubHb: (() => void) | undefined;
@@ -29,8 +29,6 @@ export const ServiceStatus: Component<{ nats: NatsWs }> = (props) => {
   const ensureRow = (rs: Record<string, ServiceRow>, name: string): ServiceRow =>
     rs[name] ?? { name, last_seen: null, uptime_s: 0 };
 
-  // Convert a server-wall-clock timestamp to "seconds ago" in a way that's
-  // immune to clock skew between the Pi and the browser.
   const ageSeconds = (lastSeen: number | null): number | null => {
     if (lastSeen === null || lastSeen === 0) return null;
     if (serverNow() === 0) return null;
@@ -56,8 +54,6 @@ export const ServiceStatus: Component<{ nats: NatsWs }> = (props) => {
     }
     setRows(seeded);
 
-    // Stamp live heartbeats with server-relative time too, so age math stays
-    // consistent across snapshot-seeded rows and live-updated rows.
     const serverNowLive = () =>
       serverNow() + (Date.now() / 1000 - clientAtSeed());
 
@@ -99,70 +95,125 @@ export const ServiceStatus: Component<{ nats: NatsWs }> = (props) => {
   });
 
   const ageColor = (age: number | null) => {
-    if (age === null) return "bg-slate-600";
+    if (age === null) return "var(--c-stone)";
     const a = Math.max(0, age);
-    return a < 10 ? "bg-emerald-500" : a < 20 ? "bg-amber-500" : "bg-red-500";
+    return a < 10 ? "var(--c-moss)" : a < 20 ? "var(--c-amber)" : "var(--c-coral)";
   };
 
   const ageLabel = (age: number | null) => {
-    if (age === null) return "no heartbeat yet";
-    return `${Math.max(0, age).toFixed(0)}s ago`;
+    if (age === null) return "—";
+    return `${Math.max(0, age).toFixed(0)}s`;
   };
 
   const stateLabel = (r: ServiceRow): string => r.state ?? r.lifecycle ?? "—";
-
-  const stateClass = (r: ServiceRow): string => {
-    if (r.state === "degraded" || r.state === "error" || r.state === "offline") {
-      return "text-red-400";
-    }
-    if (r.state === "speaking" || r.state === "listening" || r.state === "thinking") {
-      return "text-amber-300";
-    }
-    if (r.state === "idle" || r.lifecycle === "ready") return "text-emerald-300";
-    if (r.lifecycle === "starting" || r.lifecycle === "restarting") return "text-amber-400";
-    return "text-slate-400";
+  const stateColor = (r: ServiceRow): string => {
+    if (r.state === "degraded" || r.state === "error" || r.state === "offline") return "var(--c-coral)";
+    if (r.state === "speaking" || r.state === "listening" || r.state === "thinking") return "var(--c-amber)";
+    if (r.state === "idle" || r.lifecycle === "ready") return "var(--c-moss)";
+    if (r.lifecycle === "starting" || r.lifecycle === "restarting") return "var(--c-amber)";
+    return "var(--c-mist)";
   };
 
+  const onRestart = async (name: string) => {
+    setRestarting(name);
+    try {
+      await api.restartService(name);
+      toast.ok(`restarting ${name}`, "watch for the heartbeat to come back green");
+    } catch (e: any) {
+      toast.err(`restart ${name} failed`, e.message);
+    } finally {
+      setRestarting(null);
+    }
+  };
+
+  const sortedRows = () =>
+    Object.values(rows()).sort((a, b) => a.name.localeCompare(b.name));
+
   return (
-    <section class="rounded-lg bg-slate-900 p-4">
-      <h2 class="text-lg font-semibold mb-3">Services</h2>
-      <table class="w-full text-sm">
-        <thead class="text-slate-400 text-xs uppercase">
-          <tr>
-            <th class="text-left pb-2">name</th>
-            <th class="text-left">state</th>
-            <th class="text-left">heartbeat</th>
-            <th class="text-left">uptime</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          <For each={Object.values(rows()).sort((a, b) => a.name.localeCompare(b.name))}>
-            {(r) => {
-              const age = ageSeconds(r.last_seen);
-              return (
-                <tr class="border-t border-slate-800">
-                  <td class="py-2 font-mono">{r.name}</td>
-                  <td class={stateClass(r)}>{stateLabel(r)}</td>
-                  <td>
-                    <span class={`inline-block w-2 h-2 rounded-full mr-2 ${ageColor(age)}`} />
-                    <span class="text-slate-400">{ageLabel(age)}</span>
-                  </td>
-                  <td class="text-slate-400">{(r.uptime_s ?? 0).toFixed(0)}s</td>
-                  <td>
-                    <button
-                      class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600"
-                      onClick={() => api.restartService(r.name).catch((e) => alert(e.message))}
-                    >
-                      restart
-                    </button>
-                  </td>
-                </tr>
-              );
-            }}
-          </For>
-        </tbody>
-      </table>
-    </section>
+    <Panel title="Services" eyebrow="lifecycle · heartbeats" accent="var(--c-moss)">
+      <div style={{ display: "flex", "flex-direction": "column", gap: "8px" }}>
+        <For each={sortedRows()}>
+          {(r) => {
+            const age = () => ageSeconds(r.last_seen);
+            const c = () => stateColor(r);
+            return (
+              <div
+                style={{
+                  display: "grid",
+                  "grid-template-columns": "1fr auto auto auto auto",
+                  "align-items": "center",
+                  gap: "12px",
+                  padding: "10px 12px",
+                  "border-radius": "12px",
+                  background: "rgba(243, 236, 220, 0.025)",
+                  border: "1px solid var(--c-edge)",
+                  transition: "background var(--t-fast)",
+                }}
+              >
+                <div style={{ display: "flex", "align-items": "center", gap: "10px", "min-width": 0 }}>
+                  <span
+                    style={{
+                      width: "8px", height: "8px",
+                      "border-radius": "50%",
+                      background: c(),
+                      "box-shadow": `0 0 8px ${c()}`,
+                      "flex-shrink": 0,
+                      animation: "breathe 2.4s ease-in-out infinite",
+                    }}
+                  />
+                  <span
+                    class="f-display-roman"
+                    style={{ "font-size": "16px", color: "var(--c-bone)" }}
+                  >
+                    {r.name}
+                  </span>
+                </div>
+                <span
+                  class="f-mono"
+                  style={{
+                    "font-size": "11px",
+                    color: c(),
+                    "letter-spacing": ".04em",
+                  }}
+                >
+                  {stateLabel(r)}
+                </span>
+                <span
+                  class="f-mono f-num"
+                  style={{
+                    "font-size": "11px",
+                    color: ageColor(age()),
+                    "min-width": "32px",
+                    "text-align": "right",
+                  }}
+                  title="seconds since last heartbeat"
+                >
+                  {ageLabel(age())}
+                </span>
+                <span
+                  class="f-mono f-num"
+                  style={{
+                    "font-size": "11px",
+                    color: "var(--c-stone)",
+                    "min-width": "40px",
+                    "text-align": "right",
+                  }}
+                  title="uptime (seconds)"
+                >
+                  {(r.uptime_s ?? 0).toFixed(0)}s
+                </span>
+                <button
+                  class="btn btn--ghost btn--micro"
+                  disabled={restarting() === r.name}
+                  onClick={() => onRestart(r.name)}
+                >
+                  {restarting() === r.name ? "…" : "restart"}
+                </button>
+              </div>
+            );
+          }}
+        </For>
+      </div>
+    </Panel>
   );
 };

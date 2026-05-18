@@ -3,12 +3,12 @@ import { emotionToColor, rmsToHeightPct } from "../src/shared/design";
 
 describe("emotionToColor", () => {
   it("returns specific color for known emotions", () => {
-    expect(emotionToColor("happy")).toBe("#fcd34d");
-    expect(emotionToColor("sad")).toBe("#60a5fa");
+    expect(emotionToColor("happy")).toBe("#e4b15a");
+    expect(emotionToColor("sad")).toBe("#8a9bc4");
   });
   it("falls back to neutral for unknown/missing", () => {
-    expect(emotionToColor(undefined)).toBe("#94a3b8");
-    expect(emotionToColor("madeupemotion")).toBe("#94a3b8");
+    expect(emotionToColor(undefined)).toBe("#b9ad94");
+    expect(emotionToColor("madeupemotion")).toBe("#b9ad94");
   });
 });
 

@@ -1,56 +1,62 @@
 import { Component, createSignal, onCleanup, onMount, For, Show } from "solid-js";
 import { NatsWs } from "../shared/nats_ws";
 import { api } from "../shared/api";
-import { EMOTION_COLORS } from "../shared/design";
+import { EMOTION_COLORS, EMOTION_GLYPH, type Emotion } from "../shared/design";
+import { lsGet, lsSet } from "../shared/local_storage";
+import { toast } from "../shared/toast";
+import { Panel } from "./panel";
 
 interface Entry {
   role: "user" | "lafufu" | "puppet";
   text: string;
   emotion?: string;
-  ts: number; // for dedupe + ordering
+  ts: number;
 }
 
 type Tab = "chat" | "speak";
 
-const EMOTIONS = Object.keys(EMOTION_COLORS) as Array<keyof typeof EMOTION_COLORS>;
+const EMOTIONS = Object.keys(EMOTION_COLORS) as Emotion[];
+
+const DRAFT_INPUTS = "chat/inputs";
+
+const DEFAULT_PUPPET =
+  "Hello! I'm Lafufu, a little mischievous creature. " +
+  "If you can hear me clearly through the speaker right now, then the " +
+  "whole voice pipeline is working end to end. Try changing my emotion " +
+  "with the dropdown and sending this again — my expression should shift " +
+  "to match. Pretty neat, right?";
 
 export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
   const [entries, setEntries] = createSignal<Entry[]>([]);
   const [tab, setTab] = createSignal<Tab>("chat");
-  const DEFAULT_PUPPET = (
-    "Hello! I'm Lafufu, a little mischievous creature. " +
-    "If you can hear me clearly through the speaker right now, then the " +
-    "whole voice pipeline is working end to end. Try changing my emotion " +
-    "with the dropdown and sending this again — my expression should shift " +
-    "to match. Pretty neat, right?"
-  );
   const [chatInput, setChatInput] = createSignal("");
   const [speakInput, setSpeakInput] = createSignal(DEFAULT_PUPPET);
-  const [speakEmotion, setSpeakEmotion] = createSignal<string>("neutral");
+  const [speakEmotion, setSpeakEmotion] = createSignal<Emotion>("neutral");
   const [sending, setSending] = createSignal(false);
+  let scrollEl!: HTMLDivElement;
 
   let unsubT: (() => void) | undefined;
   let unsubR: (() => void) | undefined;
 
-  // Defensive dedupe: if the same role+text arrives within 500ms (e.g. WS
-  // reconnect re-deliver), drop the second.
   const appendDedup = (entry: Omit<Entry, "ts">) => {
     setEntries((e) => {
       const last = e[e.length - 1];
       const now = Date.now();
-      if (
-        last &&
-        last.role === entry.role &&
-        last.text === entry.text &&
-        now - last.ts < 500
-      ) {
+      if (last && last.role === entry.role && last.text === entry.text && now - last.ts < 500) {
         return e;
       }
       return [...e.slice(-99), { ...entry, ts: now }];
     });
+    queueMicrotask(() => { if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight; });
   };
 
   onMount(() => {
+    // Hydrate drafted inputs (so a refresh doesn't lose the puppet text)
+    const cached = lsGet<{ chat?: string; speak?: string; emotion?: Emotion }>(DRAFT_INPUTS, {});
+    if (cached.chat)    setChatInput(cached.chat);
+    if (cached.speak)   setSpeakInput(cached.speak);
+    if (cached.emotion) setSpeakEmotion(cached.emotion);
+
     unsubT = props.nats.subscribe("agent.transcript", (f) => {
       appendDedup({ role: "user", text: f.payload.text });
     });
@@ -62,6 +68,12 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
   onCleanup(() => {
     unsubT?.();
     unsubR?.();
+    // Persist inputs on unmount
+    lsSet(DRAFT_INPUTS, {
+      chat:    chatInput(),
+      speak:   speakInput(),
+      emotion: speakEmotion(),
+    });
   });
 
   const sendChat = async () => {
@@ -69,10 +81,12 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
     if (!text || sending()) return;
     setSending(true);
     setChatInput("");
+    lsSet(DRAFT_INPUTS, { chat: "", speak: speakInput(), emotion: speakEmotion() });
     try {
       await api.agentTextMessage(text);
     } catch (err: any) {
-      alert(err.message);
+      toast.err("chat failed", err.message);
+      setChatInput(text); // restore so user can retry
     } finally {
       setSending(false);
     }
@@ -82,25 +96,18 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
     const text = speakInput().trim();
     if (!text || sending()) return;
     setSending(true);
-    // No local echo — agent.reply (with source="puppet") will arrive and be
-    // rendered as a "puppet" entry by the subscriber. Avoids the double-post
-    // we used to have. Textarea stays populated so operator can re-send.
     try {
       await api.agentSpeakText(text, speakEmotion());
+      toast.ok(`speaking · ${speakEmotion()}`);
     } catch (err: any) {
-      alert(err.message);
+      toast.err("speak failed", err.message);
     } finally {
       setSending(false);
     }
   };
 
-  // Insert literal Tab in the textarea instead of moving focus.
   const handleTextareaKeyDown = (e: KeyboardEvent & { currentTarget: HTMLTextAreaElement }) => {
-    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-      e.preventDefault();
-      sendSpeak();
-      return;
-    }
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendSpeak(); return; }
     if (e.key === "Tab") {
       e.preventDefault();
       const ta = e.currentTarget;
@@ -113,66 +120,150 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
     }
   };
 
+  const onSpeakInput = (v: string) => {
+    setSpeakInput(v);
+    lsSet(DRAFT_INPUTS, { chat: chatInput(), speak: v, emotion: speakEmotion() });
+  };
+  const onChatInput = (v: string) => {
+    setChatInput(v);
+    lsSet(DRAFT_INPUTS, { chat: v, speak: speakInput(), emotion: speakEmotion() });
+  };
+  const onEmotionChange = (e: Emotion) => {
+    setSpeakEmotion(e);
+    lsSet(DRAFT_INPUTS, { chat: chatInput(), speak: speakInput(), emotion: e });
+  };
+
   const roleColor = (role: Entry["role"]) =>
-    role === "user"
-      ? "text-slate-300"
-      : role === "puppet"
-      ? "text-amber-300"
-      : "text-emerald-300";
+    role === "user"   ? "var(--c-mist)"
+    : role === "puppet" ? "var(--c-amber)"
+    : "var(--c-moss)";
 
   return (
-    <section class="rounded-lg bg-slate-900 p-4 flex flex-col h-[60vh]">
-      <div class="flex items-center justify-between mb-3">
-        <h2 class="text-lg font-semibold">Chat</h2>
-        <div class="flex gap-1 text-xs">
+    <Panel
+      title="Chat"
+      eyebrow="agent.transcript · agent.reply"
+      accent="var(--c-moss)"
+      style={{ height: "62vh", display: "flex", "flex-direction": "column" }}
+      actions={
+        <div
+          style={{
+            display: "flex",
+            background: "var(--c-shell)",
+            "border-radius": "10px",
+            border: "1px solid var(--c-edge)",
+            padding: "2px",
+            gap: "1px",
+          }}
+        >
           <button
-            class={`px-2 py-1 rounded ${
-              tab() === "chat" ? "bg-slate-700 text-slate-100" : "text-slate-400 hover:text-slate-200"
-            }`}
+            class="btn btn--micro"
+            style={{
+              background: tab() === "chat" ? "var(--c-raised)" : "transparent",
+              border: "none",
+            }}
             onClick={() => setTab("chat")}
-            title="Send text as user input — LLM generates Lafufu's reply"
+            title="Send text as user input → LLM generates reply"
           >
             chat
           </button>
           <button
-            class={`px-2 py-1 rounded ${
-              tab() === "speak" ? "bg-slate-700 text-slate-100" : "text-slate-400 hover:text-slate-200"
-            }`}
+            class="btn btn--micro"
+            style={{
+              background: tab() === "speak" ? "var(--c-raised)" : "transparent",
+              border: "none",
+            }}
             onClick={() => setTab("speak")}
-            title="Type exactly what Lafufu should say — skips the LLM"
+            title="Type exactly what Lafufu should say (skips LLM)"
           >
-            speak (puppet)
+            puppet
           </button>
         </div>
-      </div>
-
-      <div class="flex-1 overflow-y-auto space-y-2 mb-3 pr-1">
+      }
+    >
+      <div
+        ref={scrollEl}
+        class="scroll-warm"
+        style={{
+          flex: 1,
+          "overflow-y": "auto",
+          "padding-right": "6px",
+          "margin-bottom": "14px",
+          display: "flex",
+          "flex-direction": "column",
+          gap: "10px",
+          "min-height": "180px",
+        }}
+      >
         <For each={entries()}>
           {(e) => (
-            <div class={`text-sm ${roleColor(e.role)}`}>
-              <span class="font-mono text-xs opacity-60">
-                {e.role}
-                {e.emotion ? `:${e.emotion}` : ""}
-              </span>
-              <div class="whitespace-pre-wrap break-words">{e.text}</div>
+            <div
+              style={{
+                "align-self": e.role === "user" ? "flex-end" : "flex-start",
+                "max-width": "82%",
+                padding: "8px 12px",
+                "border-radius": e.role === "user" ? "14px 14px 4px 14px" : "14px 14px 14px 4px",
+                background: e.role === "user" ? "var(--c-raised)" : "rgba(149,176,122,0.10)",
+                border: "1px solid var(--c-edge)",
+                color: "var(--c-bone)",
+                "font-size": "13px",
+                "line-height": 1.4,
+                animation: "fade-up .3s cubic-bezier(.2,.7,.3,1.1) both",
+              }}
+            >
+              <div
+                class="f-mono"
+                style={{
+                  "font-size": "10px",
+                  color: roleColor(e.role),
+                  "margin-bottom": "2px",
+                  "letter-spacing": ".05em",
+                  display: "flex",
+                  "align-items": "center",
+                  gap: "6px",
+                }}
+              >
+                <span>{e.role}</span>
+                <Show when={e.emotion}>
+                  <span style={{ color: EMOTION_COLORS[e.emotion as Emotion] ?? "var(--c-mist)" }}>
+                    {EMOTION_GLYPH[e.emotion as Emotion]} {e.emotion}
+                  </span>
+                </Show>
+              </div>
+              <div style={{ "white-space": "pre-wrap", "word-break": "break-word" }}>
+                {e.text}
+              </div>
             </div>
           )}
         </For>
+        <Show when={entries().length === 0}>
+          <div
+            style={{
+              color: "var(--c-stone)",
+              "font-style": "italic",
+              "font-family": "var(--f-display)",
+              "text-align": "center",
+              "margin": "auto 0",
+            }}
+          >
+            no messages yet — start a conversation below
+          </div>
+        </Show>
       </div>
 
       <Show when={tab() === "chat"}>
-        <div class="flex gap-2">
+        <div style={{ display: "flex", gap: "8px" }}>
           <input
-            class="flex-1 bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm"
-            placeholder="Send text to Lafufu — she'll think + reply..."
+            class="field"
+            style={{ flex: 1, "font-family": "var(--f-sans)" }}
+            placeholder="ask lafufu something…"
             value={chatInput()}
             disabled={sending()}
-            onInput={(e) => setChatInput(e.currentTarget.value)}
+            onInput={(e) => onChatInput(e.currentTarget.value)}
             onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && sendChat()}
           />
           <button
-            class="text-sm px-3 rounded bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40"
-            disabled={sending()}
+            class="btn btn--primary"
+            disabled={sending() || !chatInput().trim()}
             onClick={sendChat}
           >
             send
@@ -181,36 +272,47 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
       </Show>
 
       <Show when={tab() === "speak"}>
-        <div class="space-y-2">
+        <div style={{ display: "flex", "flex-direction": "column", gap: "8px" }}>
           <textarea
-            class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm resize-y font-sans leading-relaxed"
-            rows="5"
-            placeholder="Type exactly what Lafufu should say (long text OK; Tab inserts a tab; ctrl+Enter to send)..."
+            class="field"
+            rows="4"
+            style={{ "font-family": "var(--f-sans)", resize: "vertical" }}
+            placeholder="exactly what lafufu should say… (⌘+Enter to send, Tab inserts tab)"
             value={speakInput()}
             disabled={sending()}
-            onInput={(e) => setSpeakInput(e.currentTarget.value)}
+            onInput={(e) => onSpeakInput(e.currentTarget.value)}
             onKeyDown={handleTextareaKeyDown}
           />
-          <div class="flex items-center gap-2">
-            <label class="text-xs text-slate-400">emotion:</label>
+          <div style={{ display: "flex", gap: "8px", "align-items": "center" }}>
+            <label
+              class="f-mono"
+              style={{ "font-size": "11px", color: "var(--c-stone)", "letter-spacing": ".05em" }}
+            >
+              emotion
+            </label>
             <select
-              class="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm capitalize"
+              class="field"
+              style={{ "font-family": "var(--f-sans)", "text-transform": "capitalize" }}
               value={speakEmotion()}
-              onChange={(e) => setSpeakEmotion(e.currentTarget.value)}
+              onChange={(e) => onEmotionChange(e.currentTarget.value as Emotion)}
             >
               <For each={EMOTIONS}>{(em) => <option value={em}>{em}</option>}</For>
             </select>
-            <div class="flex-1" />
+            <div style={{ flex: 1 }} />
             <button
-              class="text-sm px-3 py-1 rounded bg-amber-600 hover:bg-amber-500 disabled:opacity-40"
-              disabled={sending()}
+              class="btn btn--primary"
+              disabled={sending() || !speakInput().trim()}
               onClick={sendSpeak}
+              style={{
+                background: `linear-gradient(180deg, ${EMOTION_COLORS[speakEmotion()]} 0%, ${EMOTION_COLORS[speakEmotion()]}cc 100%)`,
+                color: "#1a1410",
+              }}
             >
               speak it
             </button>
           </div>
         </div>
       </Show>
-    </section>
+    </Panel>
   );
 };

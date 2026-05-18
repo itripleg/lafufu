@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
+from ...bootstrap import DEFAULTS as BOOTSTRAP_DEFAULTS
 from ...models.setting import Setting
 
 router = APIRouter()
@@ -37,6 +38,15 @@ def _encode(value: Any, vt: str) -> str:
             return "true" if value.strip().lower() in ("true", "1", "yes", "on") else "false"
         return "true" if value else "false"
     return str(value)
+
+
+@router.get("/_defaults", response_model=list[SettingOut])
+def list_defaults():
+    """Factory defaults from bootstrap. Used by admin UI for reset-to-default."""
+    return [
+        SettingOut(key=k, value=v, value_type=vt, description=desc)
+        for (k, v, vt, desc) in BOOTSTRAP_DEFAULTS
+    ]
 
 
 @router.get("", response_model=list[SettingOut])
