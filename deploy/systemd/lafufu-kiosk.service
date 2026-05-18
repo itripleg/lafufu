@@ -11,7 +11,25 @@ Group=lafufu
 Environment=DISPLAY=:0
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 ExecStartPre=/bin/sh -c 'until curl -sf http://localhost:8080/api/state/snapshot >/dev/null; do sleep 1; done'
-ExecStart=/usr/bin/chromium --kiosk --noerrdialogs --disable-restore-session-state --disable-infobars http://localhost:8080/face
+# --kiosk + --app together = no chrome at all (no tab, no URL bar, no menu).
+# Extra flags suppress every nudge / first-run prompt / accidental-input
+# vector that could break the kiosk illusion.
+ExecStart=/usr/bin/chromium \
+  --kiosk \
+  --start-fullscreen \
+  --app=http://localhost:8080/face \
+  --noerrdialogs \
+  --disable-infobars \
+  --disable-translate \
+  --disable-features=TranslateUI,Translate \
+  --disable-restore-session-state \
+  --disable-session-crashed-bubble \
+  --no-first-run \
+  --no-default-browser-check \
+  --password-store=basic \
+  --overscroll-history-navigation=0 \
+  --disable-pinch \
+  --user-data-dir=/home/lafufu/.config/lafufu-kiosk
 Restart=on-failure
 RestartSec=10s
 
