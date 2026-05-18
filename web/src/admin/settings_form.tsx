@@ -20,9 +20,11 @@ const SLIDER_HINTS: Record<string, { min: number; max: number; step?: number }> 
   "agent.silence_threshold":   { min: 0,    max: 5000,  step: 50    },
   "agent.silence_seconds":     { min: 0,    max: 5,     step: 0.1   },
   "tts.length_scale":          { min: 0.5,  max: 2.0,   step: 0.05  },
-  // Printer positioning. 72pts = 1in, so ±144pts = ±2in of nudge room.
-  "printer.offset_top_pts":    { min: -144, max: 144,   step: 6     },
-  "printer.offset_left_pts":   { min: -144, max: 144,   step: 6     },
+  // Printer positioning — Phomemo driver native ranges.
+  "printer.adjust_vertical":   { min: -20,  max: 20,    step: 1     },
+  "printer.adjust_horizontal": { min: -20,  max: 20,    step: 1     },
+  "printer.feed_offset":       { min: -20,  max: 20,    step: 1     },
+  "printer.rotate":            { min: 0,    max: 3,     step: 1     },
   "printer.scale_pct":         { min: 25,   max: 200,   step: 5     },
 };
 

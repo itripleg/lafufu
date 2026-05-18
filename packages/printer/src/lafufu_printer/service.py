@@ -31,10 +31,14 @@ class PrinterService(BaseService):
         self._nats_url = nats_url
         self.auto_print = auto_print
         # Print positioning. Composed into lp options at print time; tunable
-        # live via admin UI.
-        self.media: str = ""  # e.g. "Letter", "4x6.Borderless"
-        self.offset_top_pts: int = 0  # negative shifts up; 72pts = 1in
-        self.offset_left_pts: int = 0
+        # live via admin UI. Driver-native options (roAdjust*, roFeedOffset,
+        # roRotate) are Phomemo-specific but the same shape applies to many
+        # thermal label printer drivers.
+        self.media: str = "4x6"
+        self.adjust_vertical: int = 0  # -20..20, neg shifts UP
+        self.adjust_horizontal: int = 0  # -20..20, neg shifts LEFT
+        self.feed_offset: int = 0  # -20..20, label feed position
+        self.rotate: int = 0  # 0..3, 90deg steps
         self.scale_pct: int = 100
         self.lp_options: str = ""  # raw escape-hatch options
 
@@ -45,10 +49,14 @@ class PrinterService(BaseService):
             opts += ["-o", f"media={self.media}"]
         if self.scale_pct and self.scale_pct != 100:
             opts += ["-o", f"scaling={self.scale_pct}"]
-        if self.offset_top_pts:
-            opts += ["-o", f"page-top={self.offset_top_pts}"]
-        if self.offset_left_pts:
-            opts += ["-o", f"page-left={self.offset_left_pts}"]
+        if self.adjust_vertical:
+            opts += ["-o", f"roAdjustVertical={self.adjust_vertical}"]
+        if self.adjust_horizontal:
+            opts += ["-o", f"roAdjustHorizontal={self.adjust_horizontal}"]
+        if self.feed_offset:
+            opts += ["-o", f"roFeedOffset={self.feed_offset}"]
+        if self.rotate:
+            opts += ["-o", f"roRotate={self.rotate}"]
         if self.lp_options:
             opts += self.lp_options.split()
         return opts
@@ -104,8 +112,10 @@ class PrinterService(BaseService):
         )
         for key, attr, caster in (
             ("printer.media", "media", str),
-            ("printer.offset_top_pts", "offset_top_pts", int),
-            ("printer.offset_left_pts", "offset_left_pts", int),
+            ("printer.adjust_vertical", "adjust_vertical", int),
+            ("printer.adjust_horizontal", "adjust_horizontal", int),
+            ("printer.feed_offset", "feed_offset", int),
+            ("printer.rotate", "rotate", int),
             ("printer.scale_pct", "scale_pct", int),
         ):
             await nats_helper.subscribe_model(
