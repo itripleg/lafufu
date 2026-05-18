@@ -1,6 +1,15 @@
 import { Component, createSignal, onMount, For, Show } from "solid-js";
 import { api } from "../shared/api";
 
+// Settings whose value comes from a dynamic list fetched at mount.
+// The function returns the current list of valid options.
+const DYNAMIC_OPTIONS: Record<string, () => Promise<string[]>> = {
+  "agent.llm_model": async () => {
+    const { models } = await api.listLlmModels();
+    return models.map((m) => m.name);
+  },
+};
+
 interface Row {
   key: string;
   value: string;
@@ -21,13 +30,31 @@ export const SettingsForm: Component = () => {
   const [rows, setRows] = createSignal<Row[]>([]);
   const [dirty, setDirty] = createSignal<Set<string>>(new Set());
   const [savingKey, setSavingKey] = createSignal<string | null>(null);
+  // Dynamic option lists keyed by setting key (e.g. agent.llm_model → ["qwen2.5:7b", "qwen2.5:1.5b"])
+  const [dynamicOptions, setDynamicOptions] = createSignal<Record<string, string[]>>({});
 
   const reload = async () => {
     const data = await api.listSettings();
     setRows(data as Row[]);
   };
 
-  onMount(reload);
+  const loadDynamicOptions = async () => {
+    const out: Record<string, string[]> = {};
+    for (const [key, fetcher] of Object.entries(DYNAMIC_OPTIONS)) {
+      try {
+        out[key] = await fetcher();
+      } catch (e) {
+        // Leave key absent — UI will fall back to free-text input
+        // eslint-disable-next-line no-console
+        console.warn(`failed to load options for ${key}:`, e);
+      }
+    }
+    setDynamicOptions(out);
+  };
+
+  onMount(async () => {
+    await Promise.all([reload(), loadDynamicOptions()]);
+  });
 
   const update = (key: string, newValue: string) => {
     setRows((rs) => rs.map((r) => (r.key === key ? { ...r, value: newValue } : r)));
@@ -82,6 +109,30 @@ export const SettingsForm: Component = () => {
 
   // Renders the input widget for a row based on its value_type.
   const renderWidget = (row: Row) => {
+    // Dynamic dropdown takes precedence over the type-based default.
+    const options = dynamicOptions()[row.key];
+    if (options && options.length > 0) {
+      const known = options.includes(row.value);
+      return (
+        <div class="flex-1 flex items-center gap-2">
+          <select
+            class={inputClass(row.key) + " cursor-pointer"}
+            value={known ? row.value : ""}
+            onChange={(e) => update(row.key, e.currentTarget.value)}
+          >
+            <Show when={!known}>
+              <option value="" disabled>
+                {row.value} (not in list)
+              </option>
+            </Show>
+            <For each={options}>
+              {(opt) => <option value={opt}>{opt}</option>}
+            </For>
+          </select>
+        </div>
+      );
+    }
+
     if (row.value_type === "bool") {
       const checked = () => row.value === "true" || row.value === "1";
       return (

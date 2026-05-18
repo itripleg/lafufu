@@ -21,4 +21,9 @@ export const api = {
   agentTextMessage: (text: string) => req("POST", "/agent/text_message", { text }),
   agentSpeakText: (text: string, emotion: string = "neutral") =>
     req("POST", "/agent/speak_text", { text, emotion }),
+  listLlmModels: () =>
+    req<{ models: Array<{ name: string; size?: number; modified_at?: string }> }>(
+      "GET",
+      "/agent/models",
+    ),
 };
