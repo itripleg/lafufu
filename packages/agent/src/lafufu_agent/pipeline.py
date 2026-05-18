@@ -85,6 +85,12 @@ class VoicePipeline:
             if self.speaker_play and hasattr(self.speaker_play, "play")
             else self.speaker_play
         )
+        # Pace chunk writes + RMS publishes to playback rate so animator's
+        # jaw motion stays in sync with audio. Without this, all RMS events
+        # fire in <50ms and the jaw barely twitches while audio plays for
+        # several more seconds.
+        chunk_dt = getattr(self.piper, "chunk_ms", 40) / 1000.0
+        next_tick = time.monotonic()
         for audio_bytes, mouth_target in chunks:
             if play_fn:
                 play_fn(audio_bytes)
@@ -97,6 +103,11 @@ class VoicePipeline:
                     mouth_target=mouth_target,
                 ),
             )
+            # Sleep until the next chunk's wall-clock slot so we don't drift.
+            next_tick += chunk_dt
+            sleep_for = next_tick - time.monotonic()
+            if sleep_for > 0:
+                await asyncio.sleep(sleep_for)
         # Tell the speaker the utterance is over so it can drain + close cleanly.
         if self.speaker_play and hasattr(self.speaker_play, "end"):
             self.speaker_play.end()
