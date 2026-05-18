@@ -131,7 +131,13 @@ export const ServiceStatus: Component<{ nats: NatsWs }> = (props) => {
 
   return (
     <Panel title="Services" eyebrow="lifecycle · heartbeats" accent="var(--c-moss)">
-      <div style={{ display: "flex", "flex-direction": "column", gap: "8px" }}>
+      <div
+        style={{
+          display: "flex",
+          "flex-wrap": "wrap",
+          gap: "8px",
+        }}
+      >
         <For each={sortedRows()}>
           {(r) => {
             const age = () => ageSeconds(r.last_seen);
@@ -139,41 +145,45 @@ export const ServiceStatus: Component<{ nats: NatsWs }> = (props) => {
             return (
               <div
                 style={{
-                  display: "grid",
-                  "grid-template-columns": "1fr auto auto auto auto",
+                  display: "flex",
                   "align-items": "center",
-                  gap: "12px",
-                  padding: "10px 12px",
-                  "border-radius": "12px",
+                  gap: "8px",
+                  padding: "6px 10px 6px 12px",
+                  "border-radius": "999px",
                   background: "rgba(243, 236, 220, 0.025)",
                   border: "1px solid var(--c-edge)",
                   transition: "background var(--t-fast)",
+                  flex: "1 1 180px",
+                  "min-width": "0",
                 }}
+                title={`${r.name} · uptime ${(r.uptime_s ?? 0).toFixed(0)}s`}
               >
-                <div style={{ display: "flex", "align-items": "center", gap: "10px", "min-width": 0 }}>
-                  <span
-                    style={{
-                      width: "8px", height: "8px",
-                      "border-radius": "50%",
-                      background: c(),
-                      "box-shadow": `0 0 8px ${c()}`,
-                      "flex-shrink": 0,
-                      animation: "breathe 2.4s ease-in-out infinite",
-                    }}
-                  />
-                  <span
-                    class="f-display-roman"
-                    style={{ "font-size": "16px", color: "var(--c-bone)" }}
-                  >
-                    {r.name}
-                  </span>
-                </div>
+                <span
+                  style={{
+                    width: "8px", height: "8px",
+                    "border-radius": "50%",
+                    background: c(),
+                    "box-shadow": `0 0 8px ${c()}`,
+                    "flex-shrink": 0,
+                    animation: "breathe 2.4s ease-in-out infinite",
+                  }}
+                />
+                <span
+                  class="f-display-roman"
+                  style={{ "font-size": "14px", color: "var(--c-bone)", "min-width": "0" }}
+                >
+                  {r.name}
+                </span>
                 <span
                   class="f-mono"
                   style={{
-                    "font-size": "11px",
+                    "font-size": "10px",
                     color: c(),
                     "letter-spacing": ".04em",
+                    "white-space": "nowrap",
+                    overflow: "hidden",
+                    "text-overflow": "ellipsis",
+                    flex: "1 1 auto",
                   }}
                 >
                   {stateLabel(r)}
@@ -181,33 +191,22 @@ export const ServiceStatus: Component<{ nats: NatsWs }> = (props) => {
                 <span
                   class="f-mono f-num"
                   style={{
-                    "font-size": "11px",
+                    "font-size": "10px",
                     color: ageColor(age()),
-                    "min-width": "32px",
-                    "text-align": "right",
+                    "white-space": "nowrap",
                   }}
                   title="seconds since last heartbeat"
                 >
                   {ageLabel(age())}
                 </span>
-                <span
-                  class="f-mono f-num"
-                  style={{
-                    "font-size": "11px",
-                    color: "var(--c-stone)",
-                    "min-width": "40px",
-                    "text-align": "right",
-                  }}
-                  title="uptime (seconds)"
-                >
-                  {(r.uptime_s ?? 0).toFixed(0)}s
-                </span>
                 <button
                   class="btn btn--ghost btn--micro"
+                  style={{ padding: "2px 6px", "font-size": "10px" }}
                   disabled={restarting() === r.name}
                   onClick={() => onRestart(r.name)}
+                  title={`Restart ${r.name}`}
                 >
-                  {restarting() === r.name ? "…" : "restart"}
+                  {restarting() === r.name ? "…" : "↻"}
                 </button>
               </div>
             );

@@ -170,11 +170,14 @@ const Admin: Component = () => {
         </div>
       </header>
 
-      {/* TOP ROW: services on the left, unified Body panel on the right.
-          Body panel consolidates the old Pose / Expressions / ServoSliders
-          trio — sliders double as live pose readout. */}
-      <div class="cards-grid" style={{ "margin-bottom": "20px" }}>
+      {/* Services strip — thin horizontal row at the very top. */}
+      <div style={{ "margin-bottom": "20px" }}>
         <ServiceStatus nats={nats} />
+      </div>
+
+      {/* Body panel — full width below, consolidates Pose / Expressions /
+          Sliders. Sliders double as live pose readout. */}
+      <div style={{ "margin-bottom": "20px" }}>
         <BodyPanel nats={nats} />
       </div>
 
