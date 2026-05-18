@@ -37,6 +37,10 @@ class AgentTranscript(BaseModel):
 class AgentReply(BaseModel):
     text: str
     emotion: Emotion
+    # Where this reply originated. 'llm' = generated from a chat cycle,
+    # 'puppet' = direct text-to-speech via speak_text intent (operator
+    # typed exactly what Lafufu should say).
+    source: Literal["llm", "puppet"] = "llm"
 
 
 class AgentTtsRms(BaseModel):

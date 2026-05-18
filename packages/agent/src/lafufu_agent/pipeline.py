@@ -64,16 +64,16 @@ class VoicePipeline:
         # ---- Speaking (also publishes agent.reply) ----
         await self.speak(body, emotion)
 
-    async def speak(self, text: str, emotion: str = "neutral") -> None:
+    async def speak(self, text: str, emotion: str = "neutral", source: str = "llm") -> None:
         """Publish a reply event then synthesize + play TTS for the given text.
 
-        Used both by run_one_cycle (LLM-generated reply) and by the
-        speak_text intent (raw text passthrough, bypassing the LLM).
+        `source` distinguishes LLM-generated replies from direct passthrough
+        (puppet mode) so the admin UI can color them differently.
         """
         await nats_helper.publish_model(
             self.nats,
             topics.AGENT_REPLY,
-            schemas.AgentReply(text=text, emotion=emotion),  # type: ignore[arg-type]
+            schemas.AgentReply(text=text, emotion=emotion, source=source),  # type: ignore[arg-type]
         )
         await self._publish_state("speaking")
         chunks = self.piper.synthesize(text)

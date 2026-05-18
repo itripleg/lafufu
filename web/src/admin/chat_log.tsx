@@ -7,6 +7,7 @@ interface Entry {
   role: "user" | "lafufu" | "puppet";
   text: string;
   emotion?: string;
+  ts: number; // for dedupe + ordering
 }
 
 type Tab = "chat" | "speak";
@@ -31,15 +32,31 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
   let unsubT: (() => void) | undefined;
   let unsubR: (() => void) | undefined;
 
+  // Defensive dedupe: if the same role+text arrives within 500ms (e.g. WS
+  // reconnect re-deliver), drop the second.
+  const appendDedup = (entry: Omit<Entry, "ts">) => {
+    setEntries((e) => {
+      const last = e[e.length - 1];
+      const now = Date.now();
+      if (
+        last &&
+        last.role === entry.role &&
+        last.text === entry.text &&
+        now - last.ts < 500
+      ) {
+        return e;
+      }
+      return [...e.slice(-99), { ...entry, ts: now }];
+    });
+  };
+
   onMount(() => {
     unsubT = props.nats.subscribe("agent.transcript", (f) => {
-      setEntries((e) => [...e.slice(-99), { role: "user", text: f.payload.text }]);
+      appendDedup({ role: "user", text: f.payload.text });
     });
     unsubR = props.nats.subscribe("agent.reply", (f) => {
-      setEntries((e) => [
-        ...e.slice(-99),
-        { role: "lafufu", text: f.payload.text, emotion: f.payload.emotion },
-      ]);
+      const role: Entry["role"] = f.payload.source === "puppet" ? "puppet" : "lafufu";
+      appendDedup({ role, text: f.payload.text, emotion: f.payload.emotion });
     });
   });
   onCleanup(() => {
@@ -65,13 +82,9 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
     const text = speakInput().trim();
     if (!text || sending()) return;
     setSending(true);
-    // Echo to local log as a "puppet" entry so the user sees what they sent.
-    // We deliberately do NOT clear speakInput — operator may want to re-send,
-    // tweak the emotion, or iterate on phrasing.
-    setEntries((e) => [
-      ...e.slice(-99),
-      { role: "puppet", text, emotion: speakEmotion() },
-    ]);
+    // No local echo — agent.reply (with source="puppet") will arrive and be
+    // rendered as a "puppet" entry by the subscriber. Avoids the double-post
+    // we used to have. Textarea stays populated so operator can re-send.
     try {
       await api.agentSpeakText(text, speakEmotion());
     } catch (err: any) {

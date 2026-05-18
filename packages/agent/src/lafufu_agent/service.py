@@ -194,7 +194,7 @@ class AgentService(BaseService):
         """Direct text-to-speech: skip LLM, play exactly what was sent."""
         async with self._cycle_lock:
             tmp = VoicePipeline(self.nats, None, self._ollama, self._piper, self._speaker_play)
-            await tmp.speak(msg.text, msg.emotion)
+            await tmp.speak(msg.text, msg.emotion, source="puppet")
 
     def start_mic_loop(self) -> None:
         """Call from real main() after on_startup to begin listening continuously."""
