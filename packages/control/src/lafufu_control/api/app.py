@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .routers import agent as agent_router
 from .routers import animator as animator_router
+from .routers import printer as printer_router
 from .routers import settings as settings_router
 from .routers import snapshot as snapshot_router
 from .routers import system as system_router
@@ -26,6 +27,7 @@ def create_app(*, engine, nats_publish: Callable[[str, dict], None]) -> FastAPI:
     app.include_router(system_router.router, prefix="/api/system", tags=["system"])
     app.include_router(animator_router.router, prefix="/api/animator", tags=["animator"])
     app.include_router(agent_router.router, prefix="/api/agent", tags=["agent"])
+    app.include_router(printer_router.router, prefix="/api/printer", tags=["printer"])
 
     if STATIC_PATH.exists():
         # Serve hashed Vite assets directly

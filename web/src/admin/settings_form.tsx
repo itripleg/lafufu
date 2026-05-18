@@ -31,6 +31,171 @@ const DYNAMIC_OPTIONS: Record<string, () => Promise<string[]>> = {
 
 const DRAFT_PREFIX = "settings/draft/";
 
+/** Image-upload widget for the printer letterhead. Shown in the Printer tab. */
+const LetterheadCard: Component = () => {
+  // Bumped on every successful upload/delete to bust the <img> cache.
+  const [version, setVersion] = createSignal(Date.now());
+  const [busy, setBusy] = createSignal(false);
+  const [hasImage, setHasImage] = createSignal(true);  // optimistic; <img onerror> flips it
+  let fileInput!: HTMLInputElement;
+
+  const pick = () => fileInput?.click();
+
+  const onFile = async (e: Event) => {
+    const f = (e.currentTarget as HTMLInputElement).files?.[0];
+    if (!f) return;
+    setBusy(true);
+    try {
+      await api.uploadLetterhead(f);
+      setHasImage(true);
+      setVersion(Date.now());
+      toast.ok(`letterhead uploaded`, `${f.name} · ${(f.size / 1024).toFixed(1)} KB`);
+    } catch (err: any) {
+      toast.err("upload failed", err.message);
+    } finally {
+      setBusy(false);
+      if (fileInput) fileInput.value = "";
+    }
+  };
+
+  const remove = async () => {
+    if (!window.confirm("Remove uploaded letterhead?")) return;
+    setBusy(true);
+    try {
+      await api.deleteLetterhead();
+      setHasImage(false);
+      setVersion(Date.now());
+      toast.ok("letterhead removed");
+    } catch (err: any) {
+      toast.err("remove failed", err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        padding: "14px",
+        "border-radius": "14px",
+        background: "rgba(243, 236, 220, 0.02)",
+        border: "1px solid var(--c-edge)",
+        "margin-bottom": "16px",
+      }}
+    >
+      <div style={{ display: "flex", "align-items": "center", "margin-bottom": "10px", gap: "10px" }}>
+        <code
+          class="f-mono"
+          style={{
+            "font-size": "12px",
+            color: "var(--c-cream)",
+            background: "var(--c-shell)",
+            padding: "2px 8px",
+            "border-radius": "6px",
+            border: "1px solid var(--c-edge)",
+          }}
+        >
+          printer.letterhead
+        </code>
+        <span
+          class="f-mono"
+          style={{ "font-size": "10px", color: "var(--c-stone)", "letter-spacing": ".08em", "text-transform": "uppercase" }}
+        >
+          image
+        </span>
+        <div style={{ flex: 1 }} />
+        <button class="btn btn--ghost btn--micro" onClick={pick} disabled={busy()}>
+          {busy() ? "…" : hasImage() ? "replace" : "upload"}
+        </button>
+        <Show when={hasImage()}>
+          <button class="btn btn--ghost btn--micro" onClick={remove} disabled={busy()}>
+            remove
+          </button>
+        </Show>
+        <input
+          ref={fileInput}
+          type="file"
+          accept="image/png,image/jpeg,image/webp"
+          style={{ display: "none" }}
+          onChange={onFile}
+        />
+      </div>
+
+      <Show
+        when={hasImage()}
+        fallback={
+          <div
+            style={{
+              padding: "32px 12px",
+              "text-align": "center",
+              color: "var(--c-stone)",
+              "font-style": "italic",
+              "font-family": "var(--f-display)",
+              "font-size": "14px",
+            }}
+          >
+            no letterhead uploaded — replies will print as plain text
+          </div>
+        }
+      >
+        <div
+          style={{
+            display: "flex",
+            "justify-content": "center",
+            background: "var(--c-shell)",
+            "border-radius": "10px",
+            padding: "10px",
+            border: "1px solid var(--c-edge)",
+          }}
+        >
+          <img
+            src={`${api.letterheadUrl()}?v=${version()}`}
+            alt="printer letterhead"
+            style={{ "max-width": "100%", "max-height": "260px", "border-radius": "4px" }}
+            onError={() => setHasImage(false)}
+            onLoad={() => setHasImage(true)}
+          />
+        </div>
+      </Show>
+
+      <div
+        style={{
+          "font-size": "12px",
+          "line-height": 1.4,
+          color: "var(--c-stone)",
+          "margin-top": "10px",
+          "font-style": "italic",
+        }}
+      >
+        Image printed behind each reply — leave the middle area blank for the
+        text overlay. Max 10 MB, PNG/JPEG/WebP.
+      </div>
+    </div>
+  );
+};
+
+type Tab = "audio" | "model" | "printer" | "other";
+
+const TABS: Array<{ id: Tab; label: string; hint: string }> = [
+  { id: "audio",   label: "audio",   hint: "speaker, tts, mic" },
+  { id: "model",   label: "model",   hint: "llm + system prompt" },
+  { id: "printer", label: "printer", hint: "auto-print + letterhead" },
+  { id: "other",   label: "other",   hint: "animator, misc" },
+];
+
+function categoryOf(key: string): Tab {
+  if (key === "agent.llm_model" || key === "agent.system_prompt") return "model";
+  if (key.startsWith("printer.")) return "printer";
+  if (
+    key.startsWith("speaker.") ||
+    key.startsWith("tts.") ||
+    key === "agent.silence_threshold" ||
+    key === "agent.silence_seconds" ||
+    key === "agent.auto_listen"
+  ) return "audio";
+  return "other";
+}
+
 interface Props {
   onDraftCountChange?: () => void;
 }
@@ -40,6 +205,8 @@ export const SettingsForm: Component<Props> = (props) => {
   const [savingKey, setSavingKey] = createSignal<string | null>(null);
   const [dynamicOptions, setDynamicOptions] = createSignal<Record<string, string[]>>({});
   const [filter, setFilter] = createSignal("");
+  const [tab, setTab] = createSignal<Tab>(lsGet<Tab>("settings/tab", "audio"));
+  const setActiveTab = (t: Tab) => { setTab(t); lsSet("settings/tab", t); };
 
   const notifyDrafts = () => {
     props.onDraftCountChange?.();
@@ -330,10 +497,28 @@ export const SettingsForm: Component<Props> = (props) => {
     );
   };
 
+  // Per-tab counts so the tab pills can show how many keys live in each
+  // category — and the user can see at a glance which tab has dirty drafts.
+  const countsByTab = createMemo(() => {
+    const out: Record<Tab, { total: number; dirty: number }> = {
+      audio: { total: 0, dirty: 0 },
+      model: { total: 0, dirty: 0 },
+      printer: { total: 0, dirty: 0 },
+      other: { total: 0, dirty: 0 },
+    };
+    for (const r of rows()) {
+      const c = categoryOf(r.key);
+      out[c].total++;
+      if (isDirty(r)) out[c].dirty++;
+    }
+    return out;
+  });
+
   const filtered = createMemo(() => {
     const q = filter().trim().toLowerCase();
-    if (!q) return rows();
-    return rows().filter((r) =>
+    const tabbed = rows().filter((r) => categoryOf(r.key) === tab());
+    if (!q) return tabbed;
+    return tabbed.filter((r) =>
       r.key.toLowerCase().includes(q) ||
       (r.description ?? "").toLowerCase().includes(q),
     );
@@ -365,6 +550,69 @@ export const SettingsForm: Component<Props> = (props) => {
         </>
       }
     >
+      {/* Tab bar — categories of settings, with per-tab key counts and a
+          discreet amber dot when that tab has dirty drafts. */}
+      <div
+        role="tablist"
+        style={{
+          display: "flex",
+          gap: "4px",
+          padding: "3px",
+          background: "var(--c-shell)",
+          border: "1px solid var(--c-edge)",
+          "border-radius": "12px",
+          "margin-bottom": "12px",
+          "flex-wrap": "wrap",
+        }}
+      >
+        <For each={TABS}>
+          {(t) => {
+            const c = () => countsByTab()[t.id];
+            const active = () => tab() === t.id;
+            return (
+              <button
+                role="tab"
+                aria-selected={active()}
+                onClick={() => setActiveTab(t.id)}
+                title={t.hint}
+                class="btn btn--micro"
+                style={{
+                  background: active() ? "var(--c-raised)" : "transparent",
+                  border: active() ? "1px solid var(--c-edge)" : "1px solid transparent",
+                  color: active() ? "var(--c-bone)" : "var(--c-mist)",
+                  display: "flex",
+                  "align-items": "center",
+                  gap: "6px",
+                  flex: "1 1 auto",
+                  "justify-content": "center",
+                  "min-width": "0",
+                }}
+              >
+                <span>{t.label}</span>
+                <span
+                  class="f-mono"
+                  style={{ "font-size": "10px", color: "var(--c-stone)" }}
+                >
+                  {c().total}
+                </span>
+                <Show when={c().dirty > 0}>
+                  <span
+                    style={{
+                      width: "6px",
+                      height: "6px",
+                      "border-radius": "50%",
+                      background: "var(--c-amber)",
+                      "box-shadow": "0 0 4px var(--c-amber)",
+                    }}
+                    title={`${c().dirty} unsaved draft${c().dirty === 1 ? "" : "s"}`}
+                  />
+                </Show>
+              </button>
+            );
+          }}
+        </For>
+      </div>
+
       <div style={{ "margin-bottom": "14px" }}>
         <input
           type="text"
@@ -375,6 +623,10 @@ export const SettingsForm: Component<Props> = (props) => {
           onInput={(e) => setFilter(e.currentTarget.value)}
         />
       </div>
+
+      <Show when={tab() === "printer"}>
+        <LetterheadCard />
+      </Show>
 
       <div style={{ display: "flex", "flex-direction": "column", gap: "16px" }}>
         <For each={filtered()}>

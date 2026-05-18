@@ -31,4 +31,18 @@ export const api = {
       "GET",
       "/agent/models",
     ),
+
+  // Printer letterhead — image that Lafufu prints replies onto.
+  letterheadUrl: () => `${BASE}/printer/letterhead`,
+  uploadLetterhead: async (file: File): Promise<{ ok: boolean; size_bytes: number }> => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const r = await fetch(`${BASE}/printer/letterhead`, { method: "POST", body: fd });
+    if (!r.ok) throw new Error(`upload letterhead: ${r.status}`);
+    return await r.json();
+  },
+  deleteLetterhead: async (): Promise<void> => {
+    const r = await fetch(`${BASE}/printer/letterhead`, { method: "DELETE" });
+    if (!r.ok && r.status !== 404) throw new Error(`delete letterhead: ${r.status}`);
+  },
 };
