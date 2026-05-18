@@ -87,10 +87,11 @@ class CupsClient:
         cmd = [self._lp, "-d", printer]
         if title:
             cmd += ["-t", title]
-        cmd += ["-o", "fit-to-page", "-o", "position=center"]
+        cmd += ["-o", "fit-to-page"]
         if extra_lp_options:
             cmd += extra_lp_options
         cmd.append(str(path))
+        log.info("lp.exec cmd=%s", " ".join(cmd))
         result = subprocess.run(cmd, capture_output=True, timeout=30)
         if result.returncode != 0:
             raise CupsUnavailable(f"lp exited {result.returncode}: {result.stderr.decode()}")
