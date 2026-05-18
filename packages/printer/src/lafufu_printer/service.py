@@ -20,17 +20,21 @@ class CupsProtocol(Protocol):
     def print_text(self, text: str, *, title: str | None = None) -> str: ...
 
 
-# Known thermal-label media sizes → (width_in, height_in). Used to compute
-# target pixel size for pre-resize before sending to lp.
+# Known thermal-label media sizes — ACTUAL PRINTABLE AREA (width_in, height_in),
+# NOT the nominal label size. The Phomemo 4x6 driver reports media[288x432pts]
+# but the real printable region is 274.46x432pts = 3.81x6" — there's a small
+# horizontal dead zone where the print head can't reach. Their own sample PDF
+# (https://doc.phomemo.com/Labels-Sample.pdf) renders at 3.81x6 for this
+# reason. Using the nominal size causes the right edge to clip.
 _MEDIA_INCHES: dict[str, tuple[float, float]] = {
-    "4x6": (4.0, 6.0),
-    "4x8": (4.0, 8.0),
+    "4x6": (3.81, 6.0),
+    "4x8": (3.81, 8.0),
     "2x1": (2.0, 1.0),
     "Round108": (1.5, 1.5),
     "Round144": (2.0, 2.0),
-    "Letter": (8.5, 11.0),
-    "A4": (8.27, 11.69),
-    "A6": (4.13, 5.83),
+    "Letter": (8.27, 10.69),  # ~0.25" margin all around
+    "A4": (8.05, 11.47),
+    "A6": (3.93, 5.63),
 }
 _PRINTER_DPI = 203  # Phomemo standard; close enough for other thermals too.
 
