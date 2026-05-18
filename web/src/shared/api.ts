@@ -46,4 +46,5 @@ export const api = {
     if (!r.ok && r.status !== 404) throw new Error(`delete letterhead: ${r.status}`);
   },
   printLetterhead: () => req("POST", "/printer/print_letterhead"),
+  testPrint:       () => req("POST", "/printer/test_print"),
 };

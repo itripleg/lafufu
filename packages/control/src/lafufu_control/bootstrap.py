@@ -61,10 +61,34 @@ DEFAULTS: list[tuple[str, str, str, str]] = [
         "When true, every agent reply is auto-printed. Default false prevents runaway prints during mic feedback.",
     ),
     (
+        "printer.media",
+        "",
+        "str",
+        "Paper size for lp (e.g. 'Letter', 'A4', '4x6.Borderless', 'A6'). Blank = use printer default. Get options with `lpoptions -p <printer> -l`.",
+    ),
+    (
+        "printer.offset_top_pts",
+        "0",
+        "int",
+        "Vertical offset in POINTS (72/inch). Negative shifts up. Useful when fit-to-page leaves the print sitting too low on the card.",
+    ),
+    (
+        "printer.offset_left_pts",
+        "0",
+        "int",
+        "Horizontal offset in POINTS (72/inch). Negative shifts left.",
+    ),
+    (
+        "printer.scale_pct",
+        "100",
+        "int",
+        "Image scale percent. 100 = fit-to-page default. Lower if the print spills off the edge of the card.",
+    ),
+    (
         "printer.lp_options",
         "",
         "str",
-        "Extra options passed to `lp` for image prints (e.g. '-o page-top=0 -o media=Letter' to remove the top margin). Whitespace-separated. fit-to-page + position=center are always applied.",
+        "Raw extra `lp` options appended after the structured ones above (escape hatch). Whitespace-separated.",
     ),
     # TTS
     (

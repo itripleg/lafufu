@@ -30,10 +30,28 @@ class PrinterService(BaseService):
         self._cups = cups
         self._nats_url = nats_url
         self.auto_print = auto_print
-        # Extra `lp` options for image prints — tuned via admin UI when the
-        # default fit-to-page output is off-center or scaled wrong. Whitespace-
-        # separated string, parsed at use time.
-        self.lp_options: str = ""
+        # Print positioning. Composed into lp options at print time; tunable
+        # live via admin UI.
+        self.media: str = ""  # e.g. "Letter", "4x6.Borderless"
+        self.offset_top_pts: int = 0  # negative shifts up; 72pts = 1in
+        self.offset_left_pts: int = 0
+        self.scale_pct: int = 100
+        self.lp_options: str = ""  # raw escape-hatch options
+
+    def _build_lp_options(self) -> list[str]:
+        """Compose structured positioning settings into a single lp arg list."""
+        opts: list[str] = []
+        if self.media:
+            opts += ["-o", f"media={self.media}"]
+        if self.scale_pct and self.scale_pct != 100:
+            opts += ["-o", f"scaling={self.scale_pct}"]
+        if self.offset_top_pts:
+            opts += ["-o", f"page-top={self.offset_top_pts}"]
+        if self.offset_left_pts:
+            opts += ["-o", f"page-left={self.offset_left_pts}"]
+        if self.lp_options:
+            opts += self.lp_options.split()
+        return opts
 
     @property
     def nats_url(self) -> str:
@@ -84,10 +102,34 @@ class PrinterService(BaseService):
             schemas.ConfigChanged,
             self._on_config_lp_options,
         )
+        for key, attr, caster in (
+            ("printer.media", "media", str),
+            ("printer.offset_top_pts", "offset_top_pts", int),
+            ("printer.offset_left_pts", "offset_left_pts", int),
+            ("printer.scale_pct", "scale_pct", int),
+        ):
+            await nats_helper.subscribe_model(
+                self.nats,
+                f"{topics.CONFIG_CHANGED}.{key}",
+                schemas.ConfigChanged,
+                self._make_setattr_handler(key, attr, caster),
+            )
 
         # Sync to DB on startup: control rebroadcasts every setting via
         # config.changed.<key>, hitting the same subscriber above.
         await self.request_config_snapshot()
+
+    def _make_setattr_handler(self, key: str, attr: str, caster):
+        async def _handler(subject: str, msg: schemas.ConfigChanged) -> None:
+            try:
+                value = caster(msg.value)
+            except (TypeError, ValueError):
+                self.log.warning("%s.bad_value value=%r", key, msg.value)
+                return
+            setattr(self, attr, value)
+            self.log.info("%s.set value=%r", key, value)
+
+        return _handler
 
     async def _on_config_auto_print(self, subject: str, msg: schemas.ConfigChanged) -> None:
         v = msg.value
@@ -163,9 +205,8 @@ class PrinterService(BaseService):
             return
         await self._publish_state("printing")
         try:
-            extra = self.lp_options.split() if self.lp_options else None
             job_id = self._cups.print_file(
-                path, title=msg.title or path.name, extra_lp_options=extra
+                path, title=msg.title or path.name, extra_lp_options=self._build_lp_options()
             )
             await nats_helper.publish_model(
                 self.nats,

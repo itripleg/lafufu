@@ -73,3 +73,65 @@ def print_letterhead(req: Request):
         "printer.intent.print_file", {"path": str(p), "title": "lafufu letterhead"}
     )
     return {"ok": True, "path": str(p)}
+
+
+@router.post("/test_print", status_code=202)
+def test_print(req: Request):
+    """Print a calibration grid so the operator can see exactly where the
+    printer is placing content. Half-inch grid with labeled axes; the four
+    corners and center are marked. Regenerated on demand so it always
+    matches the current page metrics."""
+    grid_path = _data_dir() / "calibration_grid.png"
+    _data_dir().mkdir(parents=True, exist_ok=True)
+    _generate_calibration_grid(grid_path)
+    req.app.state.nats_publish(
+        "printer.intent.print_file", {"path": str(grid_path), "title": "lafufu calibration"}
+    )
+    return {"ok": True, "path": str(grid_path)}
+
+
+def _generate_calibration_grid(out_path: Path) -> None:
+    """Build a simple PNG calibration grid using only stdlib + struct."""
+    # 600 dpi-ish at letter — 600x900 px is roughly fine for any common media
+    # since fit-to-page handles the rest. Half-inch grid lines, cross at center.
+    from PIL import Image, ImageDraw, ImageFont
+
+    W, H = 600, 900
+    img = Image.new("RGB", (W, H), "white")
+    d = ImageDraw.Draw(img)
+    # Half-inch grid (60px @ 600x900, treating 120px/inch).
+    step = 60
+    for x in range(0, W + 1, step):
+        d.line([(x, 0), (x, H)], fill=(220, 220, 220), width=1)
+    for y in range(0, H + 1, step):
+        d.line([(0, y), (W, y)], fill=(220, 220, 220), width=1)
+    # Heavier inch lines.
+    for x in range(0, W + 1, step * 2):
+        d.line([(x, 0), (x, H)], fill=(160, 160, 160), width=2)
+    for y in range(0, H + 1, step * 2):
+        d.line([(0, y), (W, y)], fill=(160, 160, 160), width=2)
+    # Center crosshair.
+    d.line([(W // 2, 0), (W // 2, H)], fill=(220, 80, 80), width=2)
+    d.line([(0, H // 2), (W, H // 2)], fill=(220, 80, 80), width=2)
+    # Corner markers — 30px L-brackets.
+    L = 30
+    for cx, cy in ((0, 0), (W, 0), (0, H), (W, H)):
+        sx = -1 if cx == W else 1
+        sy = -1 if cy == H else 1
+        d.line([(cx, cy), (cx + sx * L, cy)], fill="black", width=4)
+        d.line([(cx, cy), (cx, cy + sy * L)], fill="black", width=4)
+    # Labels.
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 24)
+    except OSError:
+        font = ImageFont.load_default()
+    d.text((10, H // 2 + 8), "CENTER", fill="red", font=font)
+    d.text((10, 10), "TOP-LEFT", fill="black", font=font)
+    d.text((W - 130, H - 30), "BOT-RIGHT", fill="black", font=font)
+    d.text(
+        (W // 2 - 60, 40),
+        "lafufu calibration",
+        fill=(80, 80, 80),
+        font=font,
+    )
+    img.save(out_path, "PNG")

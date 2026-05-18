@@ -16,10 +16,14 @@ interface Row {
 }
 
 const SLIDER_HINTS: Record<string, { min: number; max: number; step?: number }> = {
-  "speaker.volume":          { min: 0,    max: 100,   step: 1     },
-  "agent.silence_threshold": { min: 0,    max: 5000,  step: 50    },
-  "agent.silence_seconds":   { min: 0,    max: 5,     step: 0.1   },
-  "tts.length_scale":        { min: 0.5,  max: 2.0,   step: 0.05  },
+  "speaker.volume":            { min: 0,    max: 100,   step: 1     },
+  "agent.silence_threshold":   { min: 0,    max: 5000,  step: 50    },
+  "agent.silence_seconds":     { min: 0,    max: 5,     step: 0.1   },
+  "tts.length_scale":          { min: 0.5,  max: 2.0,   step: 0.05  },
+  // Printer positioning. 72pts = 1in, so ±144pts = ±2in of nudge room.
+  "printer.offset_top_pts":    { min: -144, max: 144,   step: 6     },
+  "printer.offset_left_pts":   { min: -144, max: 144,   step: 6     },
+  "printer.scale_pct":         { min: 25,   max: 200,   step: 5     },
 };
 
 const DYNAMIC_OPTIONS: Record<string, () => Promise<string[]>> = {
@@ -106,6 +110,24 @@ const LetterheadCard: Component = () => {
         <div style={{ flex: 1 }} />
         <button class="btn btn--ghost btn--micro" onClick={pick} disabled={busy()}>
           {busy() ? "…" : hasImage() ? "replace" : "upload"}
+        </button>
+        <button
+          class="btn btn--ghost btn--micro"
+          onClick={async () => {
+            setBusy(true);
+            try {
+              await api.testPrint();
+              toast.ok("calibration print sent", "measure offsets against the half-inch grid");
+            } catch (err: any) {
+              toast.err("test print failed", err.message);
+            } finally {
+              setBusy(false);
+            }
+          }}
+          disabled={busy()}
+          title="Print a half-inch grid + corner markers to dial in offsets"
+        >
+          test print
         </button>
         <Show when={hasImage()}>
           <button
