@@ -4,15 +4,22 @@ import { isMobileLikeUA } from "./shared/design";
 import { Blob } from "./shared/blob";
 
 /**
- * Quiet splash screen. Auto-suggests the right route based on UA but never
- * navigates without the user clicking — kiosk vs. mobile is a deliberate
- * choice you make once on each device.
+ * Quiet splash screen. On desktop/HDMI it auto-redirects to /face so the
+ * Pi's HDMI output goes straight to the kiosk view; on mobile/small
+ * screens it stays as a chooser. URL '/?stay' bypasses the redirect so
+ * you can reach the chooser from a desktop manually.
  */
 export const Landing: Component = () => {
   const navigate = useNavigate();
   const [suggested, setSuggested] = createSignal<"face" | "pet">("face");
   onMount(() => {
-    setSuggested(isMobileLikeUA() ? "pet" : "face");
+    const mobile = isMobileLikeUA();
+    setSuggested(mobile ? "pet" : "face");
+    // Auto-jump to /face on non-mobile devices unless ?stay is in the URL.
+    const search = typeof window !== "undefined" ? window.location.search : "";
+    if (!mobile && !/[?&]stay\b/.test(search)) {
+      navigate("/face", { replace: true });
+    }
   });
 
   const card = (

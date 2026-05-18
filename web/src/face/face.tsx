@@ -1,9 +1,19 @@
 import { Component, createSignal, onCleanup, onMount, Show } from "solid-js";
+import { useNavigate } from "@solidjs/router";
 import { NatsWs } from "../shared/nats_ws";
 import { emotionToColor } from "../shared/design";
 import { Caption } from "./caption";
 
 const BG_VIDEO_SRC = "/lafufu-bg.mp4";
+
+/** Browsers + TS lib variants. */
+type FsDoc = Document & {
+  webkitFullscreenElement?: Element | null;
+  webkitExitFullscreen?: () => Promise<void>;
+};
+type FsElem = HTMLElement & {
+  webkitRequestFullscreen?: () => Promise<void>;
+};
 
 /**
  * Kiosk view — full-bleed background mp4 with an emotion-tinted overlay that
@@ -18,6 +28,13 @@ const Face: Component = () => {
   const [bgReady, setBgReady] = createSignal(false);
   const [bgError, setBgError] = createSignal(false);
 
+  // Kiosk control overlay: visible briefly after mouse movement or touch,
+  // otherwise hidden so it doesn't pollute the HDMI background.
+  const [controlsVisible, setControlsVisible] = createSignal(true);
+  const [isFs, setIsFs] = createSignal(false);
+  let hideTimer: number | undefined;
+  const navigate = useNavigate();
+
   // First-order smoothing of rms toward a target — same envelope behavior as
   // the old state_blob, but applied to the whole-screen overlay opacity.
   const [pulse, setPulse] = createSignal(0);
@@ -26,8 +43,55 @@ const Face: Component = () => {
   const nats = new NatsWs();
   let videoEl!: HTMLVideoElement;
 
+  const showControlsBriefly = () => {
+    setControlsVisible(true);
+    if (hideTimer) window.clearTimeout(hideTimer);
+    hideTimer = window.setTimeout(() => setControlsVisible(false), 2400);
+  };
+
+  const toggleFullscreen = async () => {
+    const doc = document as FsDoc;
+    const el = document.documentElement as FsElem;
+    const inFs = !!(document.fullscreenElement || doc.webkitFullscreenElement);
+    try {
+      if (inFs) {
+        if (document.exitFullscreen) await document.exitFullscreen();
+        else if (doc.webkitExitFullscreen) await doc.webkitExitFullscreen();
+      } else {
+        if (el.requestFullscreen) await el.requestFullscreen();
+        else if (el.webkitRequestFullscreen) await el.webkitRequestFullscreen();
+      }
+    } catch {
+      /* user-gesture required or browser refused — silently ignore */
+    }
+  };
+
   onMount(() => {
     document.body.classList.add("kiosk-cursor-hide");
+
+    // Surface controls on any pointer / key activity; hide them again
+    // after a short idle window. Keeps the HDMI background clean.
+    const wake = () => showControlsBriefly();
+    window.addEventListener("mousemove", wake);
+    window.addEventListener("touchstart", wake);
+    window.addEventListener("keydown", wake);
+    showControlsBriefly();
+
+    const onFsChange = () => {
+      const doc = document as FsDoc;
+      setIsFs(!!(document.fullscreenElement || doc.webkitFullscreenElement));
+    };
+    document.addEventListener("fullscreenchange", onFsChange);
+    document.addEventListener("webkitfullscreenchange", onFsChange);
+
+    onCleanup(() => {
+      window.removeEventListener("mousemove", wake);
+      window.removeEventListener("touchstart", wake);
+      window.removeEventListener("keydown", wake);
+      document.removeEventListener("fullscreenchange", onFsChange);
+      document.removeEventListener("webkitfullscreenchange", onFsChange);
+      if (hideTimer) window.clearTimeout(hideTimer);
+    });
 
     nats.start();
     nats.subscribe("agent.state.*", (f) => {
@@ -183,6 +247,79 @@ const Face: Component = () => {
       </Show>
 
       <Caption text={caption} tint={tint} />
+
+      {/* Kiosk controls: top-right pill that fades in on activity, fades
+          back out after ~2.4s of idle. Lets the operator exit fullscreen
+          / jump to /admin without rebooting the Pi. */}
+      <div
+        style={{
+          position: "absolute",
+          top: "max(20px, env(safe-area-inset-top))",
+          right: "max(20px, env(safe-area-inset-right))",
+          display: "flex",
+          gap: "6px",
+          padding: "6px 8px",
+          "border-radius": "999px",
+          background: "rgba(20, 16, 12, 0.6)",
+          border: "1px solid rgba(243, 236, 220, 0.08)",
+          "backdrop-filter": "blur(10px)",
+          "-webkit-backdrop-filter": "blur(10px)",
+          opacity: controlsVisible() ? 1 : 0,
+          transition: "opacity .5s ease",
+          "pointer-events": controlsVisible() ? "auto" : "none",
+          "z-index": 10,
+        }}
+      >
+        <button
+          onClick={toggleFullscreen}
+          title={isFs() ? "Exit fullscreen" : "Enter fullscreen"}
+          style={{
+            background: "transparent",
+            border: "none",
+            color: "var(--c-mist)",
+            cursor: "pointer",
+            padding: "4px 8px",
+            "font-size": "16px",
+            "line-height": 1,
+            "border-radius": "999px",
+          }}
+        >
+          {isFs() ? "⛶" : "⛶"}
+        </button>
+        <button
+          onClick={() => navigate("/admin")}
+          title="Open admin"
+          style={{
+            background: "transparent",
+            border: "none",
+            color: "var(--c-mist)",
+            cursor: "pointer",
+            padding: "4px 8px",
+            "font-size": "13px",
+            "font-family": "var(--f-mono)",
+            "letter-spacing": ".08em",
+            "border-radius": "999px",
+          }}
+        >
+          admin
+        </button>
+        <button
+          onClick={() => navigate("/?stay")}
+          title="Back to chooser"
+          style={{
+            background: "transparent",
+            border: "none",
+            color: "var(--c-stone)",
+            cursor: "pointer",
+            padding: "4px 8px",
+            "font-size": "16px",
+            "line-height": 1,
+            "border-radius": "999px",
+          }}
+        >
+          ✕
+        </button>
+      </div>
     </div>
   );
 };
