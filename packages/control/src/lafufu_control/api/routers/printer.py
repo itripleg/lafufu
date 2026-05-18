@@ -6,6 +6,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
 router = APIRouter()
 
@@ -73,6 +74,38 @@ def print_letterhead(req: Request):
         "printer.intent.print_file", {"path": str(p), "title": "lafufu letterhead"}
     )
     return {"ok": True, "path": str(p)}
+
+
+class ComposeReq(BaseModel):
+    text: str
+    lucky_subway_stop: str | None = None
+    lucky_numbers: list[int] | None = None
+
+
+@router.post("/compose", status_code=202)
+def compose_print(body: ComposeReq, req: Request):
+    """Composite text onto the uploaded letterhead and queue it for printing.
+    The actual PIL composition happens in the printer service."""
+    p = _letterhead_path()
+    if not p.exists():
+        raise HTTPException(
+            404,
+            detail={
+                "error_code": "no_letterhead",
+                "message": "upload a letterhead first — compose draws text on it",
+            },
+        )
+    req.app.state.nats_publish(
+        "printer.intent.compose",
+        {
+            "letterhead_path": str(p),
+            "text": body.text,
+            "lucky_subway_stop": body.lucky_subway_stop,
+            "lucky_numbers": body.lucky_numbers,
+            "title": "lafufu fortune",
+        },
+    )
+    return {"ok": True}
 
 
 @router.post("/test_print", status_code=202)

@@ -120,6 +120,12 @@ class PrinterService(BaseService):
             schemas.PrinterIntentPrintFile,
             self._on_print_file,
         )
+        await nats_helper.subscribe_model(
+            self.nats,
+            topics.PRINTER_INTENT_COMPOSE,
+            schemas.PrinterIntentCompose,
+            self._on_compose,
+        )
         # Subscribe to live config changes so auto_print toggle takes effect without restart.
         await nats_helper.subscribe_model(
             self.nats,
@@ -237,6 +243,56 @@ class PrinterService(BaseService):
 
     async def _on_test_page(self, subject: str, msg: schemas.AgentReply) -> None:
         await self._publish_state()
+
+    async def _on_compose(self, subject: str, msg: schemas.PrinterIntentCompose) -> None:
+        """Composite text onto the letterhead, then print the result."""
+        from pathlib import Path
+
+        from .composer import compose_fortune
+
+        lh = Path(msg.letterhead_path)
+        if not lh.exists():
+            await self._publish_state(
+                "error", detail=f"letterhead not found: {msg.letterhead_path}"
+            )
+            return
+        if not self._cups.default_printer():
+            await self._publish_state("offline")
+            return
+        try:
+            composed = compose_fortune(
+                lh,
+                body_text=msg.text,
+                lucky_subway_stop=msg.lucky_subway_stop,
+                lucky_numbers=msg.lucky_numbers,
+            )
+        except Exception as e:
+            self.log.warning("compose.failed error=%s", e)
+            await self._publish_state("error", detail=str(e))
+            return
+        await self._publish_state("printing")
+        try:
+            target_px = self._target_pixels()
+            dz_top_px = int(self.dead_zone_top_mm * _PRINTER_DPI / 25.4)
+            dz_bot_px = int(self.dead_zone_bottom_mm * _PRINTER_DPI / 25.4)
+            job_id = self._cups.print_file(
+                composed,
+                title=msg.title or "lafufu fortune",
+                extra_lp_options=self._build_lp_options(),
+                target_size_px=target_px,
+                dead_zone_top_px=dz_top_px,
+                dead_zone_bottom_px=dz_bot_px,
+            )
+            await nats_helper.publish_model(
+                self.nats,
+                topics.PRINTER_EVENT_JOB_DONE,
+                schemas.PrinterEvent(event="job_done", job_id=job_id),
+            )
+        except Exception as e:
+            self.log.warning("compose.print_failed error=%s", e)
+            await self._publish_state("error", detail=str(e))
+            return
+        await self._publish_state("idle")
 
     async def _on_print_file(self, subject: str, msg: schemas.PrinterIntentPrintFile) -> None:
         """Send an image file (e.g. the uploaded letterhead) directly to lp."""

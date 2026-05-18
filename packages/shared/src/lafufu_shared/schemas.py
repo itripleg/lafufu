@@ -120,6 +120,17 @@ class PrinterIntentPrintFile(BaseModel):
     title: str | None = None
 
 
+class PrinterIntentCompose(BaseModel):
+    """Composite text (fortune-card style) onto the uploaded letterhead
+    and print the result."""
+
+    letterhead_path: str
+    text: str
+    lucky_subway_stop: str | None = None
+    lucky_numbers: list[int] | None = None
+    title: str | None = None
+
+
 class PrinterState(BaseModel):
     state: PrinterStateName
     detail: str | None = None

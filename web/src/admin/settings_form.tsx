@@ -218,6 +218,169 @@ const LetterheadCard: Component = () => {
   );
 };
 
+/** Manual fortune composer — type text + optional lucky info, server overlays
+ *  it on the uploaded letterhead and prints. Useful before the system prompt
+ *  is tuned for fortune-style replies. */
+const ComposeFortuneCard: Component = () => {
+  const DEFAULT_TEXT =
+    "I have watched you pass beneath the city lights, carrying questions you have not yet admitted are questions.\n\n" +
+    "Tonight, New York will answer in fragments: a reflection in a train window, a stranger's sentence, a door left open, a sign flickering at the exact wrong moment.\n\n" +
+    "Do not look for one grand revelation. Look for three small glitches in the ordinary world.";
+
+  const [text, setText] = createSignal(lsGet<string>("compose/text", DEFAULT_TEXT));
+  const [stop, setStop] = createSignal(lsGet<string>("compose/stop", "Canal Street"));
+  const [nums, setNums] = createSignal(lsGet<string>("compose/nums", "5, 10, 20"));
+  const [sending, setSending] = createSignal(false);
+
+  const onText = (v: string) => { setText(v); lsSet("compose/text", v); };
+  const onStop = (v: string) => { setStop(v); lsSet("compose/stop", v); };
+  const onNums = (v: string) => { setNums(v); lsSet("compose/nums", v); };
+
+  const parseNums = (s: string): number[] | undefined => {
+    const arr = s.split(/[,\s]+/).map((x) => parseInt(x.trim(), 10)).filter((n) => !Number.isNaN(n));
+    return arr.length ? arr : undefined;
+  };
+
+  const submit = async () => {
+    const body = text().trim();
+    if (!body) { toast.warn("nothing to print", "type some fortune text first"); return; }
+    setSending(true);
+    try {
+      await api.composePrint({
+        text: body,
+        lucky_subway_stop: stop().trim() || undefined,
+        lucky_numbers: parseNums(nums()),
+      });
+      toast.ok("composed fortune sent", "PIL overlay → printer queue");
+    } catch (err: any) {
+      toast.err("compose failed", err.message);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        padding: "14px",
+        "border-radius": "14px",
+        background: "rgba(243, 236, 220, 0.02)",
+        border: "1px solid var(--c-edge)",
+        "margin-bottom": "16px",
+      }}
+    >
+      <div
+        style={{
+          display: "flex", "align-items": "center", "margin-bottom": "10px", gap: "10px",
+        }}
+      >
+        <code
+          class="f-mono"
+          style={{
+            "font-size": "12px",
+            color: "var(--c-cream)",
+            background: "var(--c-shell)",
+            padding: "2px 8px",
+            "border-radius": "6px",
+            border: "1px solid var(--c-edge)",
+          }}
+        >
+          compose fortune
+        </code>
+        <span
+          class="f-mono"
+          style={{
+            "font-size": "10px",
+            color: "var(--c-stone)",
+            "letter-spacing": ".08em",
+            "text-transform": "uppercase",
+          }}
+        >
+          text → letterhead overlay
+        </span>
+        <div style={{ flex: 1 }} />
+        <button
+          class="btn btn--primary btn--micro"
+          disabled={sending() || !text().trim()}
+          onClick={submit}
+          title="Compose this text onto the letterhead and print it"
+        >
+          {sending() ? "…" : "compose & print"}
+        </button>
+      </div>
+
+      <textarea
+        class="field"
+        rows="6"
+        style={{
+          width: "100%",
+          "font-family": "var(--f-sans)",
+          resize: "vertical",
+          "margin-bottom": "10px",
+        }}
+        placeholder="The fortune body — paragraphs separated by blank lines wrap nicely…"
+        value={text()}
+        onInput={(e) => onText(e.currentTarget.value)}
+      />
+
+      <div style={{ display: "flex", gap: "8px", "flex-wrap": "wrap" }}>
+        <label
+          class="f-mono"
+          style={{
+            "font-size": "11px",
+            color: "var(--c-stone)",
+            display: "flex", "flex-direction": "column", gap: "4px",
+            flex: "1 1 220px",
+          }}
+        >
+          lucky subway stop
+          <input
+            type="text"
+            class="field"
+            style={{ "font-family": "var(--f-sans)" }}
+            value={stop()}
+            onInput={(e) => onStop(e.currentTarget.value)}
+            placeholder="(optional)"
+          />
+        </label>
+        <label
+          class="f-mono"
+          style={{
+            "font-size": "11px",
+            color: "var(--c-stone)",
+            display: "flex", "flex-direction": "column", gap: "4px",
+            flex: "1 1 160px",
+          }}
+        >
+          lucky numbers
+          <input
+            type="text"
+            class="field f-num"
+            style={{ "font-family": "var(--f-mono)" }}
+            value={nums()}
+            onInput={(e) => onNums(e.currentTarget.value)}
+            placeholder="5, 10, 20"
+          />
+        </label>
+      </div>
+
+      <div
+        style={{
+          "font-size": "12px",
+          "line-height": 1.4,
+          color: "var(--c-stone)",
+          "margin-top": "10px",
+          "font-style": "italic",
+        }}
+      >
+        Server-side PIL composition: body text auto-shrinks to fit the empty
+        middle band of the card; lucky info sits in a smaller line near the
+        bottom. Font: IM Fell English (bundled, 17th-c. revival serif).
+      </div>
+    </div>
+  );
+};
+
 type Tab = "audio" | "model" | "printer" | "other";
 
 const TABS: Array<{ id: Tab; label: string; hint: string }> = [
@@ -670,6 +833,7 @@ export const SettingsForm: Component<Props> = (props) => {
 
       <Show when={tab() === "printer"}>
         <LetterheadCard />
+        <ComposeFortuneCard />
       </Show>
 
       <div style={{ display: "flex", "flex-direction": "column", gap: "16px" }}>

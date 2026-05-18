@@ -47,4 +47,6 @@ export const api = {
   },
   printLetterhead: () => req("POST", "/printer/print_letterhead"),
   testPrint:       () => req("POST", "/printer/test_print"),
+  composePrint:    (body: { text: string; lucky_subway_stop?: string; lucky_numbers?: number[] }) =>
+    req("POST", "/printer/compose", body),
 };
