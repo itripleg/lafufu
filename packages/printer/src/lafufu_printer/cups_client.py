@@ -71,29 +71,65 @@ class CupsClient:
         *,
         title: str | None = None,
         extra_lp_options: list[str] | None = None,
+        target_size_px: tuple[int, int] | None = None,
     ) -> str:
-        """Print an existing file (image / pdf / etc.) by path.
+        """Print an image file by path.
 
-        Default options: -o fit-to-page  (scale image to printable area)
-                         -o position=center
-        extra_lp_options is appended raw so the operator can tune things
-        like media size, margins, or orientation per printer.
+        If `target_size_px` is given, the image is pre-resized to exactly
+        that pixel size before being sent to lp — bypassing CUPS' fit-to-page
+        logic, which is unreliable across drivers (especially raster/label
+        printers). This is the recommended path: compute target pixels from
+        the page size at the printer's DPI and let lp print 1:1.
         """
         if not self._lp:
             raise CupsUnavailable("`lp` not on PATH")
         printer = self.default_printer()
         if not printer:
             raise CupsUnavailable("no CUPS printers configured")
+
+        send_path = str(path)
+        if target_size_px:
+            send_path = _prep_resized_copy(path, target_size_px)
+
         cmd = [self._lp, "-d", printer]
         if title:
             cmd += ["-t", title]
-        cmd += ["-o", "fit-to-page"]
+        if not target_size_px:
+            # Without an explicit target, fall back to CUPS scaling. Send both
+            # the old (fit-to-page) and new (print-scaling=fit) flags for
+            # cross-version compat.
+            cmd += ["-o", "fit-to-page", "-o", "print-scaling=fit"]
         if extra_lp_options:
             cmd += extra_lp_options
-        cmd.append(str(path))
+        cmd.append(send_path)
         log.info("lp.exec cmd=%s", " ".join(cmd))
         result = subprocess.run(cmd, capture_output=True, timeout=30)
         if result.returncode != 0:
             raise CupsUnavailable(f"lp exited {result.returncode}: {result.stderr.decode()}")
         out = result.stdout.decode().strip()
         return out.split()[3] if "request id is" in out else "?"
+
+
+def _prep_resized_copy(src_path, target_size_px: tuple[int, int]) -> str:
+    """Resize src to target_size_px (preserving aspect via fit-inside), write
+    to a sibling temp file, return its path. Centers any aspect-mismatch
+    margin against white so the printer ignores it."""
+    import tempfile
+    from pathlib import Path
+
+    from PIL import Image
+
+    src = Path(src_path)
+    tw, th = target_size_px
+    im = Image.open(src).convert("RGB")
+    iw, ih = im.size
+    # Aspect-preserving fit-inside.
+    scale = min(tw / iw, th / ih)
+    new_w, new_h = max(1, int(iw * scale)), max(1, int(ih * scale))
+    resized = im.resize((new_w, new_h), Image.LANCZOS)
+    canvas = Image.new("RGB", (tw, th), "white")
+    canvas.paste(resized, ((tw - new_w) // 2, (th - new_h) // 2))
+    out = Path(tempfile.gettempdir()) / f"_lafufu_print_{src.stem}.png"
+    canvas.save(out, "PNG")
+    log.info("lp.resize src=%s -> %s @ %dx%d", src.name, out, tw, th)
+    return str(out)

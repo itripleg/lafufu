@@ -2,7 +2,7 @@
 name = "lafufu-printer"
 version = "0.1.0"
 requires-python = ">=3.13"
-dependencies = ["lafufu-shared"]
+dependencies = ["lafufu-shared", "pillow>=10.0"]
 
 [tool.uv.sources]
 lafufu-shared = { workspace = true }

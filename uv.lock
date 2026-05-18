@@ -533,10 +533,14 @@ version = "0.1.0"
 source = { editable = "packages/printer" }
 dependencies = [
     { name = "lafufu-shared" },
+    { name = "pillow" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "lafufu-shared", editable = "packages/shared" }]
+requires-dist = [
+    { name = "lafufu-shared", editable = "packages/shared" },
+    { name = "pillow", specifier = ">=10.0" },
+]
 
 [[package]]
 name = "lafufu-shared"

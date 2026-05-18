@@ -20,6 +20,21 @@ class CupsProtocol(Protocol):
     def print_text(self, text: str, *, title: str | None = None) -> str: ...
 
 
+# Known thermal-label media sizes → (width_in, height_in). Used to compute
+# target pixel size for pre-resize before sending to lp.
+_MEDIA_INCHES: dict[str, tuple[float, float]] = {
+    "4x6": (4.0, 6.0),
+    "4x8": (4.0, 8.0),
+    "2x1": (2.0, 1.0),
+    "Round108": (1.5, 1.5),
+    "Round144": (2.0, 2.0),
+    "Letter": (8.5, 11.0),
+    "A4": (8.27, 11.69),
+    "A6": (4.13, 5.83),
+}
+_PRINTER_DPI = 203  # Phomemo standard; close enough for other thermals too.
+
+
 class PrinterService(BaseService):
     name = "printer"
 
@@ -129,6 +144,17 @@ class PrinterService(BaseService):
         # config.changed.<key>, hitting the same subscriber above.
         await self.request_config_snapshot()
 
+    def _target_pixels(self) -> tuple[int, int] | None:
+        """Return (width_px, height_px) for the configured media, or None
+        if we don't recognize the media name (caller falls back to lp scaling)."""
+        dims = _MEDIA_INCHES.get(self.media)
+        if not dims:
+            return None
+        w_in, h_in = dims
+        # Apply user scale_pct so e.g. 95 leaves a small white border.
+        scale = (self.scale_pct or 100) / 100.0
+        return (int(w_in * _PRINTER_DPI * scale), int(h_in * _PRINTER_DPI * scale))
+
     def _make_setattr_handler(self, key: str, attr: str, caster):
         async def _handler(subject: str, msg: schemas.ConfigChanged) -> None:
             try:
@@ -215,8 +241,15 @@ class PrinterService(BaseService):
             return
         await self._publish_state("printing")
         try:
+            # Pre-resize the image to the printer's exact pixel dimensions so
+            # we don't depend on CUPS fit-to-page. Falls back to driver scaling
+            # if we don't know the media size.
+            target_px = self._target_pixels()
             job_id = self._cups.print_file(
-                path, title=msg.title or path.name, extra_lp_options=self._build_lp_options()
+                path,
+                title=msg.title or path.name,
+                extra_lp_options=self._build_lp_options(),
+                target_size_px=target_px,
             )
             await nats_helper.publish_model(
                 self.nats,
