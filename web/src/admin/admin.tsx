@@ -3,11 +3,9 @@ import { NatsWs } from "../shared/nats_ws";
 import { Blob } from "../shared/blob";
 import { lsClearAll, lsKeys } from "../shared/local_storage";
 import { toast } from "../shared/toast";
+import { BodyPanel } from "./body_panel";
 import { ChatLog } from "./chat_log";
-import { ExpressionButtons } from "./expression_buttons";
-import { PoseView } from "./pose_view";
 import { ServiceStatus } from "./service_status";
-import { ServoSliders } from "./servo_sliders";
 import { SettingsForm } from "./settings_form";
 import { SystemPulse } from "./system_pulse";
 
@@ -172,23 +170,12 @@ const Admin: Component = () => {
         </div>
       </header>
 
-      {/* TOP ROW: 2 columns, packed at natural heights ------------------ */}
-      <div
-        style={{
-          display: "grid",
-          "grid-template-columns": "minmax(0, 1fr)",
-          gap: "20px",
-          "margin-bottom": "20px",
-        }}
-      >
-        <div class="cards-grid">
-          <ServiceStatus nats={nats} />
-          <PoseView nats={nats} />
-        </div>
-        <div class="cards-grid">
-          <ExpressionButtons />
-          <ServoSliders nats={nats} />
-        </div>
+      {/* TOP ROW: services on the left, unified Body panel on the right.
+          Body panel consolidates the old Pose / Expressions / ServoSliders
+          trio — sliders double as live pose readout. */}
+      <div class="cards-grid" style={{ "margin-bottom": "20px" }}>
+        <ServiceStatus nats={nats} />
+        <BodyPanel nats={nats} />
       </div>
 
       {/* CHAT + SETTINGS — side by side on wide screens --------------- */}
