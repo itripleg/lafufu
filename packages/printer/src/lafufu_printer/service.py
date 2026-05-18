@@ -30,6 +30,10 @@ class PrinterService(BaseService):
         self._cups = cups
         self._nats_url = nats_url
         self.auto_print = auto_print
+        # Extra `lp` options for image prints — tuned via admin UI when the
+        # default fit-to-page output is off-center or scaled wrong. Whitespace-
+        # separated string, parsed at use time.
+        self.lp_options: str = ""
 
     @property
     def nats_url(self) -> str:
@@ -74,6 +78,12 @@ class PrinterService(BaseService):
             schemas.ConfigChanged,
             self._on_config_auto_print,
         )
+        await nats_helper.subscribe_model(
+            self.nats,
+            f"{topics.CONFIG_CHANGED}.printer.lp_options",
+            schemas.ConfigChanged,
+            self._on_config_lp_options,
+        )
 
         # Sync to DB on startup: control rebroadcasts every setting via
         # config.changed.<key>, hitting the same subscriber above.
@@ -85,6 +95,10 @@ class PrinterService(BaseService):
             v = v.lower() in ("true", "1", "yes", "on")
         self.auto_print = bool(v)
         self.log.info("printer.auto_print.set value=%s", self.auto_print)
+
+    async def _on_config_lp_options(self, subject: str, msg: schemas.ConfigChanged) -> None:
+        self.lp_options = str(msg.value or "").strip()
+        self.log.info("printer.lp_options.set value=%r", self.lp_options)
 
     async def _publish_state(
         self, state_name: str | None = None, detail: str | None = None
@@ -149,7 +163,10 @@ class PrinterService(BaseService):
             return
         await self._publish_state("printing")
         try:
-            job_id = self._cups.print_file(path, title=msg.title or path.name)
+            extra = self.lp_options.split() if self.lp_options else None
+            job_id = self._cups.print_file(
+                path, title=msg.title or path.name, extra_lp_options=extra
+            )
             await nats_helper.publish_model(
                 self.nats,
                 topics.PRINTER_EVENT_JOB_DONE,

@@ -65,8 +65,20 @@ class CupsClient:
         out = result.stdout.decode().strip()
         return out.split()[3] if "request id is" in out else "?"
 
-    def print_file(self, path, *, title: str | None = None) -> str:
-        """Print an existing file (image / pdf / etc.) by path."""
+    def print_file(
+        self,
+        path,
+        *,
+        title: str | None = None,
+        extra_lp_options: list[str] | None = None,
+    ) -> str:
+        """Print an existing file (image / pdf / etc.) by path.
+
+        Default options: -o fit-to-page  (scale image to printable area)
+                         -o position=center
+        extra_lp_options is appended raw so the operator can tune things
+        like media size, margins, or orientation per printer.
+        """
         if not self._lp:
             raise CupsUnavailable("`lp` not on PATH")
         printer = self.default_printer()
@@ -75,6 +87,9 @@ class CupsClient:
         cmd = [self._lp, "-d", printer]
         if title:
             cmd += ["-t", title]
+        cmd += ["-o", "fit-to-page", "-o", "position=center"]
+        if extra_lp_options:
+            cmd += extra_lp_options
         cmd.append(str(path))
         result = subprocess.run(cmd, capture_output=True, timeout=30)
         if result.returncode != 0:

@@ -60,6 +60,12 @@ DEFAULTS: list[tuple[str, str, str, str]] = [
         "bool",
         "When true, every agent reply is auto-printed. Default false prevents runaway prints during mic feedback.",
     ),
+    (
+        "printer.lp_options",
+        "",
+        "str",
+        "Extra options passed to `lp` for image prints (e.g. '-o page-top=0 -o media=Letter' to remove the top margin). Whitespace-separated. fit-to-page + position=center are always applied.",
+    ),
     # TTS
     (
         "tts.length_scale",
