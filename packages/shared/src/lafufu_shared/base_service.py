@@ -69,6 +69,23 @@ class BaseService:
                 # Windows lacks add_signal_handler for some signals; skip silently
                 loop.add_signal_handler(sig, self._shutdown.set)
 
+    async def request_config_snapshot(self) -> None:
+        """Ask control to re-publish every setting as config.changed.<key>.
+
+        Call this at the END of on_startup, AFTER subscribing to every
+        config.changed.<key> topic this service cares about. The re-broadcast
+        flows through the same subscribers used for live admin toggles, so the
+        service ends up synced to the DB on every restart without drift.
+
+        If control isn't up yet, the request is silently dropped — the service
+        falls back to whatever env defaults it was constructed with until
+        someone toggles the setting in the admin UI.
+        """
+        try:
+            await self.nats.publish(topics.CONFIG_SNAPSHOT_REQUEST, b"")
+        except Exception as e:
+            self.log.warning("config.snapshot_request.failed error=%s", e)
+
     async def _publish_service_event(self, event_subject: str) -> None:
         try:
             await nats_helper.publish_model(

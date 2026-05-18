@@ -57,6 +57,10 @@ PRINTER_EVENT_JAM = f"{PRINTER_EVENT}.jam"
 
 # Config + system
 CONFIG_CHANGED = "config.changed"  # actual topic: f"{CONFIG_CHANGED}.{dotted_key}"
+# Services publish this on startup so control re-broadcasts every setting via
+# config.changed.<key>. Lets services sync to the DB (source of truth) on every
+# restart instead of drifting away from it using env-var defaults.
+CONFIG_SNAPSHOT_REQUEST = "config.snapshot.request"
 
 SYSTEM_HEARTBEAT = "system.heartbeat"  # f"{...}.<service>"
 SYSTEM_SERVICE = "system.service"

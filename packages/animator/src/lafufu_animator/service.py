@@ -136,6 +136,10 @@ class AnimatorService(BaseService):
             self._on_config_idle_animation,
         )
 
+        # Sync to DB on startup so idle_animation_enabled reflects admin's
+        # current value rather than the in-code default.
+        await self.request_config_snapshot()
+
         # Background tasks
         self._pose_publish_task = asyncio.create_task(self._pose_publish_loop())
         self._lipsync_watchdog_task = asyncio.create_task(self._lipsync_watchdog())

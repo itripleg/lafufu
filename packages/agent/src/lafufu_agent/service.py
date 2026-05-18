@@ -118,6 +118,20 @@ class AgentService(BaseService):
             self._on_config_control_name,
         )
 
+        # Mic auto-listen toggle — live-driven by the agent.auto_listen setting,
+        # so the admin UI can start/stop the mic loop without restarting agent.
+        await nats_helper.subscribe_model(
+            self.nats,
+            f"{topics.CONFIG_CHANGED}.agent.auto_listen",
+            schemas.ConfigChanged,
+            self._on_config_auto_listen,
+        )
+
+        # Sync to DB on startup so all the *.changed.* subscribers above receive
+        # the current admin-set values immediately, instead of waiting for the
+        # operator to toggle each one.
+        await self.request_config_snapshot()
+
         # Note: we do NOT auto-start the mic loop in tests (FakeMicForService blocks).
         # Real `main.py` calls start_mic_loop() explicitly after construction.
 
@@ -157,6 +171,20 @@ class AgentService(BaseService):
                 self.log.info("llm.model.warmed model=%s elapsed_s=%.1f", new_model, elapsed)
             except Exception as e:
                 self.log.warning("llm.model.warmup_failed model=%s error=%s", new_model, e)
+
+    async def _on_config_auto_listen(self, subject: str, msg: schemas.ConfigChanged) -> None:
+        v = msg.value
+        if isinstance(v, str):
+            v = v.lower() in ("true", "1", "yes", "on")
+        want = bool(v)
+        running = self._mic_loop_task is not None and not self._mic_loop_task.done()
+        if want and not running:
+            self.start_mic_loop()
+            self.log.info("mic_loop.started reason=config")
+        elif not want and running:
+            self._mic_loop_task.cancel()
+            self._mic_loop_task = None
+            self.log.info("mic_loop.stopped reason=config")
 
     async def _on_config_system_prompt(self, subject: str, msg: schemas.ConfigChanged) -> None:
         new_prompt = str(msg.value)

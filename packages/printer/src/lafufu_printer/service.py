@@ -69,6 +69,10 @@ class PrinterService(BaseService):
             self._on_config_auto_print,
         )
 
+        # Sync to DB on startup: control rebroadcasts every setting via
+        # config.changed.<key>, hitting the same subscriber above.
+        await self.request_config_snapshot()
+
     async def _on_config_auto_print(self, subject: str, msg: schemas.ConfigChanged) -> None:
         v = msg.value
         if isinstance(v, str):
