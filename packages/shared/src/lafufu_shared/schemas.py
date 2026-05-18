@@ -49,6 +49,13 @@ class AgentIntentTextMessage(BaseModel):
     text: str
 
 
+class AgentIntentSpeakText(BaseModel):
+    """Speak text directly via TTS, bypassing the LLM (raw passthrough)."""
+
+    text: str
+    emotion: Emotion = "neutral"
+
+
 # ----- Animator -----
 
 

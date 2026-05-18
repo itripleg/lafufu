@@ -19,4 +19,6 @@ export const api = {
   animatorPreview: (name: string, position: number) => req("POST", "/animator/preview", { name, position }),
   animatorExpression: (name: string, intensity = 1.0) => req("POST", "/animator/expression", { name, intensity }),
   agentTextMessage: (text: string) => req("POST", "/agent/text_message", { text }),
+  agentSpeakText: (text: string, emotion: string = "neutral") =>
+    req("POST", "/agent/speak_text", { text, emotion }),
 };

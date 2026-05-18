@@ -65,12 +65,20 @@ class AgentService(BaseService):
         )
         await self._publish_state("idle")
 
-        # Subscribe to text-message intent (headless input path)
+        # Subscribe to text-message intent (headless input path — text → LLM → TTS)
         await nats_helper.subscribe_model(
             self.nats,
             topics.AGENT_INTENT_TEXT_MESSAGE,
             schemas.AgentIntentTextMessage,
             self._on_text_message,
+        )
+
+        # Subscribe to speak-text intent (direct passthrough — text → TTS, skip LLM)
+        await nats_helper.subscribe_model(
+            self.nats,
+            topics.AGENT_INTENT_SPEAK_TEXT,
+            schemas.AgentIntentSpeakText,
+            self._on_speak_text,
         )
 
         # Speaker volume + ALSA routing — wired to settings so a slider in admin
@@ -143,6 +151,12 @@ class AgentService(BaseService):
                 self.nats, _OnceMic(msg.text), self._ollama, self._piper, self._speaker_play
             )
             await tmp.run_one_cycle()
+
+    async def _on_speak_text(self, subject: str, msg: schemas.AgentIntentSpeakText) -> None:
+        """Direct text-to-speech: skip LLM, play exactly what was sent."""
+        async with self._cycle_lock:
+            tmp = VoicePipeline(self.nats, None, self._ollama, self._piper, self._speaker_play)
+            await tmp.speak(msg.text, msg.emotion)
 
     def start_mic_loop(self) -> None:
         """Call from real main() after on_startup to begin listening continuously."""

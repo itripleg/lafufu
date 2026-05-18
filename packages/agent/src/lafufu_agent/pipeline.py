@@ -60,17 +60,25 @@ class VoicePipeline:
         from .emotion_parser import parse
 
         emotion, body = parse(reply_raw)
+
+        # ---- Speaking (also publishes agent.reply) ----
+        await self.speak(body, emotion)
+
+    async def speak(self, text: str, emotion: str = "neutral") -> None:
+        """Publish a reply event then synthesize + play TTS for the given text.
+
+        Used both by run_one_cycle (LLM-generated reply) and by the
+        speak_text intent (raw text passthrough, bypassing the LLM).
+        """
         await nats_helper.publish_model(
             self.nats,
             topics.AGENT_REPLY,
-            schemas.AgentReply(text=body, emotion=emotion),  # type: ignore[arg-type]
+            schemas.AgentReply(text=text, emotion=emotion),  # type: ignore[arg-type]
         )
-
-        # ---- Speaking ----
         await self._publish_state("speaking")
-        chunks = self.piper.synthesize(body)
+        chunks = self.piper.synthesize(text)
         start_ts = time.monotonic()
-        for _i, (audio_bytes, mouth_target) in enumerate(chunks):
+        for audio_bytes, mouth_target in chunks:
             if self.speaker_play:
                 self.speaker_play(audio_bytes)
             await nats_helper.publish_model(
@@ -82,5 +90,4 @@ class VoicePipeline:
                     mouth_target=mouth_target,
                 ),
             )
-
         await self._publish_state("idle")

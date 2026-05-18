@@ -16,6 +16,7 @@ AGENT_REPLY = "agent.reply"
 AGENT_TTS_RMS = "agent.tts.rms"
 AGENT_INTENT = "agent.intent"
 AGENT_INTENT_TEXT_MESSAGE = f"{AGENT_INTENT}.text_message"
+AGENT_INTENT_SPEAK_TEXT = f"{AGENT_INTENT}.speak_text"
 
 # Animator
 ANIMATOR_STATE = "animator.state"
