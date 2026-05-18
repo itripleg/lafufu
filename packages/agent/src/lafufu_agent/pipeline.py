@@ -78,9 +78,16 @@ class VoicePipeline:
         await self._publish_state("speaking")
         chunks = self.piper.synthesize(text)
         start_ts = time.monotonic()
+        # speaker_play may be a callable (legacy) or an _AplayPlayer with
+        # .play() and .end() methods. Detect and use the right interface.
+        play_fn = (
+            self.speaker_play.play
+            if self.speaker_play and hasattr(self.speaker_play, "play")
+            else self.speaker_play
+        )
         for audio_bytes, mouth_target in chunks:
-            if self.speaker_play:
-                self.speaker_play(audio_bytes)
+            if play_fn:
+                play_fn(audio_bytes)
             await nats_helper.publish_model(
                 self.nats,
                 topics.AGENT_TTS_RMS,
@@ -90,4 +97,7 @@ class VoicePipeline:
                     mouth_target=mouth_target,
                 ),
             )
+        # Tell the speaker the utterance is over so it can drain + close cleanly.
+        if self.speaker_play and hasattr(self.speaker_play, "end"):
+            self.speaker_play.end()
         await self._publish_state("idle")

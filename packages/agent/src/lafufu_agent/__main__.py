@@ -90,24 +90,76 @@ class RealMic:
         return self.whisper.transcribe(self.tmp_wav)
 
 
-def _aplay_player():
-    """Returns a callable(chunk_bytes) that streams to aplay (Pi only)."""
-    import subprocess
+class _AplayPlayer:
+    """Per-utterance aplay subprocess.
 
-    proc = None
+    Opens a fresh aplay on the first `play()` of an utterance, streams chunks
+    to its stdin, then `end()` closes the pipe so aplay drains and exits.
+    Avoids inter-utterance underruns (which were clipping the beginning of
+    each new reply because the previous aplay was in the middle of a stall).
 
-    def play(chunk: bytes) -> None:
-        nonlocal proc
-        if proc is None:
-            # Open aplay on first chunk; close in atexit
+    The pipeline calls play() per chunk and end() after the last chunk.
+    """
+
+    def __init__(self) -> None:
+        import subprocess
+
+        self._subprocess = subprocess
+        self._proc: subprocess.Popen | None = None
+
+    def play(self, chunk: bytes) -> None:
+        if not chunk:
+            return
+        if self._proc is None or self._proc.poll() is not None:
             device = os.environ.get("LAFUFU_APLAY_DEVICE", "default")
-            proc = subprocess.Popen(
-                ["aplay", "-q", "-D", device, "-f", "S16_LE", "-c", "1", "-r", "22050"],
-                stdin=subprocess.PIPE,
+            # --buffer-size + --period-size in frames at 22050Hz:
+            #   buffer 44100 = 2.0s ring; period 4410 = 0.2s chunks.
+            # Generous enough that brief synthesis pauses don't underrun.
+            self._proc = self._subprocess.Popen(
+                [
+                    "aplay",
+                    "-q",
+                    "-D",
+                    device,
+                    "-f",
+                    "S16_LE",
+                    "-c",
+                    "1",
+                    "-r",
+                    "22050",
+                    "--buffer-size=44100",
+                    "--period-size=4410",
+                ],
+                stdin=self._subprocess.PIPE,
             )
-        proc.stdin.write(chunk)
+        try:
+            self._proc.stdin.write(chunk)
+            self._proc.stdin.flush()
+        except (BrokenPipeError, ValueError):
+            # aplay died mid-utterance — reset for next call
+            self._proc = None
 
-    return play
+    def end(self) -> None:
+        """Close stdin so aplay drains its buffer + a final ~0.1s silence pad."""
+        if self._proc is None:
+            return
+        try:
+            # Append ~100ms of silence so aplay's last buffer flush carries the
+            # full utterance through the speaker without losing the tail samples.
+            silence_frames = int(22050 * 0.10)
+            self._proc.stdin.write(b"\x00\x00" * silence_frames)
+            self._proc.stdin.flush()
+            self._proc.stdin.close()
+        except (BrokenPipeError, ValueError):
+            pass
+        # Don't wait() — let the process finish in the background. Next play()
+        # call opens a fresh proc anyway.
+        self._proc = None
+
+
+def _aplay_player():
+    """Returns an _AplayPlayer instance. Pipeline calls .play(chunk) and .end()."""
+    return _AplayPlayer()
 
 
 def _env_bool(name: str, default: bool) -> bool:
