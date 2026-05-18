@@ -26,6 +26,8 @@ const SLIDER_HINTS: Record<string, { min: number; max: number; step?: number }> 
   "printer.feed_offset":       { min: -20,  max: 20,    step: 1     },
   "printer.rotate":            { min: 0,    max: 3,     step: 1     },
   "printer.scale_pct":         { min: 25,   max: 200,   step: 5     },
+  "printer.dead_zone_top_mm":  { min: 0,    max: 15,    step: 1     },
+  "printer.dead_zone_bottom_mm": { min: 0,  max: 15,    step: 1     },
 };
 
 const DYNAMIC_OPTIONS: Record<string, () => Promise<string[]>> = {

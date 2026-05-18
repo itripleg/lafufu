@@ -60,6 +60,10 @@ class PrinterService(BaseService):
         self.rotate: int = 0  # 0..3, 90deg steps
         self.scale_pct: int = 100
         self.lp_options: str = ""  # raw escape-hatch options
+        # Physical dead zones where the print head can't mark, in mm.
+        # Converted to pixels at print time based on DPI.
+        self.dead_zone_top_mm: int = 3
+        self.dead_zone_bottom_mm: int = 0
 
     def _build_lp_options(self) -> list[str]:
         """Compose structured positioning settings into a single lp arg list."""
@@ -136,6 +140,8 @@ class PrinterService(BaseService):
             ("printer.feed_offset", "feed_offset", int),
             ("printer.rotate", "rotate", int),
             ("printer.scale_pct", "scale_pct", int),
+            ("printer.dead_zone_top_mm", "dead_zone_top_mm", int),
+            ("printer.dead_zone_bottom_mm", "dead_zone_bottom_mm", int),
         ):
             await nats_helper.subscribe_model(
                 self.nats,
@@ -249,11 +255,15 @@ class PrinterService(BaseService):
             # we don't depend on CUPS fit-to-page. Falls back to driver scaling
             # if we don't know the media size.
             target_px = self._target_pixels()
+            dz_top_px = int(self.dead_zone_top_mm * _PRINTER_DPI / 25.4)
+            dz_bot_px = int(self.dead_zone_bottom_mm * _PRINTER_DPI / 25.4)
             job_id = self._cups.print_file(
                 path,
                 title=msg.title or path.name,
                 extra_lp_options=self._build_lp_options(),
                 target_size_px=target_px,
+                dead_zone_top_px=dz_top_px,
+                dead_zone_bottom_px=dz_bot_px,
             )
             await nats_helper.publish_model(
                 self.nats,

@@ -72,6 +72,8 @@ class CupsClient:
         title: str | None = None,
         extra_lp_options: list[str] | None = None,
         target_size_px: tuple[int, int] | None = None,
+        dead_zone_top_px: int = 0,
+        dead_zone_bottom_px: int = 0,
     ) -> str:
         """Print an image file by path.
 
@@ -89,7 +91,9 @@ class CupsClient:
 
         send_path = str(path)
         if target_size_px:
-            send_path = _prep_resized_copy(path, target_size_px)
+            send_path = _prep_resized_copy(
+                path, target_size_px, dead_zone_top_px, dead_zone_bottom_px
+            )
 
         cmd = [self._lp, "-d", printer]
         if title:
@@ -110,10 +114,17 @@ class CupsClient:
         return out.split()[3] if "request id is" in out else "?"
 
 
-def _prep_resized_copy(src_path, target_size_px: tuple[int, int]) -> str:
-    """Resize src to target_size_px (preserving aspect via fit-inside), write
-    to a sibling temp file, return its path. Centers any aspect-mismatch
-    margin against white so the printer ignores it."""
+def _prep_resized_copy(
+    src_path,
+    target_size_px: tuple[int, int],
+    dead_zone_top_px: int = 0,
+    dead_zone_bottom_px: int = 0,
+) -> str:
+    """Resize src to fit inside the printable area (target minus dead zones),
+    placed in the printable region of a target-sized canvas. Dead zones at
+    top/bottom are left as white — the printer can't reach those pixels
+    anyway, so anything we'd put there would be lost. Padding them
+    explicitly means we don't waste image content on unreachable area."""
     import tempfile
     from pathlib import Path
 
@@ -121,15 +132,29 @@ def _prep_resized_copy(src_path, target_size_px: tuple[int, int]) -> str:
 
     src = Path(src_path)
     tw, th = target_size_px
+    printable_h = max(1, th - dead_zone_top_px - dead_zone_bottom_px)
     im = Image.open(src).convert("RGB")
     iw, ih = im.size
-    # Aspect-preserving fit-inside.
-    scale = min(tw / iw, th / ih)
+    # Fit-inside the printable area (full width, reduced height).
+    scale = min(tw / iw, printable_h / ih)
     new_w, new_h = max(1, int(iw * scale)), max(1, int(ih * scale))
     resized = im.resize((new_w, new_h), Image.LANCZOS)
     canvas = Image.new("RGB", (tw, th), "white")
-    canvas.paste(resized, ((tw - new_w) // 2, (th - new_h) // 2))
+    # Center horizontally; vertically center inside the printable band.
+    x = (tw - new_w) // 2
+    y = dead_zone_top_px + (printable_h - new_h) // 2
+    canvas.paste(resized, (x, y))
     out = Path(tempfile.gettempdir()) / f"_lafufu_print_{src.stem}.png"
     canvas.save(out, "PNG")
-    log.info("lp.resize src=%s -> %s @ %dx%d", src.name, out, tw, th)
+    log.info(
+        "lp.resize src=%s -> %s @ %dx%d (printable %dx%d, top_dz=%d, bot_dz=%d)",
+        src.name,
+        out,
+        tw,
+        th,
+        tw,
+        printable_h,
+        dead_zone_top_px,
+        dead_zone_bottom_px,
+    )
     return str(out)

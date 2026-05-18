@@ -91,6 +91,18 @@ DEFAULTS: list[tuple[str, str, str, str]] = [
         "Phomemo rotation: 0=none, 1=90°, 2=180°, 3=270°.",
     ),
     (
+        "printer.dead_zone_top_mm",
+        "3",
+        "int",
+        "Physical dead zone at the TOP of each label where the print head can't reach (mm). Image content is pushed below this so nothing gets clipped. Phomemo 4x6 = ~3mm.",
+    ),
+    (
+        "printer.dead_zone_bottom_mm",
+        "0",
+        "int",
+        "Same as above but for the BOTTOM edge. Increase if the last lines of your print get cut off.",
+    ),
+    (
         "printer.scale_pct",
         "100",
         "int",
