@@ -81,6 +81,22 @@ class AgentService(BaseService):
             self._on_speak_text,
         )
 
+        # Live-switch LLM model when admin changes agent.llm_model setting.
+        await nats_helper.subscribe_model(
+            self.nats,
+            f"{topics.CONFIG_CHANGED}.agent.llm_model",
+            schemas.ConfigChanged,
+            self._on_config_llm_model,
+        )
+
+        # Live-update system prompt when admin changes it.
+        await nats_helper.subscribe_model(
+            self.nats,
+            f"{topics.CONFIG_CHANGED}.agent.system_prompt",
+            schemas.ConfigChanged,
+            self._on_config_system_prompt,
+        )
+
         # Speaker volume + ALSA routing — wired to settings so a slider in admin
         # can adjust playback volume live without restart.
         await nats_helper.subscribe_model(
@@ -124,6 +140,28 @@ class AgentService(BaseService):
     async def _on_config_control_name(self, subject: str, msg: schemas.ConfigChanged) -> None:
         self._speaker_control = str(msg.value)
         self.log.info("speaker.control.set value=%s", self._speaker_control)
+
+    async def _on_config_llm_model(self, subject: str, msg: schemas.ConfigChanged) -> None:
+        new_model = str(msg.value).strip()
+        if not new_model:
+            return
+        prev = getattr(self._ollama, "model", None)
+        if prev == new_model:
+            return
+        self._ollama.model = new_model
+        self.log.info("llm.model.switched from=%s to=%s", prev, new_model)
+        # Warm the new model so the next request doesn't pay cold-load.
+        if hasattr(self._ollama, "warmup"):
+            try:
+                elapsed = await self._ollama.warmup()
+                self.log.info("llm.model.warmed model=%s elapsed_s=%.1f", new_model, elapsed)
+            except Exception as e:
+                self.log.warning("llm.model.warmup_failed model=%s error=%s", new_model, e)
+
+    async def _on_config_system_prompt(self, subject: str, msg: schemas.ConfigChanged) -> None:
+        new_prompt = str(msg.value)
+        self._ollama.system_prompt = new_prompt
+        self.log.info("llm.system_prompt.updated chars=%d", len(new_prompt))
 
     async def on_shutdown(self) -> None:
         await self._publish_state("shutdown")
