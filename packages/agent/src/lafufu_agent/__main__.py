@@ -34,18 +34,27 @@ class RealMic:
     Port of the original monolith's `record_until_silence` pattern.
     """
 
-    SILENCE_THRESHOLD = 800
     SILENCE_TAIL_S = 1.5  # trailing silence that ends the utterance
     PRE_ROLL_S = 0.35  # audio kept BEFORE detected speech onset
     MAX_RECORD_S = 10.0  # hard cap on a single utterance
     MAX_WAIT_S = 30.0  # hard cap waiting for speech onset before giving up
     MIN_VOICED_CHUNKS = 5  # ignore sub-200ms blips (clicks, taps, brief sounds)
 
-    def __init__(self, whisper: Whisper, *, rate: int = 44100, chunk_ms: int = 40):
+    def __init__(
+        self,
+        whisper: Whisper,
+        *,
+        rate: int = 44100,
+        chunk_ms: int = 40,
+        silence_threshold: int = 800,
+    ):
         self.whisper = whisper
         self.rate = rate
         self.chunk_size = int(rate * chunk_ms / 1000)
         self.tmp_wav = Path("/tmp/lafufu_capture.wav")
+        # Live-tunable via admin UI (agent.silence_threshold). Higher = less
+        # sensitive to ambient noise. Default 800 matches the original monolith.
+        self.silence_threshold = silence_threshold
 
     def listen_once(self) -> str:
         import collections
@@ -92,7 +101,7 @@ class RealMic:
             while True:
                 data = stream.read(eff_chunk, exception_on_overflow=False)
                 rms = audio_rms_bytes(data)
-                loud = rms >= self.SILENCE_THRESHOLD
+                loud = rms >= self.silence_threshold
 
                 if not started:
                     pre_roll.append(data)

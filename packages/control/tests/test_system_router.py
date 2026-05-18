@@ -31,7 +31,7 @@ def test_restart_known_service(client_factory):
         r = client.post("/api/system/services/agent/restart")
     assert r.status_code == 200
     called_args = run_mock.call_args[0][0]
-    assert called_args == ["systemctl", "restart", "lafufu-agent"]
+    assert called_args == ["sudo", "-n", "systemctl", "restart", "lafufu-agent"]
     assert any(s == "system.service.restarting" for s, _ in published)
 
 

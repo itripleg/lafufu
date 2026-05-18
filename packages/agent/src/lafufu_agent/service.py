@@ -127,6 +127,15 @@ class AgentService(BaseService):
             self._on_config_auto_listen,
         )
 
+        # Mic RMS threshold — admin slider tunes how loud incoming audio must
+        # be to count as speech (vs ambient noise).
+        await nats_helper.subscribe_model(
+            self.nats,
+            f"{topics.CONFIG_CHANGED}.agent.silence_threshold",
+            schemas.ConfigChanged,
+            self._on_config_silence_threshold,
+        )
+
         # Sync to DB on startup so all the *.changed.* subscribers above receive
         # the current admin-set values immediately, instead of waiting for the
         # operator to toggle each one.
@@ -171,6 +180,16 @@ class AgentService(BaseService):
                 self.log.info("llm.model.warmed model=%s elapsed_s=%.1f", new_model, elapsed)
             except Exception as e:
                 self.log.warning("llm.model.warmup_failed model=%s error=%s", new_model, e)
+
+    async def _on_config_silence_threshold(self, subject: str, msg: schemas.ConfigChanged) -> None:
+        try:
+            value = int(msg.value)
+        except (TypeError, ValueError):
+            self.log.warning("silence_threshold.bad_value value=%r", msg.value)
+            return
+        if hasattr(self._mic, "silence_threshold"):
+            self._mic.silence_threshold = value
+            self.log.info("mic.silence_threshold.set value=%d", value)
 
     async def _on_config_auto_listen(self, subject: str, msg: schemas.ConfigChanged) -> None:
         v = msg.value
