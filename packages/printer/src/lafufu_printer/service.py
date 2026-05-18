@@ -61,6 +61,12 @@ class PrinterService(BaseService):
             schemas.AgentReply,
             self._on_test_page,
         )
+        await nats_helper.subscribe_model(
+            self.nats,
+            topics.PRINTER_INTENT_PRINT_FILE,
+            schemas.PrinterIntentPrintFile,
+            self._on_print_file,
+        )
         # Subscribe to live config changes so auto_print toggle takes effect without restart.
         await nats_helper.subscribe_model(
             self.nats,
@@ -129,3 +135,28 @@ class PrinterService(BaseService):
 
     async def _on_test_page(self, subject: str, msg: schemas.AgentReply) -> None:
         await self._publish_state()
+
+    async def _on_print_file(self, subject: str, msg: schemas.PrinterIntentPrintFile) -> None:
+        """Send an image file (e.g. the uploaded letterhead) directly to lp."""
+        from pathlib import Path
+
+        path = Path(msg.path)
+        if not path.exists():
+            await self._publish_state("error", detail=f"file not found: {msg.path}")
+            return
+        if not self._cups.default_printer():
+            await self._publish_state("offline")
+            return
+        await self._publish_state("printing")
+        try:
+            job_id = self._cups.print_file(path, title=msg.title or path.name)
+            await nats_helper.publish_model(
+                self.nats,
+                topics.PRINTER_EVENT_JOB_DONE,
+                schemas.PrinterEvent(event="job_done", job_id=job_id),
+            )
+        except Exception as e:
+            self.log.warning("print_file.failed error=%s", e)
+            await self._publish_state("error", detail=str(e))
+            return
+        await self._publish_state("idle")

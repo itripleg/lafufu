@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 
 router = APIRouter()
@@ -59,3 +59,17 @@ def delete_letterhead():
     if p.exists():
         p.unlink()
     return None
+
+
+@router.post("/print_letterhead", status_code=202)
+def print_letterhead(req: Request):
+    """Trigger a one-shot print of the currently uploaded letterhead."""
+    p = _letterhead_path()
+    if not p.exists():
+        raise HTTPException(
+            404, detail={"error_code": "no_letterhead", "message": "upload a letterhead first"}
+        )
+    req.app.state.nats_publish(
+        "printer.intent.print_file", {"path": str(p), "title": "lafufu letterhead"}
+    )
+    return {"ok": True, "path": str(p)}

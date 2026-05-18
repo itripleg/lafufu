@@ -113,6 +113,13 @@ class PrinterIntentPrintTranscript(BaseModel):
     transcript: list[dict[str, str]]
 
 
+class PrinterIntentPrintFile(BaseModel):
+    """Print an image file directly (e.g. the uploaded letterhead)."""
+
+    path: str
+    title: str | None = None
+
+
 class PrinterState(BaseModel):
     state: PrinterStateName
     detail: str | None = None

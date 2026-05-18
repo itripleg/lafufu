@@ -108,6 +108,24 @@ const LetterheadCard: Component = () => {
           {busy() ? "…" : hasImage() ? "replace" : "upload"}
         </button>
         <Show when={hasImage()}>
+          <button
+            class="btn btn--primary btn--micro"
+            onClick={async () => {
+              setBusy(true);
+              try {
+                await api.printLetterhead();
+                toast.ok("print sent", "queued on the default printer");
+              } catch (err: any) {
+                toast.err("print failed", err.message);
+              } finally {
+                setBusy(false);
+              }
+            }}
+            disabled={busy()}
+            title="Send the letterhead image to the printer"
+          >
+            print
+          </button>
           <button class="btn btn--ghost btn--micro" onClick={remove} disabled={busy()}>
             remove
           </button>

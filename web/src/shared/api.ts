@@ -45,4 +45,5 @@ export const api = {
     const r = await fetch(`${BASE}/printer/letterhead`, { method: "DELETE" });
     if (!r.ok && r.status !== 404) throw new Error(`delete letterhead: ${r.status}`);
   },
+  printLetterhead: () => req("POST", "/printer/print_letterhead"),
 };

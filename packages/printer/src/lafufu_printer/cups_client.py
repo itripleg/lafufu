@@ -62,6 +62,22 @@ class CupsClient:
         )
         if result.returncode != 0:
             raise CupsUnavailable(f"lp exited {result.returncode}: {result.stderr.decode()}")
-        # lp prints "request id is NAME-1234 (1 file(s))"
+        out = result.stdout.decode().strip()
+        return out.split()[3] if "request id is" in out else "?"
+
+    def print_file(self, path, *, title: str | None = None) -> str:
+        """Print an existing file (image / pdf / etc.) by path."""
+        if not self._lp:
+            raise CupsUnavailable("`lp` not on PATH")
+        printer = self.default_printer()
+        if not printer:
+            raise CupsUnavailable("no CUPS printers configured")
+        cmd = [self._lp, "-d", printer]
+        if title:
+            cmd += ["-t", title]
+        cmd.append(str(path))
+        result = subprocess.run(cmd, capture_output=True, timeout=30)
+        if result.returncode != 0:
+            raise CupsUnavailable(f"lp exited {result.returncode}: {result.stderr.decode()}")
         out = result.stdout.decode().strip()
         return out.split()[3] if "request id is" in out else "?"
