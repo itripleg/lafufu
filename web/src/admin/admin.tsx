@@ -15,7 +15,7 @@ const Admin: Component = () => {
 
   return (
     <div class="min-h-screen p-4 lg:p-6 max-w-[1600px] mx-auto">
-      <header class="flex items-center justify-between mb-4">
+      <header class="flex items-center justify-between mb-4 pb-3 border-b border-slate-800">
         <h1 class="text-2xl font-bold">
           Lafufu <span class="text-slate-500 font-normal text-base ml-2">admin</span>
         </h1>
@@ -23,45 +23,34 @@ const Admin: Component = () => {
       </header>
 
       {/*
-        Layout (lg+):
-        ┌─────────────────────────┬───────────────────────────┐
-        │ status rail (4 cols)    │ chat / interact (8 cols)  │
-        │  - services             │  - chat panel (tabs)      │
-        │  - live pose            │                           │
-        │  - expressions          │                           │
-        ├─────────────────────────┴───────────────────────────┤
-        │ servo sliders (4 cols)  │ settings (8 cols)         │
-        ├─────────────────────────────────────────────────────┤
-        │ system pulse (full)                                 │
-        └─────────────────────────────────────────────────────┘
+        Two-column flex layout: each column packs panels at their natural
+        height, no row-alignment constraints. Below the columns: chat + pulse
+        get full width since they're the wider/taller content.
+
+        LEFT  | RIGHT
+        ──────┼──────
+        srv   | pose
+        expr  | sliders
+        ──────┴──────
+              chat
+            settings
+              pulse
       */}
-      <div class="grid grid-cols-1 lg:grid-cols-12 gap-4">
-        {/* Status rail — at-a-glance overview */}
-        <div class="lg:col-span-4 flex flex-col gap-4">
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+        <div class="flex flex-col gap-4">
           <ServiceStatus nats={nats} />
-          <PoseView nats={nats} />
           <ExpressionButtons />
         </div>
-
-        {/* Primary interaction surface */}
-        <div class="lg:col-span-8 flex flex-col gap-4">
-          <ChatLog nats={nats} />
-        </div>
-
-        {/* Direct controls */}
-        <div class="lg:col-span-4">
+        <div class="flex flex-col gap-4">
+          <PoseView nats={nats} />
           <ServoSliders />
         </div>
+      </div>
 
-        {/* Configuration */}
-        <div class="lg:col-span-8">
-          <SettingsForm />
-        </div>
-
-        {/* Debug / observability */}
-        <div class="lg:col-span-12">
-          <SystemPulse nats={nats} />
-        </div>
+      <div class="flex flex-col gap-4">
+        <ChatLog nats={nats} />
+        <SettingsForm />
+        <SystemPulse nats={nats} />
       </div>
     </div>
   );
