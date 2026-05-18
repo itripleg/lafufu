@@ -134,18 +134,23 @@ export const SettingsForm: Component = () => {
     }
 
     if (row.value_type === "bool") {
-      const checked = () => row.value === "true" || row.value === "1";
+      // Tolerate either case from the server ("true"/"True"/"1") so legacy
+      // rows still render correctly.
+      const checked = () => /^(true|1|yes|on)$/i.test(row.value.trim());
       return (
         <label class="flex-1 flex items-center gap-2 text-sm cursor-pointer">
           <input
             type="checkbox"
-            class={`w-4 h-4 rounded border ${
-              dirty().has(row.key) ? "border-amber-500" : "border-slate-700"
-            }`}
+            class="w-4 h-4 rounded border border-slate-700"
             checked={checked()}
-            onChange={(e) => update(row.key, e.currentTarget.checked ? "true" : "false")}
+            onChange={(e) => {
+              const newVal = e.currentTarget.checked ? "true" : "false";
+              update(row.key, newVal);
+              // Binary toggles save immediately — no separate save click needed.
+              commit({ ...row, value: newVal });
+            }}
           />
-          <span class={dirty().has(row.key) ? "text-amber-300" : "text-slate-400"}>
+          <span class={savingKey() === row.key ? "text-amber-300" : "text-slate-400"}>
             {checked() ? "true" : "false"}
           </span>
         </label>

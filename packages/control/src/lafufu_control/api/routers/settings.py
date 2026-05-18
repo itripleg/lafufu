@@ -27,6 +27,15 @@ class SettingOut(BaseModel):
 def _encode(value: Any, vt: str) -> str:
     if vt == "json":
         return json.dumps(value)
+    if vt == "bool":
+        # Normalize to lowercase so the JS front-end's case-sensitive check
+        # (row.value === "true") matches; otherwise Python's str(True) = "True"
+        # which would render as unchecked in the bool widget.
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, str):
+            return "true" if value.strip().lower() in ("true", "1", "yes", "on") else "false"
+        return "true" if value else "false"
     return str(value)
 
 
