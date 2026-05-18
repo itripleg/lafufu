@@ -19,9 +19,10 @@ from PIL import Image, ImageDraw, ImageFont
 log = logging.getLogger(__name__)
 
 # Layout as fractions of letterhead size. Tuned for the lafufu card stock
-# (rabbit decoration takes the top ~30%, bottom decoration ~10%).
-_BODY_REGION_PCT = (0.08, 0.32, 0.92, 0.78)  # (left, top, right, bottom)
-_LUCKY_REGION_PCT = (0.08, 0.79, 0.92, 0.92)
+# (rabbit decoration takes the top ~30%, bottom decoration ~10%). Body uses
+# 90% of card width so longer lines breathe.
+_BODY_REGION_PCT = (0.05, 0.32, 0.95, 0.78)  # (left, top, right, bottom)
+_LUCKY_REGION_PCT = (0.05, 0.79, 0.95, 0.92)
 
 # Bundled fortune-card font — IM Fell English, a 17th-century revival serif
 # that matches the woodcut illustration on the lafufu letterhead. Shipped
