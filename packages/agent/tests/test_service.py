@@ -86,3 +86,24 @@ async def test_stt_backend_change_swaps_stt_instance(nats_server):
 
     svc._shutdown.set()
     await asyncio.wait_for(task, timeout=3)
+
+
+async def test_on_startup_warms_stt(nats_server):
+    """AgentService.on_startup() should call stt.warmup() so first utterance is fast."""
+    from lafufu_shared.testing import FakeWhisper
+
+    fake_stt = FakeWhisper()
+    svc = AgentService(
+        mic=FakeMicForService([]),
+        ollama=FakeOllama(),
+        piper=FakePiper(),
+        nats_url=nats_server,
+        stt=fake_stt,
+    )
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.5)
+
+    assert fake_stt.warmup_count == 1, "stt.warmup() should be called once during on_startup"
+
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)

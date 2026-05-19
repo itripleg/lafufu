@@ -73,6 +73,22 @@ class AgentService(BaseService):
                 self.log.info("ollama.warmed_up elapsed_s=%.1f", elapsed)
             except Exception as e:
                 self.log.warning("ollama.warmup.failed error=%s", e)
+
+        # Hot-warm STT in an executor — same idea as Ollama warmup. Done off
+        # the loop because whisper.load_model + a 0.5s dummy decode is blocking
+        # C code that would freeze NATS subscribers otherwise.
+        if self.stt is not None and hasattr(self.stt, "warmup"):
+            try:
+                loop = asyncio.get_running_loop()
+                elapsed = await loop.run_in_executor(None, self.stt.warmup)
+                self.log.info(
+                    "stt.warmed_up backend=%s elapsed_s=%.1f",
+                    getattr(self.stt, "backend_id", "?"),
+                    elapsed,
+                )
+            except Exception as e:
+                self.log.warning("stt.warmup.failed error=%s", e)
+
         self._pipeline = VoicePipeline(
             self.nats, self._mic, self._ollama, self._piper, self._speaker_play
         )
