@@ -84,7 +84,13 @@ def compose_fortune(
         _draw_centered_block(draw, lucky_text, lucky_font, lucky_box)
 
     if output_path is None:
-        output_path = Path(tempfile.gettempdir()) / "_lafufu_composed.png"
+        # Unique per-invocation so back-to-back composes don't race on a
+        # shared file while lp is still reading the previous one.
+        import os
+
+        fd, p = tempfile.mkstemp(prefix="lafufu_composed_", suffix=".png")
+        os.close(fd)
+        output_path = Path(p)
     img.save(output_path, "PNG")
     log.info(
         "composer.fortune body=%dch lucky=%s -> %s",

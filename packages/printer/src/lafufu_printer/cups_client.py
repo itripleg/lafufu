@@ -146,7 +146,13 @@ def _prep_resized_copy(
     x = (tw - new_w) // 2
     y = dead_zone_top_px
     canvas.paste(resized, (x, y))
-    out = Path(tempfile.gettempdir()) / f"_lafufu_print_{src.stem}.png"
+    # Unique temp filename so concurrent print jobs don't overwrite each
+    # other's intermediate file mid-read.
+    fd, out_path = tempfile.mkstemp(prefix=f"lafufu_print_{src.stem}_", suffix=".png")
+    import os
+
+    os.close(fd)
+    out = Path(out_path)
     canvas.save(out, "PNG")
     log.info(
         "lp.resize src=%s -> %s @ %dx%d (printable %dx%d, top_dz=%d, bot_dz=%d)",

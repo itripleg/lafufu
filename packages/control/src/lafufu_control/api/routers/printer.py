@@ -49,6 +49,23 @@ async def upload_letterhead(file: Annotated[UploadFile, File()]):
             413,
             detail={"error_code": "image_too_large", "message": f"image > {_MAX_BYTES} bytes"},
         )
+    # Validate the bytes ARE actually an image — a client can lie about
+    # Content-Type and ship anything. If we accept a bad upload it bricks
+    # the letterhead slot until the operator manually replaces it.
+    import io
+
+    from PIL import Image, UnidentifiedImageError
+
+    try:
+        Image.open(io.BytesIO(data)).verify()
+    except (UnidentifiedImageError, OSError, ValueError) as e:
+        raise HTTPException(
+            400,
+            detail={
+                "error_code": "bad_image_bytes",
+                "message": f"file is not a decodable image: {e}",
+            },
+        ) from e
     _data_dir().mkdir(parents=True, exist_ok=True)
     _letterhead_path().write_bytes(data)
     return {"ok": True, "size_bytes": len(data)}

@@ -108,12 +108,14 @@ class PrinterService(BaseService):
             schemas.PrinterIntentPrintTranscript,
             self._on_print_transcript,
         )
-        await nats_helper.subscribe_model(
-            self.nats,
-            topics.PRINTER_INTENT_TEST_PAGE,
-            schemas.AgentReply,
-            self._on_test_page,
-        )
+
+        # PRINTER_INTENT_TEST_PAGE accepts an empty body — use a raw NATS
+        # callback so we don't drop messages that don't happen to match an
+        # unrelated schema like AgentReply.
+        async def _on_test_page_raw(msg) -> None:
+            await self._publish_state()
+
+        await self.nats.subscribe(topics.PRINTER_INTENT_TEST_PAGE, cb=_on_test_page_raw)
         await nats_helper.subscribe_model(
             self.nats,
             topics.PRINTER_INTENT_PRINT_FILE,
@@ -241,9 +243,6 @@ class PrinterService(BaseService):
     ) -> None:
         await self._safe_print(format_transcript(msg.transcript), title="lafufu transcript")
 
-    async def _on_test_page(self, subject: str, msg: schemas.AgentReply) -> None:
-        await self._publish_state()
-
     async def _on_compose(self, subject: str, msg: schemas.PrinterIntentCompose) -> None:
         """Composite text onto the letterhead, then print the result."""
         from pathlib import Path
@@ -301,6 +300,7 @@ class PrinterService(BaseService):
         path = Path(msg.path)
         if not path.exists():
             await self._publish_state("error", detail=f"file not found: {msg.path}")
+            await self._publish_state("idle")
             return
         if not self._cups.default_printer():
             await self._publish_state("offline")
@@ -329,5 +329,6 @@ class PrinterService(BaseService):
         except Exception as e:
             self.log.warning("print_file.failed error=%s", e)
             await self._publish_state("error", detail=str(e))
+            await self._publish_state("idle")
             return
         await self._publish_state("idle")
