@@ -11,7 +11,8 @@ Group=lafufu
 WorkingDirectory=/srv/lafufu
 Environment=LAFUFU_NATS_URL=nats://localhost:4222
 Environment=LAFUFU_DATA_DIR=/var/lafufu
-Environment=LAFUFU_WHISPER_MODEL=tiny
+Environment=LAFUFU_WHISPER_MODEL=tiny.en
+Environment=LAFUFU_STT_BACKEND=openai-whisper
 Environment=LAFUFU_LLM_MODEL=qwen2.5:7b
 Environment=LAFUFU_OLLAMA_URL=http://localhost:11434
 Environment=LAFUFU_PIPER_MODEL=/srv/lafufu/models/lafufu_voice.onnx

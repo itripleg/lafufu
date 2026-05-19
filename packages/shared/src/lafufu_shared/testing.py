@@ -72,15 +72,34 @@ class FakeDxlBus:
 
 
 class FakeWhisper:
-    """Maps canned audio identifiers to canned transcripts."""
+    """Maps canned audio identifiers to canned transcripts. Implements SttProtocol shape.
 
-    def __init__(self, mapping: dict[str, str] | None = None) -> None:
+    Accepts either a numpy array (production interface) or a string (legacy
+    test-only interface where callers pass an identifier).
+    """
+
+    backend_id = "fake"
+    model_name = "fake"
+
+    def __init__(self, mapping: dict[str, str] | None = None, fixed_reply: str = "") -> None:
         self.mapping = mapping or {}
-        self.calls: list[str] = []
+        self.fixed_reply = fixed_reply
+        self.calls: list = []
+        self.warmup_count = 0
+        self.load_count = 0
 
-    def transcribe(self, audio_id: str) -> str:
-        self.calls.append(audio_id)
-        return self.mapping.get(audio_id, "")
+    def load(self) -> None:
+        self.load_count += 1
+
+    def warmup(self) -> float:
+        self.warmup_count += 1
+        return 0.0
+
+    def transcribe(self, audio) -> str:
+        self.calls.append(audio)
+        if isinstance(audio, str):
+            return self.mapping.get(audio, self.fixed_reply)
+        return self.fixed_reply
 
 
 class FakeOllama:
@@ -102,6 +121,9 @@ class FakeOllama:
 class FakePiper:
     """Returns canned audio bytes + RMS sequence."""
 
+    sample_rate = 22050
+    chunk_ms = 40
+
     def __init__(self, chunks: list[tuple[bytes, float]] | None = None) -> None:
         # list of (audio_bytes, rms) tuples
         self.chunks = chunks or [(b"\x00" * 1764, 0.0)]
@@ -110,3 +132,8 @@ class FakePiper:
     def synthesize(self, text: str) -> list[tuple[bytes, float]]:
         self.calls.append(text)
         return list(self.chunks)
+
+    def synthesize_stream(self, text: str):
+        """Yield canned chunks one at a time (matches real Piper streaming shape)."""
+        self.calls.append(text)
+        yield from self.chunks

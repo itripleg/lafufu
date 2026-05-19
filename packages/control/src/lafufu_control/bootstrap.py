@@ -46,6 +46,18 @@ DEFAULTS: list[tuple[str, str, str, str]] = [
         "str",
         "Ollama model name. Changing requires agent service restart.",
     ),
+    (
+        "agent.stt_backend",
+        "openai-whisper",
+        "str",
+        "Speech-to-text backend. 'openai-whisper' is the reference; 'faster-whisper' is CTranslate2-based and ~3-4x faster on the Pi. Switch live from the admin UI.",
+    ),
+    (
+        "agent.whisper_model",
+        "tiny.en",
+        "str",
+        "STT model name. For openai-whisper: tiny/base/small/medium/large (or .en variants). For faster-whisper: same names work. Changing live forces a reload on the next utterance.",
+    ),
     # Animator
     (
         "animator.idle_animation.enabled",

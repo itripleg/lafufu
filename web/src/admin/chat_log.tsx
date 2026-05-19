@@ -11,6 +11,8 @@ interface Entry {
   text: string;
   emotion?: string;
   ts: number;
+  /** Round-trip time (ms) from chat send to this reply. Only set on lafufu replies. */
+  elapsedMs?: number;
 }
 
 type Tab = "chat" | "speak";
@@ -18,6 +20,12 @@ type Tab = "chat" | "speak";
 const EMOTIONS = Object.keys(EMOTION_COLORS) as Emotion[];
 
 const DRAFT_INPUTS = "chat/inputs";
+
+/** Format a millisecond duration as a compact "1.2s" / "12s" string. */
+const fmtElapsed = (ms: number): string => {
+  const s = ms / 1000;
+  return s < 10 ? `${s.toFixed(1)}s` : `${Math.round(s)}s`;
+};
 
 const DEFAULT_PUPPET =
   "Hello! I'm Lafufu, a little mischievous creature. " +
@@ -33,10 +41,15 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
   const [speakInput, setSpeakInput] = createSignal(DEFAULT_PUPPET);
   const [speakEmotion, setSpeakEmotion] = createSignal<Emotion>("neutral");
   const [sending, setSending] = createSignal(false);
+  // Round-trip timer: set to Date.now() when a chat message is sent, cleared
+  // when its reply lands. nowTick drives the live counter while pending.
+  const [pendingSince, setPendingSince] = createSignal<number | null>(null);
+  const [nowTick, setNowTick] = createSignal(Date.now());
   let scrollEl!: HTMLDivElement;
 
   let unsubT: (() => void) | undefined;
   let unsubR: (() => void) | undefined;
+  let tickTimer: number | undefined;
 
   const appendDedup = (entry: Omit<Entry, "ts">) => {
     setEntries((e) => {
@@ -62,12 +75,25 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
     });
     unsubR = props.nats.subscribe("agent.reply", (f) => {
       const role: Entry["role"] = f.payload.source === "puppet" ? "puppet" : "lafufu";
-      appendDedup({ role, text: f.payload.text, emotion: f.payload.emotion });
+      // Stamp the round-trip time if this reply answers a pending chat send.
+      let elapsedMs: number | undefined;
+      const since = pendingSince();
+      if (role === "lafufu" && since !== null) {
+        elapsedMs = Date.now() - since;
+        setPendingSince(null);
+      }
+      appendDedup({ role, text: f.payload.text, emotion: f.payload.emotion, elapsedMs });
     });
+
+    // Tick the live round-trip counter ~10x/s while a reply is pending.
+    tickTimer = window.setInterval(() => {
+      if (pendingSince() !== null) setNowTick(Date.now());
+    }, 100);
   });
   onCleanup(() => {
     unsubT?.();
     unsubR?.();
+    if (tickTimer) clearInterval(tickTimer);
     // Persist inputs on unmount
     lsSet(DRAFT_INPUTS, {
       chat:    chatInput(),
@@ -81,12 +107,14 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
     if (!text || sending()) return;
     setSending(true);
     setChatInput("");
+    setPendingSince(Date.now()); // start the round-trip timer
     lsSet(DRAFT_INPUTS, { chat: "", speak: speakInput(), emotion: speakEmotion() });
     try {
       await api.agentTextMessage(text);
     } catch (err: any) {
       toast.err("chat failed", err.message);
       setChatInput(text); // restore so user can retry
+      setPendingSince(null); // send failed — cancel the timer
     } finally {
       setSending(false);
     }
@@ -234,6 +262,14 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
                     {EMOTION_GLYPH[e.emotion as Emotion]} {e.emotion}
                   </span>
                 </Show>
+                <Show when={e.elapsedMs !== undefined}>
+                  <span
+                    title="round-trip time: send to reply"
+                    style={{ color: "var(--c-stone)", "margin-left": "auto" }}
+                  >
+                    ⧗ {fmtElapsed(e.elapsedMs!)}
+                  </span>
+                </Show>
               </div>
               <div style={{ "white-space": "pre-wrap", "word-break": "break-word" }}>
                 {e.text}
@@ -241,7 +277,33 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
             </div>
           )}
         </For>
-        <Show when={entries().length === 0}>
+        <Show when={pendingSince()}>
+          {(since) => (
+            <div
+              style={{
+                "align-self": "flex-start",
+                "max-width": "82%",
+                padding: "8px 12px",
+                "border-radius": "14px 14px 14px 4px",
+                background: "rgba(149,176,122,0.10)",
+                border: "1px solid var(--c-edge)",
+                animation: "fade-up .3s cubic-bezier(.2,.7,.3,1.1) both",
+              }}
+            >
+              <span
+                class="f-mono"
+                style={{
+                  "font-size": "10px",
+                  color: "var(--c-moss)",
+                  "letter-spacing": ".05em",
+                }}
+              >
+                lafufu · thinking… ⧗ {fmtElapsed(nowTick() - since())}
+              </span>
+            </div>
+          )}
+        </Show>
+        <Show when={entries().length === 0 && pendingSince() === null}>
           <div
             style={{
               color: "var(--c-stone)",
