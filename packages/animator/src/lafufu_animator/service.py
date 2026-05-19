@@ -50,6 +50,11 @@ class AnimatorService(BaseService):
         # _stepper_loop eases current toward target at stepper_hz and writes.
         self._current_pose = pose.idle_pose()
         self._target_pose = pose.idle_pose()
+        # Per-servo idle-center overrides from settings (animator.<servo>.default).
+        # Empty = use the hardcoded constants in pose.idle_pose(). When the
+        # operator saves a slider in the admin UI, the new value lands here
+        # and any future call to _effective_idle_pose() picks it up.
+        self._idle_overrides: dict[str, int] = {}
         self._taus = taus or DEFAULT_TAUS
         self._stepper_dt = 1.0 / max(1.0, stepper_hz)
         self._has_u2d2 = True  # set False on disconnect
@@ -87,8 +92,9 @@ class AnimatorService(BaseService):
                 self.log.warning("dxl.torque.enable_failed error=%s", e)
                 self._has_u2d2 = False
 
-        # Seed current+target at idle and write once so the servos snap there
-        self._target_pose = pose.idle_pose()
+        # Seed current+target at idle and write once so the servos snap there.
+        # Overrides arrive shortly via the snapshot — handlers update target.
+        self._target_pose = self._effective_idle_pose()
         try:
             self._move_to_pose(self._target_pose)
         except OSError:
@@ -128,6 +134,17 @@ class AnimatorService(BaseService):
             self._on_agent_reply,
         )
 
+        # Per-servo idle defaults — operator-tunable via admin sliders.
+        # When a value arrives, store it AND update target_pose so the servo
+        # eases to the new center immediately.
+        for servo in ("head_lr", "head_ud", "eye", "jaw", "brow"):
+            await nats_helper.subscribe_model(
+                self.nats,
+                f"{topics.CONFIG_CHANGED}.animator.{servo}.default",
+                schemas.ConfigChanged,
+                self._make_idle_override_handler(servo),
+            )
+
         # Subscribe to settings changes so idle animation can be toggled live
         await nats_helper.subscribe_model(
             self.nats,
@@ -157,6 +174,30 @@ class AnimatorService(BaseService):
                 t.cancel()
         with contextlib.suppress(Exception):
             self._bus.disable_torque()
+
+    def _effective_idle_pose(self) -> schemas.AnimatorPose:
+        """Idle pose with any operator-saved per-servo defaults applied."""
+        base = pose.idle_pose()
+        if not self._idle_overrides:
+            return base
+        return base.model_copy(update=self._idle_overrides)
+
+    def _make_idle_override_handler(self, servo: str):
+        async def _h(subject: str, msg: schemas.ConfigChanged) -> None:
+            try:
+                value = int(msg.value)
+            except (TypeError, ValueError):
+                self.log.warning("animator.%s.default.bad_value value=%r", servo, msg.value)
+                return
+            clamped = pose.clamp_dxl(servo, value)
+            self._idle_overrides[servo] = clamped
+            # Move the target toward the new idle center so the change is
+            # visible right away — subsequent intents/expressions/idle anim
+            # will pick it up regardless via _effective_idle_pose().
+            await self._safe_apply(self._target_pose.model_copy(update={servo: clamped}))
+            self.log.info("animator.%s.default.set value=%d", servo, clamped)
+
+        return _h
 
     async def _on_config_idle_animation(self, subject: str, msg: schemas.ConfigChanged) -> None:
         # value may be bool, "true"/"false" str, or 0/1
@@ -258,7 +299,7 @@ class AnimatorService(BaseService):
     ) -> None:
         self._last_intent_mono = time.monotonic()
         offsets = expressions.get_offsets(msg.name, msg.intensity)
-        target = expressions.apply_offsets(pose.idle_pose(), offsets)
+        target = expressions.apply_offsets(self._effective_idle_pose(), offsets)
         await self._safe_apply(target)
         await nats_helper.publish_model(
             self.nats,
@@ -270,7 +311,7 @@ class AnimatorService(BaseService):
         """When agent emits a reply with an emotion, set the matching expression."""
         self._last_intent_mono = time.monotonic()
         offsets = expressions.get_offsets(msg.emotion, intensity=1.0)
-        target = expressions.apply_offsets(pose.idle_pose(), offsets)
+        target = expressions.apply_offsets(self._effective_idle_pose(), offsets)
         await self._safe_apply(target)
 
     async def _on_tts_rms(self, subject: str, msg: schemas.AgentTtsRms) -> None:
@@ -339,7 +380,7 @@ class AnimatorService(BaseService):
         TICK_DT = 0.05  # 20 Hz
 
         rng = random.Random()
-        idle = pose.idle_pose()
+        idle = self._effective_idle_pose()
         seg_end = 0.0
         seg_start = 0.0
         mode = "pause"

@@ -34,7 +34,6 @@ class RealMic:
     Port of the original monolith's `record_until_silence` pattern.
     """
 
-    SILENCE_TAIL_S = 1.5  # trailing silence that ends the utterance
     PRE_ROLL_S = 0.35  # audio kept BEFORE detected speech onset
     MAX_RECORD_S = 10.0  # hard cap on a single utterance
     MAX_WAIT_S = 30.0  # hard cap waiting for speech onset before giving up
@@ -47,6 +46,7 @@ class RealMic:
         rate: int = 44100,
         chunk_ms: int = 40,
         silence_threshold: int = 800,
+        silence_tail_s: float = 1.5,
     ):
         self.whisper = whisper
         self.rate = rate
@@ -55,6 +55,9 @@ class RealMic:
         # Live-tunable via admin UI (agent.silence_threshold). Higher = less
         # sensitive to ambient noise. Default 800 matches the original monolith.
         self.silence_threshold = silence_threshold
+        # Trailing silence (seconds) that ends an utterance. Live-tunable via
+        # agent.silence_seconds.
+        self.silence_tail_s = silence_tail_s
 
     def listen_once(self) -> str:
         import collections
@@ -76,7 +79,7 @@ class RealMic:
 
         eff_chunk = max(1, int(eff_rate * 0.04))
         chunks_per_s = eff_rate / eff_chunk
-        silence_chunks_end = int(self.SILENCE_TAIL_S * chunks_per_s)
+        silence_chunks_end = int(self.silence_tail_s * chunks_per_s)
         pre_roll_size = int(self.PRE_ROLL_S * chunks_per_s)
         max_chunks_recording = int(self.MAX_RECORD_S * chunks_per_s)
         max_chunks_waiting = int(self.MAX_WAIT_S * chunks_per_s)

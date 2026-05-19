@@ -135,6 +135,13 @@ class AgentService(BaseService):
             schemas.ConfigChanged,
             self._on_config_silence_threshold,
         )
+        # Silence tail — how long of a quiet stretch (seconds) ends an utterance.
+        await nats_helper.subscribe_model(
+            self.nats,
+            f"{topics.CONFIG_CHANGED}.agent.silence_seconds",
+            schemas.ConfigChanged,
+            self._on_config_silence_seconds,
+        )
 
         # Sync to DB on startup so all the *.changed.* subscribers above receive
         # the current admin-set values immediately, instead of waiting for the
@@ -190,6 +197,16 @@ class AgentService(BaseService):
         if hasattr(self._mic, "silence_threshold"):
             self._mic.silence_threshold = value
             self.log.info("mic.silence_threshold.set value=%d", value)
+
+    async def _on_config_silence_seconds(self, subject: str, msg: schemas.ConfigChanged) -> None:
+        try:
+            value = float(msg.value)
+        except (TypeError, ValueError):
+            self.log.warning("silence_seconds.bad_value value=%r", msg.value)
+            return
+        if hasattr(self._mic, "silence_tail_s"):
+            self._mic.silence_tail_s = value
+            self.log.info("mic.silence_tail_s.set value=%.2f", value)
 
     async def _on_config_auto_listen(self, subject: str, msg: schemas.ConfigChanged) -> None:
         v = msg.value
