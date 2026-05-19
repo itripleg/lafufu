@@ -22,6 +22,15 @@ def test_make_stt_unknown_backend_falls_back_to_openai_whisper():
     assert stt.backend_id == "openai-whisper"
 
 
+def test_make_stt_faster_whisper_falls_back_when_unavailable(monkeypatch):
+    """faster-whisper requested but not importable should silently fall back."""
+    import lafufu_agent.stt as stt_mod
+
+    monkeypatch.setattr(stt_mod, "_has_module", lambda name: False)
+    stt = stt_mod.make_stt("faster-whisper", model_name="tiny.en")
+    assert stt.backend_id == "openai-whisper"
+
+
 def test_make_stt_respects_explicit_backend():
     if not any(b["id"] == "faster-whisper" and b["available"] for b in available_backends()):
         pytest.skip("faster-whisper not installed")

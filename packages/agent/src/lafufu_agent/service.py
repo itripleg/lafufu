@@ -235,13 +235,22 @@ class AgentService(BaseService):
             return
         prev = self.stt
         self.stt = self._stt_factory(self._stt_backend, self._stt_model)
-        self.log.info(
-            "stt.rebuilt reason=%s backend=%s model=%s prev=%r",
-            reason,
-            self._stt_backend,
-            self._stt_model,
-            type(prev).__name__,
-        )
+        actual_backend = getattr(self.stt, "backend_id", self._stt_backend)
+        if actual_backend != self._stt_backend:
+            self.log.warning(
+                "stt.rebuilt.fallback requested=%s actual=%s model=%s — backend not installed?",
+                self._stt_backend,
+                actual_backend,
+                self._stt_model,
+            )
+        else:
+            self.log.info(
+                "stt.rebuilt reason=%s backend=%s model=%s prev=%r",
+                reason,
+                self._stt_backend,
+                self._stt_model,
+                type(prev).__name__,
+            )
         if hasattr(self._mic, "set_stt"):
             self._mic.set_stt(self.stt)
 
