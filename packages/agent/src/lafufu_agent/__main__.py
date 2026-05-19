@@ -171,23 +171,27 @@ class _AplayPlayer:
     Avoids inter-utterance underruns (which were clipping the beginning of
     each new reply because the previous aplay was in the middle of a stall).
 
+    Sample rate is set at construction so the aplay invocation matches the
+    Piper voice's native rate (no resample, no pitch shift).
+
     The pipeline calls play() per chunk and end() after the last chunk.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, sample_rate: int = 22050) -> None:
         import subprocess
 
         self._subprocess = subprocess
         self._proc: subprocess.Popen | None = None
+        self._sample_rate = int(sample_rate)
+        # Buffer ~2s, period ~0.2s, scaled to sample rate.
+        self._buffer_size = self._sample_rate * 2
+        self._period_size = self._sample_rate // 5
 
     def play(self, chunk: bytes) -> None:
         if not chunk:
             return
         if self._proc is None or self._proc.poll() is not None:
             device = os.environ.get("LAFUFU_APLAY_DEVICE", "default")
-            # --buffer-size + --period-size in frames at 22050Hz:
-            #   buffer 44100 = 2.0s ring; period 4410 = 0.2s chunks.
-            # Generous enough that brief synthesis pauses don't underrun.
             self._proc = self._subprocess.Popen(
                 [
                     "aplay",
@@ -199,9 +203,9 @@ class _AplayPlayer:
                     "-c",
                     "1",
                     "-r",
-                    "22050",
-                    "--buffer-size=44100",
-                    "--period-size=4410",
+                    str(self._sample_rate),
+                    f"--buffer-size={self._buffer_size}",
+                    f"--period-size={self._period_size}",
                 ],
                 stdin=self._subprocess.PIPE,
             )
@@ -219,7 +223,7 @@ class _AplayPlayer:
         try:
             # Append ~100ms of silence so aplay's last buffer flush carries the
             # full utterance through the speaker without losing the tail samples.
-            silence_frames = int(22050 * 0.10)
+            silence_frames = self._sample_rate // 10
             self._proc.stdin.write(b"\x00\x00" * silence_frames)
             self._proc.stdin.flush()
             self._proc.stdin.close()
@@ -228,11 +232,6 @@ class _AplayPlayer:
         # Don't wait() — let the process finish in the background. Next play()
         # call opens a fresh proc anyway.
         self._proc = None
-
-
-def _aplay_player():
-    """Returns an _AplayPlayer instance. Pipeline calls .play(chunk) and .end()."""
-    return _AplayPlayer()
 
 
 def main() -> None:
@@ -247,8 +246,9 @@ def main() -> None:
     stt = make_stt(stt_backend, model_name=whisper_model)
     ollama = Ollama(base_url=ollama_url, model=qwen_model, system_prompt=SYSTEM_PROMPT)
     piper = Piper(model_path=piper_model_path)
+    piper.load()  # populate sample_rate from the .onnx config
     mic = RealMic(stt=stt)
-    player = _aplay_player()
+    player = _AplayPlayer(sample_rate=piper.sample_rate)
 
     # Mic loop is started/stopped by the config.changed.agent.auto_listen
     # subscriber inside AgentService — driven by the DB setting via the

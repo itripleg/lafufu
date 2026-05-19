@@ -65,3 +65,36 @@ async def test_pipeline_one_cycle_publishes_all_state_transitions(nats_server):
 
     # Expected RMS chunks
     assert len(rms_events) == 4
+
+
+def test_aplay_player_uses_dynamic_sample_rate(monkeypatch):
+    """_AplayPlayer should invoke aplay with the rate it was constructed with."""
+    from lafufu_agent.__main__ import _AplayPlayer
+
+    invocations: list[list[str]] = []
+
+    class _FakePopen:
+        def __init__(self, argv, **kwargs):
+            invocations.append(argv)
+            self.stdin = type(
+                "S",
+                (),
+                {
+                    "write": lambda self, b: None,
+                    "flush": lambda self: None,
+                    "close": lambda self: None,
+                },
+            )()
+
+        def poll(self):
+            return None
+
+    import subprocess as _sp
+
+    monkeypatch.setattr(_sp, "Popen", _FakePopen)
+
+    player = _AplayPlayer(sample_rate=16000)
+    player.play(b"\x00\x00" * 100)
+    assert any("16000" in argv for argv in invocations), (
+        f"aplay must use the passed sample rate; got {invocations}"
+    )
