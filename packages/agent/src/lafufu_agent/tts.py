@@ -43,7 +43,10 @@ class Piper:
         if self._voice is None:
             self.load()
 
-        import audioop  # lazy; audioop-lts on Python 3.13+
+        try:
+            import audioop
+        except ModuleNotFoundError:
+            import audioop_lts as audioop
 
         bytes_per_sample = self._sample_width
         samples_per_chunk = int(self._sample_rate * self.chunk_ms / 1000)

@@ -184,6 +184,8 @@ async def test_pipeline_streams_first_chunk_before_synth_finishes(nats_server):
         speaker_play=_record_play,
     )
 
+    # NOTE: t_start includes mic + LLM stub time (both near-instant with fakes).
+    # The 250ms budget below has ~150ms slack over the ~100ms first-synth-chunk.
     t_start = _time.monotonic()
     await pipeline.run_one_cycle()
     await nc.drain()
@@ -195,3 +197,61 @@ async def test_pipeline_streams_first_chunk_before_synth_finishes(nats_server):
     assert first_chunk_latency < 0.25, (
         f"first chunk latency {first_chunk_latency:.3f}s exceeds budget — synth was buffered"
     )
+
+
+async def test_speak_recovers_when_playback_raises(nats_server):
+    """If play_fn raises mid-stream, speak() must not deadlock and must still
+    end the speaker + return to idle state."""
+    import nats
+
+    class _ManyChunkPiper:
+        sample_rate = 22050
+        chunk_ms = 40
+
+        def synthesize_stream(self, text):
+            # More chunks than the queue maxsize (8) so the producer thread
+            # will be blocked on a full queue when the consumer aborts.
+            for _i in range(40):
+                yield (b"\x00" * 1764, 0.5)
+
+        def synthesize(self, text):
+            return list(self.synthesize_stream(text))
+
+    class _ExplodingSpeaker:
+        def __init__(self):
+            self.ended = False
+
+        def play(self, chunk):
+            raise RuntimeError("speaker exploded")
+
+        def end(self):
+            self.ended = True
+
+    nc = await nats.connect(nats_server)
+    states: list[str] = []
+
+    async def cb_state(msg):
+        states.append(msg.subject.rsplit(".", 1)[-1])
+
+    await nc.subscribe(f"{topics.AGENT_STATE}.*", cb=cb_state)
+
+    speaker = _ExplodingSpeaker()
+    pipeline = VoicePipeline(
+        nats_client=nc,
+        mic=FakeMic(),
+        ollama=FakeOllama(scripts=[("hello", "[neutral]\nhi")]),
+        piper=_ManyChunkPiper(),
+        speaker_play=speaker,
+    )
+
+    # speak() should raise the RuntimeError (not hang), and cleanup must run.
+    import pytest
+
+    with pytest.raises(RuntimeError, match="speaker exploded"):
+        await asyncio.wait_for(pipeline.speak("hi"), timeout=5.0)
+
+    await asyncio.sleep(0.1)
+    await nc.drain()
+
+    assert speaker.ended, "speaker.end() must run even when playback raises"
+    assert "idle" in states, "state must return to idle even when playback raises"

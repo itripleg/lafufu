@@ -5,6 +5,7 @@ Decoupled from concrete mic/Whisper/Ollama/Piper — uses Protocol-style duck ty
 
 import asyncio
 import logging
+import threading
 import time
 from typing import Protocol
 
@@ -99,10 +100,12 @@ class VoicePipeline:
         start_ts = time.monotonic()
         next_tick = time.monotonic()
 
-        # Stream synth in an executor — we pull chunks one at a time via a
-        # bounded queue so blocking generator iteration doesn't freeze the loop.
+        # Stream synth in an executor — chunks arrive via a bounded queue so
+        # blocking generator iteration doesn't freeze the loop. `cancelled`
+        # lets us stop the producer if the consumer aborts early.
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[tuple[bytes, float] | None] = asyncio.Queue(maxsize=8)
+        cancelled = threading.Event()
 
         def _produce():
             try:
@@ -112,38 +115,54 @@ class VoicePipeline:
                     else iter(self.piper.synthesize(text))
                 )
                 for item in gen:
+                    if cancelled.is_set():
+                        break
                     asyncio.run_coroutine_threadsafe(queue.put(item), loop).result()
             finally:
                 asyncio.run_coroutine_threadsafe(queue.put(None), loop).result()
 
-        producer_fut = loop.run_in_executor(None, _produce)
-
         try:
-            while True:
-                item = await queue.get()
-                if item is None:
-                    break
-                audio_bytes, mouth_target = item
-                if play_fn:
-                    play_fn(audio_bytes)
-                await nats_helper.publish_model(
-                    self.nats,
-                    topics.AGENT_TTS_RMS,
-                    schemas.AgentTtsRms(
-                        ts=time.monotonic() - start_ts,
-                        rms=mouth_target,
-                        mouth_target=mouth_target,
-                    ),
-                )
-                # Sleep until the next chunk's wall-clock slot so we don't drift.
-                next_tick += chunk_dt
-                sleep_for = next_tick - time.monotonic()
-                if sleep_for > 0:
-                    await asyncio.sleep(sleep_for)
+            producer_fut = loop.run_in_executor(None, _produce)
+            try:
+                while True:
+                    item = await queue.get()
+                    if item is None:
+                        break
+                    audio_bytes, mouth_target = item
+                    if play_fn:
+                        play_fn(audio_bytes)
+                    await nats_helper.publish_model(
+                        self.nats,
+                        topics.AGENT_TTS_RMS,
+                        schemas.AgentTtsRms(
+                            ts=time.monotonic() - start_ts,
+                            rms=mouth_target,
+                            mouth_target=mouth_target,
+                        ),
+                    )
+                    # Sleep until the next chunk's wall-clock slot so we don't drift.
+                    next_tick += chunk_dt
+                    sleep_for = next_tick - time.monotonic()
+                    if sleep_for > 0:
+                        await asyncio.sleep(sleep_for)
+            finally:
+                # Signal the producer to stop, then drain the queue so any
+                # pending put() coroutine can complete — without this, a
+                # producer thread blocked on a full queue would hang the
+                # `await producer_fut` below forever.
+                cancelled.set()
+                while True:
+                    try:
+                        drained = queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                    if drained is None:
+                        break
+                await producer_fut
         finally:
-            await producer_fut
-
-        # Tell the speaker the utterance is over so it can drain + close cleanly.
-        if self.speaker_play and hasattr(self.speaker_play, "end"):
-            self.speaker_play.end()
-        await self._publish_state("idle")
+            # Always close the speaker + return to idle, even if playback
+            # raised — otherwise the aplay subprocess leaks and the agent
+            # state is stuck on "speaking".
+            if self.speaker_play and hasattr(self.speaker_play, "end"):
+                self.speaker_play.end()
+            await self._publish_state("idle")
