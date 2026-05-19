@@ -401,6 +401,10 @@ class AnimatorService(BaseService):
                     else:
                         if now >= seg_end:
                             seg_start = now
+                            # Re-read the idle center each segment so saved
+                            # animator.<servo>.default settings actually take
+                            # effect without restarting the service.
+                            idle = self._effective_idle_pose()
                             if rng.random() < IDLE_PAUSE_CHANCE:
                                 mode = "pause"
                                 seg_end = now + rng.uniform(*IDLE_PAUSE)

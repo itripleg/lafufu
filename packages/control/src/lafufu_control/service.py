@@ -134,10 +134,24 @@ class ControlService(BaseService):
 
         # Rebroadcast every setting as config.changed.<key> on demand. Services
         # publish CONFIG_SNAPSHOT_REQUEST on their own startup so they sync to
-        # the DB instead of drifting from env defaults (e.g. printer's auto_print
-        # would otherwise stay 'true' from env even when DB has it set to false).
+        # the DB instead of drifting from env defaults.
+        #
+        # Coalesce: if 4 services boot within ~100ms of each other (cold-boot
+        # case), we'd otherwise fire 4 full rebroadcasts back-to-back. The
+        # coalesce window debounces them into a single broadcast — every
+        # subscribed service still receives the result.
+        self._snapshot_pending = False
+        SNAPSHOT_COALESCE_S = 0.15
+
         async def on_snapshot_request(_msg) -> None:
-            await self._rebroadcast_all_settings(engine)
+            if self._snapshot_pending:
+                return
+            self._snapshot_pending = True
+            try:
+                await asyncio.sleep(SNAPSHOT_COALESCE_S)
+                await self._rebroadcast_all_settings(engine)
+            finally:
+                self._snapshot_pending = False
 
         await self.nats.subscribe(topics.CONFIG_SNAPSHOT_REQUEST, cb=on_snapshot_request)
         # Also rebroadcast on control's own startup, in case other services are

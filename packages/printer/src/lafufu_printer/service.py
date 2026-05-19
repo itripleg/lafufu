@@ -1,5 +1,7 @@
 """PrinterService: auto-prints replies (when enabled) and handles on-demand intents."""
 
+import asyncio
+import contextlib
 import logging
 import os
 from datetime import datetime
@@ -246,7 +248,9 @@ class PrinterService(BaseService):
             return
         await self._publish_state("printing")
         try:
-            job_id = self._cups.print_text(text, title=title)
+            # lp subprocess is blocking — off-thread so we don't stall the
+            # event loop for the duration of the print.
+            job_id = await asyncio.to_thread(self._cups.print_text, text, title=title)
             await nats_helper.publish_model(
                 self.nats,
                 topics.PRINTER_EVENT_JOB_DONE,
@@ -294,7 +298,11 @@ class PrinterService(BaseService):
             await self._publish_state("offline")
             return
         try:
-            composed = compose_fortune(
+            # PIL composition is CPU-bound (~200ms-2s on a Pi for full card).
+            # Run in a worker thread so heartbeats + other NATS handlers
+            # don't stall on the event loop while we draw.
+            composed = await asyncio.to_thread(
+                compose_fortune,
                 lh,
                 body_text=msg.text,
                 lucky_subway_stop=msg.lucky_subway_stop,
@@ -310,7 +318,10 @@ class PrinterService(BaseService):
             target_px = self._target_pixels()
             dz_top_px = int(self.dead_zone_top_mm * _PRINTER_DPI / 25.4)
             dz_bot_px = int(self.dead_zone_bottom_mm * _PRINTER_DPI / 25.4)
-            job_id = self._cups.print_file(
+            # PIL resize + lp subprocess (potentially 30s timeout) — also
+            # off-thread so the event loop stays responsive.
+            job_id = await asyncio.to_thread(
+                self._cups.print_file,
                 composed,
                 title=msg.title or "lafufu fortune",
                 extra_lp_options=self._build_lp_options(),
@@ -328,6 +339,12 @@ class PrinterService(BaseService):
             await self._publish_state("error", detail=str(e))
             await self._publish_state("idle")
             return
+        finally:
+            # Clean up the composed temp file regardless of outcome so /tmp
+            # doesn't fill with stale fortune PNGs over the printer's lifetime.
+            if composed is not None:
+                with contextlib.suppress(OSError):
+                    composed.unlink(missing_ok=True)
         await self._publish_state("idle")
 
     async def _on_print_file(self, subject: str, msg: schemas.PrinterIntentPrintFile) -> None:
@@ -354,7 +371,10 @@ class PrinterService(BaseService):
             target_px = self._target_pixels()
             dz_top_px = int(self.dead_zone_top_mm * _PRINTER_DPI / 25.4)
             dz_bot_px = int(self.dead_zone_bottom_mm * _PRINTER_DPI / 25.4)
-            job_id = self._cups.print_file(
+            # Off-thread: PIL resize + lp subprocess (up to 30s) would stall
+            # heartbeats and config events otherwise.
+            job_id = await asyncio.to_thread(
+                self._cups.print_file,
                 path,
                 title=msg.title or path.name,
                 extra_lp_options=self._build_lp_options(),

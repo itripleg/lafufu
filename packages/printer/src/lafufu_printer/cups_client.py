@@ -1,5 +1,6 @@
 """CUPS print client. Shells out to `lp` for simplicity / no native deps."""
 
+import contextlib
 import logging
 import shutil
 import subprocess
@@ -90,10 +91,12 @@ class CupsClient:
             raise CupsUnavailable("no CUPS printers configured")
 
         send_path = str(path)
+        resized_temp: str | None = None
         if target_size_px:
             send_path = _prep_resized_copy(
                 path, target_size_px, dead_zone_top_px, dead_zone_bottom_px
             )
+            resized_temp = send_path  # remember so we can clean up after lp
 
         cmd = [self._lp, "-d", printer]
         if title:
@@ -107,7 +110,15 @@ class CupsClient:
             cmd += extra_lp_options
         cmd.append(send_path)
         log.info("lp.exec cmd=%s", " ".join(cmd))
-        result = subprocess.run(cmd, capture_output=True, timeout=30)
+        try:
+            result = subprocess.run(cmd, capture_output=True, timeout=30)
+        finally:
+            # Don't accumulate per-print temp files in /tmp.
+            if resized_temp:
+                import os as _os
+
+                with contextlib.suppress(OSError):
+                    _os.unlink(resized_temp)
         if result.returncode != 0:
             raise CupsUnavailable(f"lp exited {result.returncode}: {result.stderr.decode()}")
         out = result.stdout.decode().strip()

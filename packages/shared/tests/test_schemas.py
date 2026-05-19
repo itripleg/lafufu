@@ -35,3 +35,43 @@ def test_agent_tts_rms_required_fields():
 def test_system_heartbeat_has_service():
     h = schemas.SystemHeartbeat(service="agent", ts=1.0, uptime_s=10.0)
     assert h.service == "agent"
+
+
+# ─── Input bounds (defense in depth + DoS protection) ──────────────────────
+
+
+def test_agent_text_message_caps_length():
+    """A 10MB text message would OOM Ollama on a Pi. Schema should reject."""
+    schemas.AgentIntentTextMessage(text="hello")  # ok
+    with pytest.raises(ValidationError):
+        schemas.AgentIntentTextMessage(text="x" * 10_000_000)
+
+
+def test_agent_speak_text_caps_length():
+    schemas.AgentIntentSpeakText(text="ok")  # ok
+    with pytest.raises(ValidationError):
+        schemas.AgentIntentSpeakText(text="x" * 10_000_000)
+
+
+def test_printer_intent_print_text_caps_length():
+    schemas.PrinterIntentPrintText(text="ok")  # ok
+    with pytest.raises(ValidationError):
+        schemas.PrinterIntentPrintText(text="x" * 10_000_000)
+
+
+def test_animator_intent_preview_bounds():
+    """DXL positions are 0..4095. Out-of-band values were accepted unbounded
+    and only clamped downstream; defense-in-depth bounds catch them earlier."""
+    schemas.AnimatorIntentPreview(name="jaw", position=2000)  # ok
+    with pytest.raises(ValidationError):
+        schemas.AnimatorIntentPreview(name="jaw", position=-1)
+    with pytest.raises(ValidationError):
+        schemas.AnimatorIntentPreview(name="jaw", position=10_000)
+
+
+def test_animator_pose_bounds():
+    schemas.AnimatorPose(head_lr=2063, head_ud=3082, eye=2045, jaw=1728, brow=2075)  # ok
+    with pytest.raises(ValidationError):
+        schemas.AnimatorPose(head_lr=-5, head_ud=3082, eye=2045, jaw=1728, brow=2075)
+    with pytest.raises(ValidationError):
+        schemas.AnimatorPose(head_lr=2063, head_ud=99999, eye=2045, jaw=1728, brow=2075)

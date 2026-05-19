@@ -49,26 +49,39 @@ class AgentTtsRms(BaseModel):
     mouth_target: float = Field(ge=0.0, le=1.0)
 
 
+# Text-field cap. Generous enough for any reasonable chat / TTS line; tight
+# enough that a misbehaving (or accidentally-pasted) megabyte payload doesn't
+# OOM Ollama / Piper on a Pi.
+_TEXT_MAX = 4096
+
+
 class AgentIntentTextMessage(BaseModel):
-    text: str
+    text: str = Field(max_length=_TEXT_MAX)
 
 
 class AgentIntentSpeakText(BaseModel):
     """Speak text directly via TTS, bypassing the LLM (raw passthrough)."""
 
-    text: str
+    text: str = Field(max_length=_TEXT_MAX)
     emotion: Emotion = "neutral"
 
 
 # ----- Animator -----
 
 
+# DXL servo positions span the 12-bit range 0..4095. Bounds catch garbage
+# values at parse time; the animator service still clamps to per-servo
+# calibrated ranges before writing to the bus.
+_DXL_MIN = 0
+_DXL_MAX = 4095
+
+
 class AnimatorPose(BaseModel):
-    head_lr: int
-    head_ud: int
-    eye: int
-    jaw: int
-    brow: int
+    head_lr: int = Field(ge=_DXL_MIN, le=_DXL_MAX)
+    head_ud: int = Field(ge=_DXL_MIN, le=_DXL_MAX)
+    eye: int = Field(ge=_DXL_MIN, le=_DXL_MAX)
+    jaw: int = Field(ge=_DXL_MIN, le=_DXL_MAX)
+    brow: int = Field(ge=_DXL_MIN, le=_DXL_MAX)
 
 
 class AnimatorState(BaseModel):
@@ -84,7 +97,7 @@ class AnimatorIntentSetPose(BaseModel):
 
 class AnimatorIntentPreview(BaseModel):
     name: ServoName
-    position: int
+    position: int = Field(ge=_DXL_MIN, le=_DXL_MAX)
 
 
 class AnimatorIntentPlayExpression(BaseModel):
@@ -105,8 +118,8 @@ class AnimatorEvent(BaseModel):
 
 
 class PrinterIntentPrintText(BaseModel):
-    text: str
-    title: str | None = None
+    text: str = Field(max_length=_TEXT_MAX)
+    title: str | None = Field(default=None, max_length=256)
 
 
 class PrinterIntentPrintTranscript(BaseModel):
@@ -124,11 +137,11 @@ class PrinterIntentCompose(BaseModel):
     """Composite text (fortune-card style) onto the uploaded letterhead
     and print the result."""
 
-    letterhead_path: str
-    text: str
-    lucky_subway_stop: str | None = None
-    lucky_numbers: list[int] | None = None
-    title: str | None = None
+    letterhead_path: str = Field(max_length=512)
+    text: str = Field(max_length=_TEXT_MAX)
+    lucky_subway_stop: str | None = Field(default=None, max_length=128)
+    lucky_numbers: list[int] | None = Field(default=None, max_length=10)
+    title: str | None = Field(default=None, max_length=256)
 
 
 class PrinterState(BaseModel):
