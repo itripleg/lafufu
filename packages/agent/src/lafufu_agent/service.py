@@ -51,8 +51,11 @@ class AgentService(BaseService):
         self._nats_url = nats_url
         self.stt = stt
         self._stt_factory = stt_factory
-        self._stt_backend = "openai-whisper"
-        self._stt_model = "tiny.en"
+        # Seed from the injected stt so a config snapshot that matches the
+        # env-configured backend doesn't trigger a redundant rebuild — which
+        # would discard the already-warmed instance for a cold one.
+        self._stt_backend = getattr(stt, "backend_id", "openai-whisper")
+        self._stt_model = getattr(stt, "model_name", "tiny.en")
         self._pipeline: VoicePipeline | None = None
         self._cycle_lock = asyncio.Lock()
         self._mic_loop_task: asyncio.Task | None = None
