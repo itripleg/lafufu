@@ -1,4 +1,5 @@
 import { Component, createSignal, onMount, For, Show, createMemo, onCleanup } from "solid-js";
+import { createStore, reconcile } from "solid-js/store";
 import { api } from "../shared/api";
 import { lsGet, lsRemove, lsSet, lsKeys } from "../shared/local_storage";
 import { toast } from "../shared/toast";
@@ -408,7 +409,11 @@ interface Props {
 }
 
 export const SettingsForm: Component<Props> = (props) => {
-  const [rows, setRows] = createSignal<Row[]>([]);
+  // Stored as a store (not signal) so granular property updates don't change
+  // row identity. <For> reconciles by reference; a fresh object on every
+  // keystroke would destroy and rebuild the row's DOM — that's what made
+  // number inputs lose focus / refuse input mid-typing.
+  const [rows, setRows] = createStore<Row[]>([]);
   const [savingKey, setSavingKey] = createSignal<string | null>(null);
   const [dynamicOptions, setDynamicOptions] = createSignal<Record<string, string[]>>({});
   const [filter, setFilter] = createSignal("");
@@ -421,7 +426,7 @@ export const SettingsForm: Component<Props> = (props) => {
   };
 
   const isDirty = (r: Row) => r.value !== r.serverValue;
-  const dirtyCount = createMemo(() => rows().filter(isDirty).length);
+  const dirtyCount = createMemo(() => rows.filter(isDirty).length);
 
   const reload = async () => {
     const [data, defaults] = await Promise.all([
@@ -442,7 +447,9 @@ export const SettingsForm: Component<Props> = (props) => {
         factoryDefault: factoryMap.get(row.key),
       };
     });
-    setRows(hydrated);
+    // reconcile keys per-row so existing row proxies stay identity-stable —
+    // otherwise <For> would tear down every row on each /api/settings poll.
+    setRows(reconcile(hydrated, { key: "key", merge: false }));
     notifyDrafts();
   };
 
@@ -464,14 +471,11 @@ export const SettingsForm: Component<Props> = (props) => {
 
   /** Update in-memory + persist to localStorage. */
   const update = (key: string, newValue: string) => {
-    setRows((rs) =>
-      rs.map((r) => {
-        if (r.key !== key) return r;
-        if (newValue === r.serverValue) lsRemove(DRAFT_PREFIX + key);
-        else lsSet(DRAFT_PREFIX + key, newValue);
-        return { ...r, value: newValue };
-      }),
-    );
+    const idx = rows.findIndex((r) => r.key === key);
+    if (idx < 0) return;
+    if (newValue === rows[idx].serverValue) lsRemove(DRAFT_PREFIX + key);
+    else lsSet(DRAFT_PREFIX + key, newValue);
+    setRows(idx, "value", newValue);
     notifyDrafts();
   };
 
@@ -492,9 +496,8 @@ export const SettingsForm: Component<Props> = (props) => {
         value: parseValue(row),
         value_type: row.value_type,
       });
-      setRows((rs) =>
-        rs.map((r) => (r.key === row.key ? { ...r, serverValue: r.value } : r)),
-      );
+      const idx = rows.findIndex((r) => r.key === row.key);
+      if (idx >= 0) setRows(idx, "serverValue", rows[idx].value);
       lsRemove(DRAFT_PREFIX + row.key);
       notifyDrafts();
       toast.ok(`saved ${row.key}`, `value = ${row.value}`);
@@ -506,9 +509,8 @@ export const SettingsForm: Component<Props> = (props) => {
   };
 
   const discard = (row: Row) => {
-    setRows((rs) =>
-      rs.map((r) => (r.key === row.key ? { ...r, value: r.serverValue } : r)),
-    );
+    const idx = rows.findIndex((r) => r.key === row.key);
+    if (idx >= 0) setRows(idx, "value", rows[idx].serverValue);
     lsRemove(DRAFT_PREFIX + row.key);
     notifyDrafts();
     toast.info(`discarded ${row.key}`, `back to ${row.serverValue}`);
@@ -528,7 +530,7 @@ export const SettingsForm: Component<Props> = (props) => {
   };
 
   const saveAllDirty = async () => {
-    const dirty = rows().filter(isDirty);
+    const dirty = rows.filter(isDirty);
     if (dirty.length === 0) { toast.info("nothing to save"); return; }
     let ok = 0, fail = 0;
     for (const r of dirty) {
@@ -544,7 +546,7 @@ export const SettingsForm: Component<Props> = (props) => {
   };
 
   const resetAllToDefaults = async () => {
-    const targets = rows().filter((r) => r.factoryDefault !== undefined);
+    const targets = rows.filter((r) => r.factoryDefault !== undefined);
     if (targets.length === 0) { toast.warn("no factory defaults available"); return; }
     const changed = targets.filter((r) => r.factoryDefault !== r.serverValue);
     if (changed.length === 0) { toast.info("everything is already at default"); return; }
@@ -637,6 +639,10 @@ export const SettingsForm: Component<Props> = (props) => {
     if (row.value_type === "int" || row.value_type === "float") {
       const hint = SLIDER_HINTS[row.key];
       const step = row.value_type === "int" ? 1 : "any";
+      // type="text" + inputMode keeps partial input like "1." from being
+      // wiped by browser number normalization while still showing the right
+      // virtual keyboard on mobile. Validation happens at commit (parseValue).
+      const inputMode = row.value_type === "float" ? "decimal" : "numeric";
       if (hint) {
         return (
           <div style={{ flex: 1, display: "flex", gap: "10px", "align-items": "center" }}>
@@ -648,10 +654,10 @@ export const SettingsForm: Component<Props> = (props) => {
               onInput={(e) => update(row.key, e.currentTarget.value)}
             />
             <input
-              type="number"
+              type="text"
+              inputMode={inputMode}
               class={`field f-num ${isDirty(row) ? "field--dirty" : ""}`}
               style={{ width: "82px", "text-align": "right" }}
-              min={hint.min} max={hint.max} step={hint.step ?? step}
               value={row.value}
               onInput={(e) => update(row.key, e.currentTarget.value)}
               onKeyDown={(e) => e.key === "Enter" && isDirty(row) && commit(row)}
@@ -661,7 +667,8 @@ export const SettingsForm: Component<Props> = (props) => {
       }
       return (
         <input
-          type="number" step={step}
+          type="text"
+          inputMode={inputMode}
           class={`field ${isDirty(row) ? "field--dirty" : ""}`}
           style={{ flex: 1 }}
           value={row.value}
@@ -713,7 +720,7 @@ export const SettingsForm: Component<Props> = (props) => {
       printer: { total: 0, dirty: 0 },
       other: { total: 0, dirty: 0 },
     };
-    for (const r of rows()) {
+    for (const r of rows) {
       const c = categoryOf(r.key);
       out[c].total++;
       if (isDirty(r)) out[c].dirty++;
@@ -723,7 +730,7 @@ export const SettingsForm: Component<Props> = (props) => {
 
   const filtered = createMemo(() => {
     const q = filter().trim().toLowerCase();
-    const tabbed = rows().filter((r) => categoryOf(r.key) === tab());
+    const tabbed = rows.filter((r) => categoryOf(r.key) === tab());
     if (!q) return tabbed;
     return tabbed.filter((r) =>
       r.key.toLowerCase().includes(q) ||

@@ -255,30 +255,64 @@ body::before {
 }
 .field--dirty { border-color: var(--c-amber); box-shadow: 0 0 0 2px rgba(212, 162, 89, 0.12); }
 
-/* Custom range — warm-dark organic */
+/* Custom range — warm-dark organic.
+   - 8px track so the visible bar is easier to read than a hairline.
+   - 26px thumb for a generous touch/click target.
+   - Vertical padding + negative margin enlarges the pointer hit zone above
+     and below the track without changing layout, so misaimed drags still
+     grab the thumb. touch-action: pan-y keeps horizontal drags from
+     fighting vertical page scroll on touch devices. */
 input[type="range"].slider {
   -webkit-appearance: none; appearance: none;
-  height: 4px; background: var(--c-shell);
+  height: 8px; background: var(--c-shell);
   border-radius: 999px; outline: none;
   border: 1px solid var(--c-edge);
+  padding: 14px 0;
+  margin: -14px 0;
+  background-clip: content-box;
+  touch-action: pan-y;
+  cursor: pointer;
 }
 input[type="range"].slider::-webkit-slider-thumb {
   -webkit-appearance: none; appearance: none;
-  width: 18px; height: 18px;
+  width: 26px; height: 26px;
   border-radius: 50%;
   background: radial-gradient(circle at 30% 30%, #f3ecdc, var(--c-amber) 70%, #a37e44);
   border: 1px solid rgba(0,0,0,.4);
   box-shadow: 0 2px 6px rgba(0,0,0,.5);
   cursor: grab;
-  transition: transform var(--t-fast);
+  transition: transform var(--t-fast), box-shadow var(--t-fast);
 }
-input[type="range"].slider::-webkit-slider-thumb:active { cursor: grabbing; transform: scale(1.15); }
+input[type="range"].slider::-webkit-slider-thumb:hover {
+  box-shadow: 0 2px 10px rgba(0,0,0,.6), 0 0 0 6px rgba(212, 162, 89, 0.12);
+}
+input[type="range"].slider::-webkit-slider-thumb:active {
+  cursor: grabbing;
+  transform: scale(1.15);
+  box-shadow: 0 2px 14px rgba(0,0,0,.7), 0 0 0 8px rgba(212, 162, 89, 0.2);
+}
 input[type="range"].slider::-moz-range-thumb {
-  width: 18px; height: 18px;
+  width: 26px; height: 26px;
   border-radius: 50%;
   background: radial-gradient(circle at 30% 30%, #f3ecdc, var(--c-amber) 70%, #a37e44);
   border: 1px solid rgba(0,0,0,.4);
+  box-shadow: 0 2px 6px rgba(0,0,0,.5);
   cursor: grab;
+  transition: transform var(--t-fast), box-shadow var(--t-fast);
+}
+input[type="range"].slider::-moz-range-thumb:hover {
+  box-shadow: 0 2px 10px rgba(0,0,0,.6), 0 0 0 6px rgba(212, 162, 89, 0.12);
+}
+input[type="range"].slider:active::-moz-range-thumb {
+  cursor: grabbing;
+  transform: scale(1.15);
+  box-shadow: 0 2px 14px rgba(0,0,0,.7), 0 0 0 8px rgba(212, 162, 89, 0.2);
+}
+input[type="range"].slider::-moz-range-track {
+  background: var(--c-shell);
+  height: 8px;
+  border-radius: 999px;
+  border: 1px solid var(--c-edge);
 }
 
 /* Custom scrollbars to match the warm-dark palette */

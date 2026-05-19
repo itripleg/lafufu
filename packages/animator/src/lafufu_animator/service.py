@@ -61,9 +61,16 @@ class AnimatorService(BaseService):
         self._last_rms_ts = 0.0
         self._last_intent_mono = 0.0  # monotonic timestamp of last intent/preview/reply
         self.idle_animation_enabled = True  # toggleable via settings (Phase 0 default: on)
+        # Active looping expression — drives _target_pose at 20 Hz via
+        # _expression_animation_loop. Set by play_expression / agent reply,
+        # cleared by neutral / preview / set_pose / auto-expiry.
+        self._current_expression: str | None = None
+        self._expression_intensity: float = 1.0
+        self._expression_started_mono: float = 0.0
         self._pose_publish_task: asyncio.Task | None = None
         self._lipsync_watchdog_task: asyncio.Task | None = None
         self._idle_animation_task: asyncio.Task | None = None
+        self._expression_animation_task: asyncio.Task | None = None
         self._stepper_task: asyncio.Task | None = None
 
     @property
@@ -161,6 +168,7 @@ class AnimatorService(BaseService):
         self._pose_publish_task = asyncio.create_task(self._pose_publish_loop())
         self._lipsync_watchdog_task = asyncio.create_task(self._lipsync_watchdog())
         self._idle_animation_task = asyncio.create_task(self._idle_animation_loop())
+        self._expression_animation_task = asyncio.create_task(self._expression_animation_loop())
         self._stepper_task = asyncio.create_task(self._stepper_loop())
 
     async def on_shutdown(self) -> None:
@@ -168,6 +176,7 @@ class AnimatorService(BaseService):
             self._pose_publish_task,
             self._lipsync_watchdog_task,
             self._idle_animation_task,
+            self._expression_animation_task,
             self._stepper_task,
         ):
             if t:
@@ -285,6 +294,9 @@ class AnimatorService(BaseService):
 
     async def _on_preview(self, subject: str, msg: schemas.AnimatorIntentPreview) -> None:
         self._last_intent_mono = time.monotonic()
+        # Operator is hand-driving a servo — kill any looping expression so
+        # the two don't fight for _target_pose.
+        self._current_expression = None
         new = self._current_pose.model_copy(
             update={msg.name: pose.clamp_dxl(msg.name, msg.position)}
         )
@@ -292,27 +304,42 @@ class AnimatorService(BaseService):
 
     async def _on_set_pose(self, subject: str, msg: schemas.AnimatorIntentSetPose) -> None:
         self._last_intent_mono = time.monotonic()
+        self._current_expression = None
         await self._safe_apply(msg.pose)
 
     async def _on_play_expression(
         self, subject: str, msg: schemas.AnimatorIntentPlayExpression
     ) -> None:
         self._last_intent_mono = time.monotonic()
-        offsets = expressions.get_offsets(msg.name, msg.intensity)
-        target = expressions.apply_offsets(self._effective_idle_pose(), offsets)
-        await self._safe_apply(target)
-        await nats_helper.publish_model(
-            self.nats,
-            topics.ANIMATOR_EVENT_GESTURE_DONE,
-            schemas.AnimatorEvent(event="gesture_done", name=msg.name),
-        )
+        # "neutral" is the cancel command — clear current expression and let
+        # idle take back over. Fire gesture_done so the UI clears its active
+        # state pill.
+        if msg.name == "neutral":
+            previous = self._current_expression
+            self._current_expression = None
+            if previous is not None:
+                await nats_helper.publish_model(
+                    self.nats,
+                    topics.ANIMATOR_EVENT_GESTURE_DONE,
+                    schemas.AnimatorEvent(event="gesture_done", name=previous),
+                )
+            return
+        # Set the active expression; the animation loop picks it up on its
+        # next tick and starts driving _target_pose. gesture_done is emitted
+        # when the expression auto-expires or is replaced.
+        self._current_expression = msg.name
+        self._expression_intensity = max(0.0, min(1.0, msg.intensity))
+        self._expression_started_mono = time.monotonic()
 
     async def _on_agent_reply(self, subject: str, msg: schemas.AgentReply) -> None:
         """When agent emits a reply with an emotion, set the matching expression."""
         self._last_intent_mono = time.monotonic()
-        offsets = expressions.get_offsets(msg.emotion, intensity=1.0)
-        target = expressions.apply_offsets(self._effective_idle_pose(), offsets)
-        await self._safe_apply(target)
+        if msg.emotion == "neutral":
+            self._current_expression = None
+            return
+        self._current_expression = msg.emotion
+        self._expression_intensity = 1.0
+        self._expression_started_mono = time.monotonic()
 
     async def _on_tts_rms(self, subject: str, msg: schemas.AgentTtsRms) -> None:
         # Drive jaw via envelope
@@ -390,7 +417,12 @@ class AnimatorService(BaseService):
 
         while not self._shutdown.is_set():
             try:
-                if not (self.idle_animation_enabled and self._has_u2d2):
+                # Skip when an expression is animating — the expression loop
+                # owns _target_pose then, and idle's sinusoids would visibly
+                # smear the gesture.
+                if not (self.idle_animation_enabled and self._has_u2d2) or (
+                    self._current_expression is not None
+                ):
                     seg_end = 0.0
                 else:
                     now = time.monotonic()
@@ -454,6 +486,46 @@ class AnimatorService(BaseService):
                         await self._safe_apply(target)
             except Exception as e:
                 self.log.warning("idle_animation.error error=%s", e)
+
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._shutdown.wait(), timeout=TICK_DT)
+
+    async def _expression_animation_loop(self) -> None:
+        """Drive _target_pose at 20 Hz while an expression is active.
+
+        Computes the expression's pose (idle + offsets + sinusoidal motion)
+        per tick. Preserves whatever the jaw is currently doing so lipsync
+        (TTS RMS) keeps owning the mouth without us trampling it. Auto-clears
+        the expression when its `duration_s` elapses and emits a
+        ``gesture_done`` event so the UI can drop its active pill.
+        """
+        TICK_DT = 0.05  # 20 Hz — matches idle loop
+        while not self._shutdown.is_set():
+            try:
+                name = self._current_expression
+                if name is not None and self._has_u2d2:
+                    t_active = time.monotonic() - self._expression_started_mono
+                    if expressions.is_expired(name, t_active):
+                        self._current_expression = None
+                        with contextlib.suppress(Exception):
+                            await nats_helper.publish_model(
+                                self.nats,
+                                topics.ANIMATOR_EVENT_GESTURE_DONE,
+                                schemas.AnimatorEvent(event="gesture_done", name=name),
+                            )
+                    else:
+                        base = self._effective_idle_pose()
+                        target = expressions.compute_target(
+                            name, base, t_active, self._expression_intensity
+                        )
+                        # If lipsync is actively driving the jaw (recent RMS),
+                        # leave the jaw alone — otherwise the expression
+                        # offset would flap against the TTS-driven motion.
+                        if time.monotonic() - self._last_rms_ts <= 0.5:
+                            target = target.model_copy(update={"jaw": self._current_pose.jaw})
+                        await self._safe_apply(target)
+            except Exception as e:
+                self.log.warning("expression_animation.error error=%s", e)
 
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._shutdown.wait(), timeout=TICK_DT)

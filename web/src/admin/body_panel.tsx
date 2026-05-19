@@ -1,4 +1,4 @@
-import { Component, createMemo, createSignal, onCleanup, onMount, For, Show } from "solid-js";
+import { Component, createEffect, createMemo, createSignal, onCleanup, onMount, For, Show } from "solid-js";
 import { api } from "../shared/api";
 import { EMOTION_COLORS, EMOTION_GLYPH, type Emotion } from "../shared/design";
 import { lsGet, lsRemove, lsSet } from "../shared/local_storage";
@@ -36,17 +36,30 @@ const DRAFT_KEY = "sliders/values";
 
 export const BodyPanel: Component<{ nats: NatsWs }> = (props) => {
   // ─── Expressions ────────────────────────────────────────────────
+  // activeExpr tracks the looping expression the animator is currently
+  // running. Driven by the animator.event.gesture_done NATS event so the
+  // pill follows the real expression lifetime — including auto-clear for
+  // duration-bounded gestures like agree/disagree.
   const [activeExpr, setActiveExpr] = createSignal<string | null>(null);
 
   const trigger = async (name: Emotion) => {
-    setActiveExpr(name);
+    // Clicking the already-active expression cancels it (sends neutral).
+    if (activeExpr() === name && name !== "neutral") {
+      try {
+        await api.animatorExpression("neutral");
+        setActiveExpr(null);
+      } catch (e: any) {
+        toast.err("expression failed", e.message);
+      }
+      return;
+    }
+    // Optimistic — server confirms via gesture_done when it ends.
+    setActiveExpr(name === "neutral" ? null : name);
     try {
       await api.animatorExpression(name);
-      toast.ok(`expression: ${name}`);
     } catch (e: any) {
       toast.err("expression failed", e.message);
-    } finally {
-      window.setTimeout(() => setActiveExpr((c) => (c === name ? null : c)), 600);
+      setActiveExpr(null);
     }
   };
 
@@ -57,7 +70,8 @@ export const BodyPanel: Component<{ nats: NatsWs }> = (props) => {
   const [saving, setSaving] = createSignal<string | null>(null);
   const [lastDragTs, setLastDragTs] = createSignal<Record<string, number>>({});
 
-  let unsub: (() => void) | undefined;
+  let unsubPose: (() => void) | undefined;
+  let unsubGesture: (() => void) | undefined;
   let pendingPreview: ReturnType<typeof setTimeout> | undefined;
   onMount(() => {
     const cached = lsGet<Record<string, number>>(DRAFT_KEY, {});
@@ -65,23 +79,52 @@ export const BodyPanel: Component<{ nats: NatsWs }> = (props) => {
       setVals((v) => ({ ...v, ...cached }));
       setSavedVals(cached);
     }
-    unsub = props.nats.subscribe("animator.pose", (f) => setLive(f.payload));
+    unsubPose = props.nats.subscribe("animator.pose", (f) => setLive(f.payload));
+    // Animator emits gesture_done when an expression auto-expires (or is
+    // cancelled by a new one). Clear the pill so the UI reflects reality.
+    unsubGesture = props.nats.subscribe("animator.event.gesture_done", (f) => {
+      const ended = f.payload?.name;
+      setActiveExpr((c) => (c === ended || ended == null ? null : c));
+    });
   });
   onCleanup(() => {
-    unsub?.();
+    unsubPose?.();
+    unsubGesture?.();
     // Cancel any pending throttled preview so its closure doesn't fire after
     // the component is gone.
     if (pendingPreview) clearTimeout(pendingPreview);
   });
 
-  // Effective slider value: user intent while actively dragging (last 800ms),
-  // otherwise the live animator pose. Falls back to factory default if
-  // we don't have a live reading yet.
+  const isDirtyName = (name: string): boolean =>
+    vals()[name] !== (savedVals()[name] ?? FACTORY_DEFAULTS[name]);
+
+  // Effective slider value:
+  //   1. If the operator has an unsaved value, show that — otherwise the
+  //      idle loop would tug the thumb away while they're still dialing it in.
+  //   2. Otherwise prefer user intent while actively dragging (last 800ms).
+  //   3. Otherwise the live animator pose.
   const effective = (name: string): number => {
+    if (isDirtyName(name)) return vals()[name] ?? FACTORY_DEFAULTS[name];
     const dragAge = performance.now() - (lastDragTs()[name] ?? 0);
     if (dragAge < 800) return vals()[name] ?? FACTORY_DEFAULTS[name];
     return live()[name] ?? vals()[name] ?? FACTORY_DEFAULTS[name];
   };
+
+  // While any slider has an unsaved value, re-send a preview ping for those
+  // servos every second. Animator's intent_quiet window is 1.5s — without this,
+  // idle takes over after the operator stops dragging and yanks the servo away
+  // from the value they're trying to evaluate.
+  createEffect(() => {
+    const dirtyNames = RANGES.filter((r) => isDirtyName(r.name)).map((r) => r.name);
+    if (dirtyNames.length === 0) return;
+    const interval = window.setInterval(() => {
+      for (const n of dirtyNames) {
+        const v = vals()[n];
+        if (v !== undefined) api.animatorPreview(n, v).catch(() => {});
+      }
+    }, 1000);
+    onCleanup(() => window.clearInterval(interval));
+  });
 
   const onDrag = (name: string, position: number) => {
     setVals((v) => ({ ...v, [name]: position }));
@@ -137,8 +180,7 @@ export const BodyPanel: Component<{ nats: NatsWs }> = (props) => {
     else toast.warn(`reset ${ok}, failed ${fail}`);
   };
 
-  const dirty = (name: string) =>
-    vals()[name] !== (savedVals()[name] ?? FACTORY_DEFAULTS[name]);
+  const dirty = isDirtyName;
   const dirtyCount = createMemo(() => RANGES.filter((r) => dirty(r.name)).length);
 
   // ─── Render ─────────────────────────────────────────────────────
