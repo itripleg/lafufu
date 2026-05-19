@@ -11,7 +11,12 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
 }
 
 export const api = {
-  snapshot: () => req<{ settings: Array<{ key: string; value: string; value_type: string }>; services: Record<string, any>; last_pose: any }>("GET", "/state/snapshot"),
+  snapshot: () => req<{
+    settings: Array<{ key: string; value: string; value_type: string }>;
+    services: Record<string, any>;
+    last_pose: any;
+    server_now: number;
+  }>("GET", "/state/snapshot"),
   listSettings: () => req("GET", "/settings"),
   listSettingDefaults: () =>
     req<Array<{ key: string; value: string; value_type: string; description?: string | null }>>(
@@ -23,6 +28,8 @@ export const api = {
   restartService: (name: string) => req("POST", `/system/services/${name}/restart`),
   animatorPreview: (name: string, position: number) => req("POST", "/animator/preview", { name, position }),
   animatorExpression: (name: string, intensity = 1.0) => req("POST", "/animator/expression", { name, intensity }),
+  animatorGesture: (name: "nod_yes" | "nod_no" | "look_around") =>
+    req("POST", "/animator/gesture", { name }),
   agentTextMessage: (text: string) => req("POST", "/agent/text_message", { text }),
   agentSpeakText: (text: string, emotion: string = "neutral") =>
     req("POST", "/agent/speak_text", { text, emotion }),

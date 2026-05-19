@@ -94,21 +94,26 @@ const Face: Component = () => {
     });
 
     nats.start();
-    nats.subscribe("agent.state.*", (f) => {
+    // Collect every unsub so onCleanup can drain the listener map. Without
+    // this, navigating away from /face and back doubles handlers and runs
+    // setState on a disposed component.
+    const subs: Array<() => void> = [];
+    subs.push(nats.subscribe("agent.state.*", (f) => {
       const tail = f.topic.split(".").pop();
       if (tail) setState(tail);
       if (tail === "idle" || tail === "shutdown") setRms(0);
-    });
-    nats.subscribe("agent.reply", (f) => {
+    }));
+    subs.push(nats.subscribe("agent.reply", (f) => {
       setEmotion(f.payload.emotion ?? "neutral");
       setCaption(f.payload.text);
-    });
-    nats.subscribe("agent.transcript", (f) => {
+    }));
+    subs.push(nats.subscribe("agent.transcript", (f) => {
       setCaption(f.payload.text);
-    });
-    nats.subscribe("agent.tts.rms", (f) => {
+    }));
+    subs.push(nats.subscribe("agent.tts.rms", (f) => {
       setRms(f.payload.mouth_target ?? 0);
-    });
+    }));
+    onCleanup(() => subs.forEach((u) => u()));
 
     let last = performance.now();
     const tick = (now: number) => {
@@ -284,7 +289,7 @@ const Face: Component = () => {
             "border-radius": "999px",
           }}
         >
-          {isFs() ? "⛶" : "⛶"}
+          {isFs() ? "⤢" : "⛶"}
         </button>
         <button
           onClick={() => navigate("/admin")}

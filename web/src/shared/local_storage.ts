@@ -42,3 +42,16 @@ export function lsKeys(): string[] {
 export function lsClearAll(): void {
   for (const k of lsKeys()) lsRemove(k);
 }
+
+/** Remove every lafufu/<prefix>... key. Use for targeted clears (e.g.
+ *  "settings/draft/" leaves chat inputs + compose drafts alone). */
+export function lsRemovePrefix(prefix: string): number {
+  let n = 0;
+  for (const k of lsKeys()) {
+    if (k.startsWith(prefix)) {
+      lsRemove(k);
+      n++;
+    }
+  }
+  return n;
+}

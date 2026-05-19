@@ -1,7 +1,7 @@
 import { Component, createSignal, onCleanup, onMount, Show } from "solid-js";
 import { NatsWs } from "../shared/nats_ws";
 import { Blob } from "../shared/blob";
-import { lsClearAll, lsKeys } from "../shared/local_storage";
+import { lsKeys, lsRemovePrefix } from "../shared/local_storage";
 import { toast } from "../shared/toast";
 import { BodyPanel } from "./body_panel";
 import { ChatLog } from "./chat_log";
@@ -43,11 +43,12 @@ const Admin: Component = () => {
       toast.info("no drafts to clear");
       return;
     }
-    const n = draftCount();
-    lsClearAll();
+    // Only wipe settings drafts — leave chat/compose/pulse-filter keys alone
+    // since those are user content, not pending settings edits.
+    const n = lsRemovePrefix("settings/draft/");
     window.dispatchEvent(new CustomEvent("lafufu:drafts-changed"));
     window.dispatchEvent(new CustomEvent("lafufu:drafts-wiped"));
-    toast.ok("local drafts cleared", `${n} pending edit${n === 1 ? "" : "s"} discarded`);
+    toast.ok("settings drafts cleared", `${n} pending edit${n === 1 ? "" : "s"} discarded`);
   };
 
   return (

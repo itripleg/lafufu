@@ -184,24 +184,27 @@ const Pet: Component = () => {
     api3d = createPetScene(host);
 
     nats.start();
-    nats.subscribe("agent.state.*", (f) => {
+    // Collect every unsub so onCleanup drains the listener map.
+    const subs: Array<() => void> = [];
+    subs.push(nats.subscribe("agent.state.*", (f) => {
       const tail = f.topic.split(".").pop();
       if (tail) setState(tail);
-    });
-    nats.subscribe("agent.reply", (f) => {
+    }));
+    subs.push(nats.subscribe("agent.reply", (f) => {
       const em = (f.payload.emotion ?? "neutral") as Emotion;
       setEmotion(em);
       api3d?.setEmotion(em);
       setCaption(f.payload.text);
       setChat((c) => [...c.slice(-30), { who: "lafufu", text: f.payload.text, emotion: em, ts: Date.now() }]);
-    });
-    nats.subscribe("agent.transcript", (f) => {
+    }));
+    subs.push(nats.subscribe("agent.transcript", (f) => {
       setCaption(f.payload.text);
       setChat((c) => [...c.slice(-30), { who: "you", text: f.payload.text, ts: Date.now() }]);
-    });
-    nats.subscribe("animator.pose", (f) => {
+    }));
+    subs.push(nats.subscribe("animator.pose", (f) => {
       api3d?.setPose(f.payload);
-    });
+    }));
+    onCleanup(() => subs.forEach((u) => u()));
 
     // Combine raw user drag with the latest servo target so the user can
     // override / overlay on top of the live pose.

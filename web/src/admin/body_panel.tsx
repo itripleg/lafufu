@@ -58,6 +58,7 @@ export const BodyPanel: Component<{ nats: NatsWs }> = (props) => {
   const [lastDragTs, setLastDragTs] = createSignal<Record<string, number>>({});
 
   let unsub: (() => void) | undefined;
+  let pendingPreview: ReturnType<typeof setTimeout> | undefined;
   onMount(() => {
     const cached = lsGet<Record<string, number>>(DRAFT_KEY, {});
     if (Object.keys(cached).length > 0) {
@@ -66,7 +67,12 @@ export const BodyPanel: Component<{ nats: NatsWs }> = (props) => {
     }
     unsub = props.nats.subscribe("animator.pose", (f) => setLive(f.payload));
   });
-  onCleanup(() => unsub?.());
+  onCleanup(() => {
+    unsub?.();
+    // Cancel any pending throttled preview so its closure doesn't fire after
+    // the component is gone.
+    if (pendingPreview) clearTimeout(pendingPreview);
+  });
 
   // Effective slider value: user intent while actively dragging (last 800ms),
   // otherwise the live animator pose. Falls back to factory default if
@@ -77,7 +83,6 @@ export const BodyPanel: Component<{ nats: NatsWs }> = (props) => {
     return live()[name] ?? vals()[name] ?? FACTORY_DEFAULTS[name];
   };
 
-  let pendingPreview: ReturnType<typeof setTimeout> | undefined;
   const onDrag = (name: string, position: number) => {
     setVals((v) => ({ ...v, [name]: position }));
     setLastDragTs((t) => ({ ...t, [name]: performance.now() }));

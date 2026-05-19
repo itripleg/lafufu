@@ -13,6 +13,9 @@ class FakeCups:
     def __init__(self, available: bool = True):
         self.available = available
         self.printed: list[tuple[str, str | None]] = []
+        # Captures (path, title, target_size_px) so tests can assert what
+        # the printer service handed off to the cups layer for image jobs.
+        self.printed_files: list[tuple[str, str | None, tuple[int, int] | None]] = []
 
     def list_printers(self) -> list[str]:
         return ["fake-printer"] if self.available else []
@@ -23,6 +26,19 @@ class FakeCups:
     def print_text(self, text: str, *, title: str | None = None) -> str:
         self.printed.append((text, title))
         return "job-001"
+
+    def print_file(
+        self,
+        path,
+        *,
+        title: str | None = None,
+        extra_lp_options=None,
+        target_size_px=None,
+        dead_zone_top_px: int = 0,
+        dead_zone_bottom_px: int = 0,
+    ) -> str:
+        self.printed_files.append((str(path), title, target_size_px))
+        return "job-file-001"
 
 
 async def test_publishes_offline_when_no_printer(nats_server):
