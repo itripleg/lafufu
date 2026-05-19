@@ -115,7 +115,12 @@ class RealMic:
                 pass
             self._stream = None
 
-    def listen_once(self) -> str:
+    def wait_for_onset(self) -> tuple[bool, list[bytes]]:
+        """Listen until speech starts or MAX_WAIT_S elapses.
+
+        Returns (started, pre_roll_frames). Does NOT hold any external lock —
+        safe to run while other coroutines need the agent.
+        """
         import collections
 
         self._ensure_stream()
@@ -123,9 +128,7 @@ class RealMic:
         eff_rate = self._eff_rate
         eff_chunk = self._eff_chunk
         chunks_per_s = eff_rate / eff_chunk
-        silence_chunks_end = int(self.silence_tail_s * chunks_per_s)
         pre_roll_size = int(self.PRE_ROLL_S * chunks_per_s)
-        max_chunks_recording = int(self.MAX_RECORD_S * chunks_per_s)
         max_chunks_waiting = int(self.MAX_WAIT_S * chunks_per_s)
 
         # Drain anything that piled up while we were synthesizing/speaking.
@@ -139,35 +142,45 @@ class RealMic:
             pass
 
         pre_roll: collections.deque[bytes] = collections.deque(maxlen=pre_roll_size)
-        frames: list[bytes] = []
-        started = False
         voiced_chunks = 0
-        silent_chunks = 0
         waiting_chunks = 0
 
         while True:
             data = stream.read(eff_chunk, exception_on_overflow=False)
             rms = audio_rms_bytes(data)
             loud = rms >= self.silence_threshold
+            pre_roll.append(data)
+            if loud:
+                voiced_chunks += 1
+                if voiced_chunks >= self.MIN_VOICED_CHUNKS:
+                    # Real speech — hand the pre-roll buffer to the recorder.
+                    return True, list(pre_roll)
+            else:
+                voiced_chunks = 0
+                waiting_chunks += 1
+                if waiting_chunks > max_chunks_waiting:
+                    # Gave up waiting — nothing said.
+                    return False, []
 
-            if not started:
-                pre_roll.append(data)
-                if loud:
-                    voiced_chunks += 1
-                    if voiced_chunks >= self.MIN_VOICED_CHUNKS:
-                        # Real speech — flush pre-roll into frames and switch
-                        # to recording mode.
-                        started = True
-                        frames.extend(pre_roll)
-                        pre_roll.clear()
-                else:
-                    voiced_chunks = 0
-                    waiting_chunks += 1
-                    if waiting_chunks > max_chunks_waiting:
-                        # Gave up waiting — nothing said.
-                        return ""
-                continue
+    def record_until_silence(self, pre_roll: list[bytes]) -> str:
+        """Continue reading after onset, transcribe when silence ends."""
+        import audioop
+        import numpy as np
 
+        stream = self._stream
+        eff_rate = self._eff_rate
+        eff_chunk = self._eff_chunk
+        chunks_per_s = eff_rate / eff_chunk
+        silence_chunks_end = int(self.silence_tail_s * chunks_per_s)
+        max_chunks_recording = int(self.MAX_RECORD_S * chunks_per_s)
+
+        frames: list[bytes] = list(pre_roll)
+        silent_chunks = 0
+
+        while True:
+            data = stream.read(eff_chunk, exception_on_overflow=False)
+            rms = audio_rms_bytes(data)
+            loud = rms >= self.silence_threshold
             frames.append(data)
             silent_chunks = silent_chunks + 1 if not loud else 0
             if silent_chunks > silence_chunks_end:
@@ -175,10 +188,8 @@ class RealMic:
             if len(frames) > max_chunks_recording:
                 break
 
-        if not started or not frames:
+        if not frames:
             return ""
-
-        import audioop
 
         raw = b"".join(frames)
         if eff_rate != 16000:
@@ -186,10 +197,15 @@ class RealMic:
 
         # Convert int16 PCM bytes -> float32 numpy array normalized to [-1, 1].
         # Both STT backends accept this directly, skipping a disk write + decode.
-        import numpy as np
-
         audio_np = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
         return self.stt.transcribe(audio_np)
+
+    def listen_once(self) -> str:
+        """Backward-compat single-call interface (used by text intent paths)."""
+        started, pre_roll = self.wait_for_onset()
+        if not started:
+            return ""
+        return self.record_until_silence(pre_roll)
 
 
 def audio_rms_bytes(pcm16_bytes: bytes) -> float:

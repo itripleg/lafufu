@@ -349,9 +349,48 @@ class AgentService(BaseService):
 
     async def _mic_loop(self) -> None:
         while not self._shutdown.is_set():
+            try:
+                await self._voice_cycle_with_split_lock()
+            except Exception as e:
+                self.log.exception("voice_cycle.failed error=%s", e)
+                await asyncio.sleep(1.0)
+
+    async def _voice_cycle_with_split_lock(self) -> None:
+        """Wait for onset WITHOUT holding the lock. Once speech starts, grab the
+        lock and finish the cycle. This lets text intents jump in during silence.
+        """
+        if self._pipeline is None:
+            await asyncio.sleep(0.5)
+            return
+
+        # Fast-path: if the mic doesn't expose the split interface, just do the
+        # old thing (used by tests with FakeMic).
+        if not hasattr(self._mic, "wait_for_onset"):
             async with self._cycle_lock:
-                try:
-                    await self._pipeline.run_one_cycle()
-                except Exception as e:
-                    self.log.exception("voice_cycle.failed error=%s", e)
-                    await asyncio.sleep(1.0)
+                await self._pipeline.run_one_cycle()
+            return
+
+        loop = asyncio.get_running_loop()
+        await self._publish_state("listening")
+        started, pre_roll = await loop.run_in_executor(None, self._mic.wait_for_onset)
+        if not started:
+            await self._publish_state("idle")
+            return
+
+        async with self._cycle_lock:
+            transcript = await loop.run_in_executor(None, self._mic.record_until_silence, pre_roll)
+            clean = (transcript or "").strip()
+            if len(clean) < 2:
+                await self._publish_state("idle")
+                return
+
+            # Reuse the rest of the pipeline (publish + LLM + speak) by
+            # constructing a one-shot mic that returns this transcript.
+            class _OnceMic:
+                def listen_once(self):
+                    return clean
+
+            tmp = VoicePipeline(
+                self.nats, _OnceMic(), self._ollama, self._piper, self._speaker_play
+            )
+            await tmp.run_one_cycle()
