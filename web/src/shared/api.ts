@@ -38,6 +38,11 @@ export const api = {
       "GET",
       "/agent/models",
     ),
+  listSttBackends: () =>
+    req<{ backends: Array<{ id: string; label: string; available: boolean }> }>(
+      "GET",
+      "/agent/stt_backends",
+    ),
 
   // Printer letterhead — image that Lafufu prints replies onto.
   letterheadUrl: () => `${BASE}/printer/letterhead`,

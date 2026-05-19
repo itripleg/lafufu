@@ -35,6 +35,10 @@ const DYNAMIC_OPTIONS: Record<string, () => Promise<string[]>> = {
     const { models } = await api.listLlmModels();
     return models.map((m) => m.name);
   },
+  "agent.stt_backend": async () => {
+    const { backends } = await api.listSttBackends();
+    return backends.filter((b) => b.available).map((b) => b.id);
+  },
 };
 
 const DRAFT_PREFIX = "settings/draft/";
@@ -398,7 +402,9 @@ function categoryOf(key: string): Tab {
     key.startsWith("tts.") ||
     key === "agent.silence_threshold" ||
     key === "agent.silence_seconds" ||
-    key === "agent.auto_listen"
+    key === "agent.auto_listen" ||
+    key === "agent.stt_backend" ||
+    key === "agent.whisper_model"
   ) return "audio";
   return "other";
 }
