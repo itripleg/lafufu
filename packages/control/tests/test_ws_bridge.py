@@ -155,3 +155,23 @@ def test_ws_invalid_payload_dropped(bridge_server):
             raise AssertionError("should not receive any message for invalid payload")
         except TimeoutError:
             pass  # expected: nothing arrived
+
+
+def test_ws_bad_client_frame_does_not_kill_session(bridge_server):
+    """A malformed JSON frame from the client should not tear down the
+    whole session — the bridge should drop the bad frame, optionally log,
+    and continue processing subsequent frames."""
+    _, publish = bridge_server
+    with ws_connect(f"ws://127.0.0.1:{_PORT}/ws") as ws:
+        # Send garbage as the first frame.
+        ws.send("this isn't json {{{")
+        time.sleep(0.1)
+        # Now send a valid subscribe — if the session survived, this should
+        # register and deliver a published message.
+        ws.send(json.dumps({"op": "sub", "topics": ["test.resilience"]}))
+        time.sleep(0.1)
+        publish("test.resilience", b'{"ok": true}')
+        raw = ws.recv(timeout=2)
+    msg = json.loads(raw)
+    assert msg["topic"] == "test.resilience"
+    assert msg["payload"] == {"ok": True}

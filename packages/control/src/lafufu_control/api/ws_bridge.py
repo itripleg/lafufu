@@ -35,15 +35,27 @@ class WsBridge:
             bridge._ws_patterns[ws] = set()
             try:
                 while True:
-                    frame = await ws.receive_json()
+                    # Per-frame error isolation: a malformed JSON frame, an
+                    # unknown op, or an exception in a single sub/unsub call
+                    # should drop only that frame, not the whole session.
+                    try:
+                        frame = await ws.receive_json()
+                    except WebSocketDisconnect:
+                        raise
+                    except Exception as e:
+                        log.warning("ws.bad_frame error=%s", e)
+                        continue
                     op = frame.get("op")
                     topics = frame.get("topics", []) or []
-                    if op == "sub":
-                        for t in topics:
-                            await bridge._add_sub(ws, t)
-                    elif op == "unsub":
-                        for t in topics:
-                            bridge._remove_sub(ws, t)
+                    try:
+                        if op == "sub":
+                            for t in topics:
+                                await bridge._add_sub(ws, t)
+                        elif op == "unsub":
+                            for t in topics:
+                                bridge._remove_sub(ws, t)
+                    except Exception as e:
+                        log.warning("ws.op_error op=%s error=%s", op, e)
             except WebSocketDisconnect:
                 pass
             except Exception as e:
@@ -86,8 +98,15 @@ class WsBridge:
             sub, count = self._subs[pattern]
             count -= 1
             if count <= 0:
-                # Schedule unsubscribe (sub.unsubscribe() is a coroutine)
-                _unsub_task = asyncio.get_event_loop().create_task(sub.unsubscribe())
+                # Schedule the unsubscribe — sub.unsubscribe() is a coroutine.
+                # get_running_loop() avoids the deprecated get_event_loop()
+                # warning and raises cleanly if called outside an async ctx.
+                try:
+                    asyncio.get_running_loop().create_task(sub.unsubscribe())
+                except RuntimeError:
+                    # No running loop (test teardown / sync caller) — best
+                    # effort: just drop the bookkeeping; NATS will collect.
+                    log.debug("ws.unsub.no_loop pattern=%s", pattern)
                 del self._subs[pattern]
             else:
                 self._subs[pattern] = (sub, count)
@@ -100,7 +119,11 @@ class WsBridge:
             return
         frame = {"topic": subject, "payload": payload}
         dead: list[WebSocket] = []
-        for ws in self._pattern_listeners.get(pattern, set()):
+        # Iterate a SNAPSHOT — `ws.send_json` is an await point, and any other
+        # coroutine (concurrent _add_sub/_remove_sub or a WS callback that
+        # mutates its own subscription set) would otherwise cause
+        # `RuntimeError: Set changed size during iteration`.
+        for ws in list(self._pattern_listeners.get(pattern, set())):
             try:
                 await ws.send_json(frame)
             except Exception:

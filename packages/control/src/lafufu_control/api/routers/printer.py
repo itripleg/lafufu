@@ -67,7 +67,15 @@ async def upload_letterhead(file: Annotated[UploadFile, File()]):
             },
         ) from e
     _data_dir().mkdir(parents=True, exist_ok=True)
-    _letterhead_path().write_bytes(data)
+    # Atomic write — if the process dies mid-write a half-written letterhead
+    # would brick every future print until manual replacement. write to a
+    # sibling tmp file then os.replace into place (atomic on POSIX).
+    import os
+
+    target = _letterhead_path()
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, target)
     return {"ok": True, "size_bytes": len(data)}
 
 

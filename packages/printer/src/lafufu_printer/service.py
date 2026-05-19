@@ -1,7 +1,9 @@
 """PrinterService: auto-prints replies (when enabled) and handles on-demand intents."""
 
 import logging
+import os
 from datetime import datetime
+from pathlib import Path
 from typing import Protocol
 
 from lafufu_shared import nats_helper, schemas, topics
@@ -10,6 +12,34 @@ from lafufu_shared.base_service import BaseService
 from .formatter import format_reply, format_transcript
 
 log = logging.getLogger(__name__)
+
+
+def _printer_data_dir() -> Path:
+    """Directory where uploaded letterheads + composed images live. Matches
+    the control router's _data_dir() so the two sides agree."""
+    return Path(os.environ.get("LAFUFU_PRINTER_DATA_DIR", "/srv/lafufu/data/printer"))
+
+
+def _path_within_allowed_roots(path: Path) -> bool:
+    """True if `path` resolves to a location inside the printer data dir.
+    Anything else (e.g. /etc/shadow, ~/.ssh) is rejected — direct NATS
+    publishers must not be able to read arbitrary files via this service.
+    (Composed temp files are printed via direct method call, not a NATS
+    intent, so they don't need to be in the allow list.)"""
+    try:
+        resolved = path.resolve()
+    except (OSError, RuntimeError):
+        return False
+    root = _printer_data_dir().resolve()
+    return _is_inside(resolved, root)
+
+
+def _is_inside(child: Path, parent: Path) -> bool:
+    try:
+        child.relative_to(parent)
+        return True
+    except ValueError:
+        return False
 
 
 class CupsProtocol(Protocol):
@@ -245,15 +275,20 @@ class PrinterService(BaseService):
 
     async def _on_compose(self, subject: str, msg: schemas.PrinterIntentCompose) -> None:
         """Composite text onto the letterhead, then print the result."""
-        from pathlib import Path
-
         from .composer import compose_fortune
 
         lh = Path(msg.letterhead_path)
+        if not _path_within_allowed_roots(lh):
+            await self._publish_state(
+                "error", detail=f"letterhead path not allowed: {msg.letterhead_path}"
+            )
+            await self._publish_state("idle")
+            return
         if not lh.exists():
             await self._publish_state(
                 "error", detail=f"letterhead not found: {msg.letterhead_path}"
             )
+            await self._publish_state("idle")
             return
         if not self._cups.default_printer():
             await self._publish_state("offline")
@@ -268,6 +303,7 @@ class PrinterService(BaseService):
         except Exception as e:
             self.log.warning("compose.failed error=%s", e)
             await self._publish_state("error", detail=str(e))
+            await self._publish_state("idle")
             return
         await self._publish_state("printing")
         try:
@@ -290,14 +326,19 @@ class PrinterService(BaseService):
         except Exception as e:
             self.log.warning("compose.print_failed error=%s", e)
             await self._publish_state("error", detail=str(e))
+            await self._publish_state("idle")
             return
         await self._publish_state("idle")
 
     async def _on_print_file(self, subject: str, msg: schemas.PrinterIntentPrintFile) -> None:
-        """Send an image file (e.g. the uploaded letterhead) directly to lp."""
-        from pathlib import Path
-
+        """Send an image file (e.g. the uploaded letterhead) directly to lp.
+        The path must resolve inside the printer data dir or temp dir — a
+        NATS publisher must not be able to print arbitrary files."""
         path = Path(msg.path)
+        if not _path_within_allowed_roots(path):
+            await self._publish_state("error", detail=f"file path not allowed: {msg.path}")
+            await self._publish_state("idle")
+            return
         if not path.exists():
             await self._publish_state("error", detail=f"file not found: {msg.path}")
             await self._publish_state("idle")
