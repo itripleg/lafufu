@@ -83,7 +83,8 @@ class VoicePipeline:
             schemas.AgentReply(text=text, emotion=emotion, source=source),  # type: ignore[arg-type]
         )
         await self._publish_state("speaking")
-        chunks = self.piper.synthesize(text)
+        loop = asyncio.get_running_loop()
+        chunks = await loop.run_in_executor(None, self.piper.synthesize, text)
         start_ts = time.monotonic()
         # speaker_play may be a callable (legacy) or an _AplayPlayer with
         # .play() and .end() methods. Detect and use the right interface.

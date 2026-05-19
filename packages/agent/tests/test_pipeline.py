@@ -98,3 +98,46 @@ def test_aplay_player_uses_dynamic_sample_rate(monkeypatch):
     assert any("16000" in argv for argv in invocations), (
         f"aplay must use the passed sample rate; got {invocations}"
     )
+
+
+async def test_pipeline_does_not_block_event_loop_during_synth(nats_server):
+    """While Piper is synthesizing, the event loop must still process callbacks."""
+    import time as _time
+
+    import nats
+
+    class _SlowPiper:
+        sample_rate = 22050
+        chunk_ms = 40
+
+        def synthesize(self, text):
+            # 200ms blocking call simulating a slow synth.
+            _time.sleep(0.2)
+            return [(b"\x00" * 1764, 0.0)]
+
+    nc = await nats.connect(nats_server)
+    pipeline = VoicePipeline(
+        nats_client=nc,
+        mic=FakeMic(),
+        ollama=FakeOllama(scripts=[("hello", "[neutral]\nhi")]),
+        piper=_SlowPiper(),
+    )
+
+    # Schedule a heartbeat that should fire DURING synth.
+    ticks: list[float] = []
+
+    async def heartbeat():
+        for _ in range(8):
+            ticks.append(asyncio.get_running_loop().time())
+            await asyncio.sleep(0.03)
+
+    hb = asyncio.create_task(heartbeat())
+    await pipeline.run_one_cycle()
+    await hb
+    await nc.drain()
+
+    # All 8 ticks should be there even though synth blocked for 200ms.
+    assert len(ticks) == 8, f"event loop starved during synth; got {len(ticks)} ticks"
+    # Ticks should be ~30ms apart, not all bunched after the 200ms block.
+    spans = [ticks[i + 1] - ticks[i] for i in range(len(ticks) - 1)]
+    assert max(spans) < 0.18, f"event loop blocked for >180ms during synth: {spans}"
