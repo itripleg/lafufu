@@ -6,7 +6,6 @@ Pulls config from env vars.
 
 import asyncio
 import os
-import wave
 from pathlib import Path
 
 import pyaudio
@@ -50,7 +49,6 @@ class RealMic:
         self.stt = stt
         self.rate = rate
         self.chunk_size = int(rate * chunk_ms / 1000)
-        self.tmp_wav = Path("/tmp/lafufu_capture.wav")
         # Live-tunable via admin UI (agent.silence_threshold). Higher = less
         # sensitive to ambient noise. Default 800 matches the original monolith.
         self.silence_threshold = silence_threshold
@@ -145,12 +143,13 @@ class RealMic:
         raw = b"".join(frames)
         if eff_rate != 16000:
             raw, _ = audioop.ratecv(raw, 2, 1, eff_rate, 16000, None)
-        with wave.open(str(self.tmp_wav), "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(16000)
-            wf.writeframes(raw)
-        return self.stt.transcribe(self.tmp_wav)
+
+        # Convert int16 PCM bytes -> float32 numpy array normalized to [-1, 1].
+        # Both STT backends accept this directly, skipping a disk write + decode.
+        import numpy as np
+
+        audio_np = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+        return self.stt.transcribe(audio_np)
 
 
 def audio_rms_bytes(pcm16_bytes: bytes) -> float:
