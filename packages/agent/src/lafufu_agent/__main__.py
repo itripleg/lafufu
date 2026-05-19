@@ -14,7 +14,6 @@ import pyaudio
 from .audio_capture import get_pyaudio, select_input_device
 from .llm import Ollama
 from .service import AgentService
-from .stt import Whisper
 from .tts import Piper
 
 SYSTEM_PROMPT = (
@@ -41,14 +40,14 @@ class RealMic:
 
     def __init__(
         self,
-        whisper: Whisper,
+        stt,
         *,
         rate: int = 44100,
         chunk_ms: int = 40,
         silence_threshold: int = 800,
         silence_tail_s: float = 1.5,
     ):
-        self.whisper = whisper
+        self.stt = stt
         self.rate = rate
         self.chunk_size = int(rate * chunk_ms / 1000)
         self.tmp_wav = Path("/tmp/lafufu_capture.wav")
@@ -58,6 +57,10 @@ class RealMic:
         # Trailing silence (seconds) that ends an utterance. Live-tunable via
         # agent.silence_seconds.
         self.silence_tail_s = silence_tail_s
+
+    def set_stt(self, stt) -> None:
+        """Hot-swap STT instance (called by AgentService on config.changed)."""
+        self.stt = stt
 
     def listen_once(self) -> str:
         import collections
@@ -147,7 +150,7 @@ class RealMic:
             wf.setsampwidth(2)
             wf.setframerate(16000)
             wf.writeframes(raw)
-        return self.whisper.transcribe(self.tmp_wav)
+        return self.stt.transcribe(self.tmp_wav)
 
 
 def audio_rms_bytes(pcm16_bytes: bytes) -> float:
@@ -234,21 +237,31 @@ def _aplay_player():
 
 
 def main() -> None:
-    whisper_model = os.environ.get("LAFUFU_WHISPER_MODEL", "tiny")
+    from .stt import make_stt
+
+    whisper_model = os.environ.get("LAFUFU_WHISPER_MODEL", "tiny.en")
+    stt_backend = os.environ.get("LAFUFU_STT_BACKEND", "openai-whisper")
     qwen_model = os.environ.get("LAFUFU_LLM_MODEL", "qwen2.5:7b")
     piper_model_path = Path(os.environ.get("LAFUFU_PIPER_MODEL", "models/lafufu_voice.onnx"))
     ollama_url = os.environ.get("LAFUFU_OLLAMA_URL", "http://localhost:11434")
 
-    whisper = Whisper(model_name=whisper_model)
+    stt = make_stt(stt_backend, model_name=whisper_model)
     ollama = Ollama(base_url=ollama_url, model=qwen_model, system_prompt=SYSTEM_PROMPT)
     piper = Piper(model_path=piper_model_path)
-    mic = RealMic(whisper=whisper)
+    mic = RealMic(stt=stt)
     player = _aplay_player()
 
     # Mic loop is started/stopped by the config.changed.agent.auto_listen
     # subscriber inside AgentService — driven by the DB setting via the
     # snapshot mechanism. Env vars no longer toggle it.
-    svc = AgentService(mic=mic, ollama=ollama, piper=piper, speaker_play=player)
+    svc = AgentService(
+        mic=mic,
+        ollama=ollama,
+        piper=piper,
+        speaker_play=player,
+        stt=stt,
+        stt_factory=lambda backend, model: make_stt(backend, model_name=model),
+    )
 
     asyncio.run(svc.run())
 

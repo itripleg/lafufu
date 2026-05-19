@@ -54,3 +54,35 @@ async def test_text_message_intent_triggers_pipeline(nats_server):
     await asyncio.wait_for(task, timeout=3)
     assert len(replies) == 1
     assert replies[0].text == "pong"
+
+
+async def test_stt_backend_change_swaps_stt_instance(nats_server):
+    """When config.changed.agent.stt_backend fires, agent swaps the STT instance."""
+    from lafufu_shared.testing import FakeWhisper
+
+    initial = FakeWhisper(fixed_reply="initial")
+    svc = AgentService(
+        mic=FakeMicForService([]),
+        ollama=FakeOllama(),
+        piper=FakePiper(),
+        nats_url=nats_server,
+        stt=initial,
+        stt_factory=lambda backend, model: FakeWhisper(fixed_reply=f"{backend}:{model}"),
+    )
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.5)
+
+    nc = await nats.connect(nats_server)
+    await publish_model(
+        nc,
+        f"{topics.CONFIG_CHANGED}.agent.stt_backend",
+        schemas.ConfigChanged(key="agent.stt_backend", value="faster-whisper", source="test"),
+    )
+    await asyncio.sleep(0.3)
+    await nc.drain()
+
+    assert svc.stt is not initial
+    assert svc.stt.fixed_reply.startswith("faster-whisper:")
+
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)

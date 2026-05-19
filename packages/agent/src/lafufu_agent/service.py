@@ -33,13 +33,26 @@ def _set_alsa_volume(card: str, control: str, pct: int) -> tuple[bool, str]:
 class AgentService(BaseService):
     name = "agent"
 
-    def __init__(self, mic, ollama, piper, speaker_play=None, nats_url: str | None = None) -> None:
+    def __init__(
+        self,
+        mic,
+        ollama,
+        piper,
+        speaker_play=None,
+        nats_url: str | None = None,
+        stt=None,
+        stt_factory=None,
+    ) -> None:
         super().__init__()
         self._mic = mic
         self._ollama = ollama
         self._piper = piper
         self._speaker_play = speaker_play
         self._nats_url = nats_url
+        self.stt = stt
+        self._stt_factory = stt_factory
+        self._stt_backend = "openai-whisper"
+        self._stt_model = "tiny.en"
         self._pipeline: VoicePipeline | None = None
         self._cycle_lock = asyncio.Lock()
         self._mic_loop_task: asyncio.Task | None = None
@@ -87,6 +100,20 @@ class AgentService(BaseService):
             f"{topics.CONFIG_CHANGED}.agent.llm_model",
             schemas.ConfigChanged,
             self._on_config_llm_model,
+        )
+
+        # Live-switch STT backend + whisper model when admin updates settings.
+        await nats_helper.subscribe_model(
+            self.nats,
+            f"{topics.CONFIG_CHANGED}.agent.stt_backend",
+            schemas.ConfigChanged,
+            self._on_config_stt_backend,
+        )
+        await nats_helper.subscribe_model(
+            self.nats,
+            f"{topics.CONFIG_CHANGED}.agent.whisper_model",
+            schemas.ConfigChanged,
+            self._on_config_whisper_model,
         )
 
         # Live-update system prompt when admin changes it.
@@ -187,6 +214,36 @@ class AgentService(BaseService):
                 self.log.info("llm.model.warmed model=%s elapsed_s=%.1f", new_model, elapsed)
             except Exception as e:
                 self.log.warning("llm.model.warmup_failed model=%s error=%s", new_model, e)
+
+    async def _on_config_stt_backend(self, subject: str, msg: schemas.ConfigChanged) -> None:
+        new_backend = str(msg.value).strip()
+        if not new_backend or new_backend == self._stt_backend:
+            return
+        self._stt_backend = new_backend
+        self._rebuild_stt(reason="backend")
+
+    async def _on_config_whisper_model(self, subject: str, msg: schemas.ConfigChanged) -> None:
+        new_model = str(msg.value).strip()
+        if not new_model or new_model == self._stt_model:
+            return
+        self._stt_model = new_model
+        self._rebuild_stt(reason="model")
+
+    def _rebuild_stt(self, reason: str) -> None:
+        if self._stt_factory is None:
+            self.log.warning("stt.rebuild.skipped reason=%s factory_missing", reason)
+            return
+        prev = self.stt
+        self.stt = self._stt_factory(self._stt_backend, self._stt_model)
+        self.log.info(
+            "stt.rebuilt reason=%s backend=%s model=%s prev=%r",
+            reason,
+            self._stt_backend,
+            self._stt_model,
+            type(prev).__name__,
+        )
+        if hasattr(self._mic, "set_stt"):
+            self._mic.set_stt(self.stt)
 
     async def _on_config_silence_threshold(self, subject: str, msg: schemas.ConfigChanged) -> None:
         try:
