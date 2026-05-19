@@ -25,9 +25,13 @@ SYSTEM_PROMPT = (
 
 class RealMic:
     """Records from mic until silence using pre-roll + started-flag VAD, then
-    transcribes via Whisper. Only commits audio AROUND detected speech — silent
-    waiting time is discarded so Whisper doesn't hallucinate words from
+    transcribes via STT. Only commits audio AROUND detected speech — silent
+    waiting time is discarded so STT doesn't hallucinate words from
     minutes of ambient noise.
+
+    Holds a single PyAudio stream open across listen_once calls —
+    opening/closing it every utterance was costing ~50-200ms per cycle and
+    fragmenting the first buffer (clipping the leading 20-40ms of speech).
 
     Port of the original monolith's `record_until_silence` pattern.
     """
@@ -48,7 +52,7 @@ class RealMic:
     ):
         self.stt = stt
         self.rate = rate
-        self.chunk_size = int(rate * chunk_ms / 1000)
+        self.chunk_ms = chunk_ms
         # Live-tunable via admin UI (agent.silence_threshold). Higher = less
         # sensitive to ambient noise. Default 800 matches the original monolith.
         self.silence_threshold = silence_threshold
@@ -56,43 +60,83 @@ class RealMic:
         # agent.silence_seconds.
         self.silence_tail_s = silence_tail_s
 
+        # Lazily populated on first listen_once — needs PyAudio init.
+        self._stream = None
+        self._eff_rate: int | None = None
+        self._eff_chunk: int | None = None
+        self._device_index: int | None = None
+
     def set_stt(self, stt) -> None:
         """Hot-swap STT instance (called by AgentService on config.changed)."""
         self.stt = stt
 
-    def listen_once(self) -> str:
-        import collections
+    def _ensure_stream(self) -> None:
+        """Open the input stream once, with format probing. Subsequent calls are no-ops."""
+        if self._stream is not None:
+            return
 
         p = get_pyaudio()
-        device = select_input_device(p)
+        self._device_index = select_input_device(p)
         eff_rate = self.rate
         try:
-            if device is not None and not p.is_format_supported(
+            if self._device_index is not None and not p.is_format_supported(
                 float(self.rate),
-                input_device=device,
+                input_device=self._device_index,
                 input_channels=1,
                 input_format=pyaudio.paInt16,
             ):
-                eff_rate = int(p.get_device_info_by_index(device).get("defaultSampleRate", 16000))
+                eff_rate = int(
+                    p.get_device_info_by_index(self._device_index).get("defaultSampleRate", 16000)
+                )
         except (ValueError, OSError):
-            if device is not None:
-                eff_rate = int(p.get_device_info_by_index(device).get("defaultSampleRate", 16000))
+            if self._device_index is not None:
+                eff_rate = int(
+                    p.get_device_info_by_index(self._device_index).get("defaultSampleRate", 16000)
+                )
 
-        eff_chunk = max(1, int(eff_rate * 0.04))
+        self._eff_rate = eff_rate
+        self._eff_chunk = max(1, int(eff_rate * self.chunk_ms / 1000))
+        self._stream = p.open(
+            format=pyaudio.paInt16,
+            channels=1,
+            rate=self._eff_rate,
+            input=True,
+            input_device_index=self._device_index,
+            frames_per_buffer=self._eff_chunk,
+        )
+
+    def close(self) -> None:
+        """Stop and close the cached input stream (called on service shutdown)."""
+        if self._stream is not None:
+            try:
+                self._stream.stop_stream()
+                self._stream.close()
+            except OSError:
+                pass
+            self._stream = None
+
+    def listen_once(self) -> str:
+        import collections
+
+        self._ensure_stream()
+        stream = self._stream
+        eff_rate = self._eff_rate
+        eff_chunk = self._eff_chunk
         chunks_per_s = eff_rate / eff_chunk
         silence_chunks_end = int(self.silence_tail_s * chunks_per_s)
         pre_roll_size = int(self.PRE_ROLL_S * chunks_per_s)
         max_chunks_recording = int(self.MAX_RECORD_S * chunks_per_s)
         max_chunks_waiting = int(self.MAX_WAIT_S * chunks_per_s)
 
-        stream = p.open(
-            format=pyaudio.paInt16,
-            channels=1,
-            rate=eff_rate,
-            input=True,
-            input_device_index=device,
-            frames_per_buffer=eff_chunk,
-        )
+        # Drain anything that piled up while we were synthesizing/speaking.
+        # PyAudio's get_read_available counts samples, not chunks.
+        try:
+            stale = stream.get_read_available()
+            while stale >= eff_chunk:
+                stream.read(eff_chunk, exception_on_overflow=False)
+                stale -= eff_chunk
+        except OSError:
+            pass
 
         pre_roll: collections.deque[bytes] = collections.deque(maxlen=pre_roll_size)
         frames: list[bytes] = []
@@ -101,39 +145,35 @@ class RealMic:
         silent_chunks = 0
         waiting_chunks = 0
 
-        try:
-            while True:
-                data = stream.read(eff_chunk, exception_on_overflow=False)
-                rms = audio_rms_bytes(data)
-                loud = rms >= self.silence_threshold
+        while True:
+            data = stream.read(eff_chunk, exception_on_overflow=False)
+            rms = audio_rms_bytes(data)
+            loud = rms >= self.silence_threshold
 
-                if not started:
-                    pre_roll.append(data)
-                    if loud:
-                        voiced_chunks += 1
-                        if voiced_chunks >= self.MIN_VOICED_CHUNKS:
-                            # Real speech — flush pre-roll into frames and switch
-                            # to recording mode.
-                            started = True
-                            frames.extend(pre_roll)
-                            pre_roll.clear()
-                    else:
-                        voiced_chunks = 0
-                        waiting_chunks += 1
-                        if waiting_chunks > max_chunks_waiting:
-                            # Gave up waiting — nothing said.
-                            return ""
-                    continue
+            if not started:
+                pre_roll.append(data)
+                if loud:
+                    voiced_chunks += 1
+                    if voiced_chunks >= self.MIN_VOICED_CHUNKS:
+                        # Real speech — flush pre-roll into frames and switch
+                        # to recording mode.
+                        started = True
+                        frames.extend(pre_roll)
+                        pre_roll.clear()
+                else:
+                    voiced_chunks = 0
+                    waiting_chunks += 1
+                    if waiting_chunks > max_chunks_waiting:
+                        # Gave up waiting — nothing said.
+                        return ""
+                continue
 
-                frames.append(data)
-                silent_chunks = silent_chunks + 1 if not loud else 0
-                if silent_chunks > silence_chunks_end:
-                    break
-                if len(frames) > max_chunks_recording:
-                    break
-        finally:
-            stream.stop_stream()
-            stream.close()
+            frames.append(data)
+            silent_chunks = silent_chunks + 1 if not loud else 0
+            if silent_chunks > silence_chunks_end:
+                break
+            if len(frames) > max_chunks_recording:
+                break
 
         if not started or not frames:
             return ""

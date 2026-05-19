@@ -313,6 +313,11 @@ class AgentService(BaseService):
         await self._publish_state("shutdown")
         if self._mic_loop_task:
             self._mic_loop_task.cancel()
+        if hasattr(self._mic, "close"):
+            try:
+                self._mic.close()
+            except Exception as e:
+                self.log.warning("mic.close.failed error=%s", e)
 
     async def _publish_state(self, name: str) -> None:
         await self.publish_state(name, schemas.AgentState(state=name))  # type: ignore[arg-type]
