@@ -100,6 +100,15 @@ def test_aplay_player_uses_dynamic_sample_rate(monkeypatch):
     )
 
 
+def test_fake_piper_supports_streaming_iteration():
+    """FakePiper.synthesize_stream yields chunks one at a time."""
+    from lafufu_shared.testing import FakePiper
+
+    fp = FakePiper(chunks=[(b"\x00" * 100, 0.1), (b"\x00" * 100, 0.2)])
+    streamed = list(fp.synthesize_stream("hello"))
+    assert streamed == [(b"\x00" * 100, 0.1), (b"\x00" * 100, 0.2)]
+
+
 async def test_pipeline_does_not_block_event_loop_during_synth(nats_server):
     """While Piper is synthesizing, the event loop must still process callbacks."""
     import time as _time
@@ -141,3 +150,48 @@ async def test_pipeline_does_not_block_event_loop_during_synth(nats_server):
     # Ticks should be ~30ms apart, not all bunched after the 200ms block.
     spans = [ticks[i + 1] - ticks[i] for i in range(len(ticks) - 1)]
     assert max(spans) < 0.18, f"event loop blocked for >180ms during synth: {spans}"
+
+
+async def test_pipeline_streams_first_chunk_before_synth_finishes(nats_server):
+    """TTFS test: first chunk should hit the speaker before the last chunk is synthesized."""
+    import time as _time
+
+    import nats
+
+    play_times: list[float] = []
+
+    class _StreamingSlowPiper:
+        sample_rate = 22050
+        chunk_ms = 40
+
+        def synthesize_stream(self, text):
+            for _i in range(5):
+                _time.sleep(0.1)  # 100ms per chunk
+                yield (b"\x00" * 1764, 0.5)
+
+        def synthesize(self, text):
+            return list(self.synthesize_stream(text))
+
+    def _record_play(chunk):
+        play_times.append(_time.monotonic())
+
+    nc = await nats.connect(nats_server)
+    pipeline = VoicePipeline(
+        nats_client=nc,
+        mic=FakeMic(),
+        ollama=FakeOllama(scripts=[("hello", "[neutral]\nhi")]),
+        piper=_StreamingSlowPiper(),
+        speaker_play=_record_play,
+    )
+
+    t_start = _time.monotonic()
+    await pipeline.run_one_cycle()
+    await nc.drain()
+
+    assert len(play_times) == 5
+    # First chunk should arrive within ~250ms of synth start (first synth chunk
+    # is ~100ms, plus loop overhead). NOT 500ms (which would mean buffering).
+    first_chunk_latency = play_times[0] - t_start
+    assert first_chunk_latency < 0.25, (
+        f"first chunk latency {first_chunk_latency:.3f}s exceeds budget — synth was buffered"
+    )

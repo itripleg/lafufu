@@ -1,10 +1,13 @@
 """Piper TTS wrapper.
 
-Returns a list of (audio_chunk_bytes, mouth_target_0to1) tuples so the agent
-can stream playback + publish RMS to NATS as it goes.
+Two APIs:
+  synthesize(text)         -> list of (chunk_bytes, mouth_target_0to1) - buffered
+  synthesize_stream(text)  -> generator yielding the same tuples as Piper produces
+                              them, for low-latency streaming playback
 """
 
 import logging
+from collections.abc import Iterator
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -27,35 +30,37 @@ class Piper:
         self._sample_rate = self._voice.config.sample_rate
 
     def synthesize(self, text: str) -> list[tuple[bytes, float]]:
-        """Synthesize text → list of (audio_chunk, mouth_target).
+        """Buffered: join all audio, rechunk, return list. Used by tests + legacy callers."""
+        return list(self.synthesize_stream(text))
 
-        Each chunk is ~`chunk_ms` of int16 PCM, mouth_target ∈ [0,1].
+    def synthesize_stream(self, text: str) -> Iterator[tuple[bytes, float]]:
+        """Stream: yield (chunk, mouth_target) tuples as Piper synthesizes.
+
+        Buffers across Piper's internal chunk boundaries so emitted chunks are
+        all exactly `chunk_ms` long (the animator depends on a steady cadence).
+        The final partial chunk is yielded as-is.
         """
         if self._voice is None:
             self.load()
-        # piper-tts API: voice.synthesize(text) yields AudioChunk objects with
-        # .audio_int16_bytes (raw little-endian int16 PCM at config.sample_rate).
-        # We join all chunks then rechunkify into fixed-duration windows for
-        # smooth NATS publishing and lipsync RMS calculation.
-        audio = b"".join(c.audio_int16_bytes for c in self._voice.synthesize(text))
-        return self._chunkify(audio)
 
-    def _chunkify(self, audio: bytes) -> list[tuple[bytes, float]]:
         import audioop  # lazy; audioop-lts on Python 3.13+
 
         bytes_per_sample = self._sample_width
         samples_per_chunk = int(self._sample_rate * self.chunk_ms / 1000)
         bytes_per_chunk = samples_per_chunk * bytes_per_sample
-        out: list[tuple[bytes, float]] = []
-        # Normalize RMS by max int16 (32767) → [0,1]
-        for i in range(0, len(audio), bytes_per_chunk):
-            chunk = audio[i : i + bytes_per_chunk]
-            if not chunk:
-                continue
-            rms = audioop.rms(chunk, bytes_per_sample)
-            normalized = min(1.0, rms / 8000.0)  # 8000 RMS ≈ comfortable speech
-            out.append((chunk, normalized))
-        return out
+
+        buf = bytearray()
+        for piper_chunk in self._voice.synthesize(text):
+            buf.extend(piper_chunk.audio_int16_bytes)
+            while len(buf) >= bytes_per_chunk:
+                out = bytes(buf[:bytes_per_chunk])
+                del buf[:bytes_per_chunk]
+                rms = audioop.rms(out, bytes_per_sample)
+                yield out, min(1.0, rms / 8000.0)
+        if buf:
+            tail = bytes(buf)
+            rms = audioop.rms(tail, bytes_per_sample)
+            yield tail, min(1.0, rms / 8000.0)
 
     @property
     def sample_rate(self) -> int:

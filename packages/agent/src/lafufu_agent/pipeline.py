@@ -83,9 +83,7 @@ class VoicePipeline:
             schemas.AgentReply(text=text, emotion=emotion, source=source),  # type: ignore[arg-type]
         )
         await self._publish_state("speaking")
-        loop = asyncio.get_running_loop()
-        chunks = await loop.run_in_executor(None, self.piper.synthesize, text)
-        start_ts = time.monotonic()
+
         # speaker_play may be a callable (legacy) or an _AplayPlayer with
         # .play() and .end() methods. Detect and use the right interface.
         play_fn = (
@@ -98,24 +96,53 @@ class VoicePipeline:
         # fire in <50ms and the jaw barely twitches while audio plays for
         # several more seconds.
         chunk_dt = getattr(self.piper, "chunk_ms", 40) / 1000.0
+        start_ts = time.monotonic()
         next_tick = time.monotonic()
-        for audio_bytes, mouth_target in chunks:
-            if play_fn:
-                play_fn(audio_bytes)
-            await nats_helper.publish_model(
-                self.nats,
-                topics.AGENT_TTS_RMS,
-                schemas.AgentTtsRms(
-                    ts=time.monotonic() - start_ts,
-                    rms=mouth_target,
-                    mouth_target=mouth_target,
-                ),
-            )
-            # Sleep until the next chunk's wall-clock slot so we don't drift.
-            next_tick += chunk_dt
-            sleep_for = next_tick - time.monotonic()
-            if sleep_for > 0:
-                await asyncio.sleep(sleep_for)
+
+        # Stream synth in an executor — we pull chunks one at a time via a
+        # bounded queue so blocking generator iteration doesn't freeze the loop.
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue[tuple[bytes, float] | None] = asyncio.Queue(maxsize=8)
+
+        def _produce():
+            try:
+                gen = (
+                    self.piper.synthesize_stream(text)
+                    if hasattr(self.piper, "synthesize_stream")
+                    else iter(self.piper.synthesize(text))
+                )
+                for item in gen:
+                    asyncio.run_coroutine_threadsafe(queue.put(item), loop).result()
+            finally:
+                asyncio.run_coroutine_threadsafe(queue.put(None), loop).result()
+
+        producer_fut = loop.run_in_executor(None, _produce)
+
+        try:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                audio_bytes, mouth_target = item
+                if play_fn:
+                    play_fn(audio_bytes)
+                await nats_helper.publish_model(
+                    self.nats,
+                    topics.AGENT_TTS_RMS,
+                    schemas.AgentTtsRms(
+                        ts=time.monotonic() - start_ts,
+                        rms=mouth_target,
+                        mouth_target=mouth_target,
+                    ),
+                )
+                # Sleep until the next chunk's wall-clock slot so we don't drift.
+                next_tick += chunk_dt
+                sleep_for = next_tick - time.monotonic()
+                if sleep_for > 0:
+                    await asyncio.sleep(sleep_for)
+        finally:
+            await producer_fut
+
         # Tell the speaker the utterance is over so it can drain + close cleanly.
         if self.speaker_play and hasattr(self.speaker_play, "end"):
             self.speaker_play.end()

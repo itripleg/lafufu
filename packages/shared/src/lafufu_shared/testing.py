@@ -121,6 +121,9 @@ class FakeOllama:
 class FakePiper:
     """Returns canned audio bytes + RMS sequence."""
 
+    sample_rate = 22050
+    chunk_ms = 40
+
     def __init__(self, chunks: list[tuple[bytes, float]] | None = None) -> None:
         # list of (audio_bytes, rms) tuples
         self.chunks = chunks or [(b"\x00" * 1764, 0.0)]
@@ -129,3 +132,8 @@ class FakePiper:
     def synthesize(self, text: str) -> list[tuple[bytes, float]]:
         self.calls.append(text)
         return list(self.chunks)
+
+    def synthesize_stream(self, text: str):
+        """Yield canned chunks one at a time (matches real Piper streaming shape)."""
+        self.calls.append(text)
+        yield from self.chunks
