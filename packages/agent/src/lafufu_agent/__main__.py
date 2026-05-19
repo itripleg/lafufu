@@ -6,7 +6,6 @@ Pulls config from env vars.
 
 import asyncio
 import os
-import wave
 from pathlib import Path
 
 import pyaudio
@@ -14,7 +13,6 @@ import pyaudio
 from .audio_capture import get_pyaudio, select_input_device
 from .llm import Ollama
 from .service import AgentService
-from .stt import Whisper
 from .tts import Piper
 
 SYSTEM_PROMPT = (
@@ -27,9 +25,13 @@ SYSTEM_PROMPT = (
 
 class RealMic:
     """Records from mic until silence using pre-roll + started-flag VAD, then
-    transcribes via Whisper. Only commits audio AROUND detected speech — silent
-    waiting time is discarded so Whisper doesn't hallucinate words from
+    transcribes via STT. Only commits audio AROUND detected speech — silent
+    waiting time is discarded so STT doesn't hallucinate words from
     minutes of ambient noise.
+
+    Holds a single PyAudio stream open across listen_once calls —
+    opening/closing it every utterance was costing ~50-200ms per cycle and
+    fragmenting the first buffer (clipping the leading 20-40ms of speech).
 
     Port of the original monolith's `record_until_silence` pattern.
     """
@@ -41,17 +43,16 @@ class RealMic:
 
     def __init__(
         self,
-        whisper: Whisper,
+        stt,
         *,
         rate: int = 44100,
         chunk_ms: int = 40,
         silence_threshold: int = 800,
         silence_tail_s: float = 1.5,
     ):
-        self.whisper = whisper
+        self.stt = stt
         self.rate = rate
-        self.chunk_size = int(rate * chunk_ms / 1000)
-        self.tmp_wav = Path("/tmp/lafufu_capture.wav")
+        self.chunk_ms = chunk_ms
         # Live-tunable via admin UI (agent.silence_threshold). Higher = less
         # sensitive to ambient noise. Default 800 matches the original monolith.
         self.silence_threshold = silence_threshold
@@ -59,95 +60,152 @@ class RealMic:
         # agent.silence_seconds.
         self.silence_tail_s = silence_tail_s
 
-    def listen_once(self) -> str:
-        import collections
+        # Lazily populated on first listen_once — needs PyAudio init.
+        self._stream = None
+        self._eff_rate: int | None = None
+        self._eff_chunk: int | None = None
+        self._device_index: int | None = None
+
+    def set_stt(self, stt) -> None:
+        """Hot-swap STT instance (called by AgentService on config.changed)."""
+        self.stt = stt
+
+    def _ensure_stream(self) -> None:
+        """Open the input stream once, with format probing. Subsequent calls are no-ops."""
+        if self._stream is not None:
+            return
 
         p = get_pyaudio()
-        device = select_input_device(p)
+        self._device_index = select_input_device(p)
         eff_rate = self.rate
         try:
-            if device is not None and not p.is_format_supported(
+            if self._device_index is not None and not p.is_format_supported(
                 float(self.rate),
-                input_device=device,
+                input_device=self._device_index,
                 input_channels=1,
                 input_format=pyaudio.paInt16,
             ):
-                eff_rate = int(p.get_device_info_by_index(device).get("defaultSampleRate", 16000))
+                eff_rate = int(
+                    p.get_device_info_by_index(self._device_index).get("defaultSampleRate", 16000)
+                )
         except (ValueError, OSError):
-            if device is not None:
-                eff_rate = int(p.get_device_info_by_index(device).get("defaultSampleRate", 16000))
+            if self._device_index is not None:
+                eff_rate = int(
+                    p.get_device_info_by_index(self._device_index).get("defaultSampleRate", 16000)
+                )
 
-        eff_chunk = max(1, int(eff_rate * 0.04))
-        chunks_per_s = eff_rate / eff_chunk
-        silence_chunks_end = int(self.silence_tail_s * chunks_per_s)
-        pre_roll_size = int(self.PRE_ROLL_S * chunks_per_s)
-        max_chunks_recording = int(self.MAX_RECORD_S * chunks_per_s)
-        max_chunks_waiting = int(self.MAX_WAIT_S * chunks_per_s)
-
-        stream = p.open(
+        self._eff_rate = eff_rate
+        self._eff_chunk = max(1, int(eff_rate * self.chunk_ms / 1000))
+        self._stream = p.open(
             format=pyaudio.paInt16,
             channels=1,
-            rate=eff_rate,
+            rate=self._eff_rate,
             input=True,
-            input_device_index=device,
-            frames_per_buffer=eff_chunk,
+            input_device_index=self._device_index,
+            frames_per_buffer=self._eff_chunk,
         )
 
+    def close(self) -> None:
+        """Stop and close the cached input stream (called on service shutdown)."""
+        if self._stream is not None:
+            try:
+                self._stream.stop_stream()
+                self._stream.close()
+            except OSError:
+                pass
+            self._stream = None
+
+    def wait_for_onset(self) -> tuple[bool, list[bytes]]:
+        """Listen until speech starts or MAX_WAIT_S elapses.
+
+        Returns (started, pre_roll_frames). Does NOT hold any external lock —
+        safe to run while other coroutines need the agent.
+        """
+        import collections
+
+        self._ensure_stream()
+        stream = self._stream
+        eff_rate = self._eff_rate
+        eff_chunk = self._eff_chunk
+        chunks_per_s = eff_rate / eff_chunk
+        pre_roll_size = int(self.PRE_ROLL_S * chunks_per_s)
+        max_chunks_waiting = int(self.MAX_WAIT_S * chunks_per_s)
+
+        # Drain anything that piled up while we were synthesizing/speaking.
+        # PyAudio's get_read_available counts samples, not chunks.
+        try:
+            stale = stream.get_read_available()
+            while stale >= eff_chunk:
+                stream.read(eff_chunk, exception_on_overflow=False)
+                stale -= eff_chunk
+        except OSError:
+            pass
+
         pre_roll: collections.deque[bytes] = collections.deque(maxlen=pre_roll_size)
-        frames: list[bytes] = []
-        started = False
         voiced_chunks = 0
-        silent_chunks = 0
         waiting_chunks = 0
 
-        try:
-            while True:
-                data = stream.read(eff_chunk, exception_on_overflow=False)
-                rms = audio_rms_bytes(data)
-                loud = rms >= self.silence_threshold
+        while True:
+            data = stream.read(eff_chunk, exception_on_overflow=False)
+            rms = audio_rms_bytes(data)
+            loud = rms >= self.silence_threshold
+            pre_roll.append(data)
+            if loud:
+                voiced_chunks += 1
+                if voiced_chunks >= self.MIN_VOICED_CHUNKS:
+                    # Real speech — hand the pre-roll buffer to the recorder.
+                    return True, list(pre_roll)
+            else:
+                voiced_chunks = 0
+                waiting_chunks += 1
+                if waiting_chunks > max_chunks_waiting:
+                    # Gave up waiting — nothing said.
+                    return False, []
 
-                if not started:
-                    pre_roll.append(data)
-                    if loud:
-                        voiced_chunks += 1
-                        if voiced_chunks >= self.MIN_VOICED_CHUNKS:
-                            # Real speech — flush pre-roll into frames and switch
-                            # to recording mode.
-                            started = True
-                            frames.extend(pre_roll)
-                            pre_roll.clear()
-                    else:
-                        voiced_chunks = 0
-                        waiting_chunks += 1
-                        if waiting_chunks > max_chunks_waiting:
-                            # Gave up waiting — nothing said.
-                            return ""
-                    continue
-
-                frames.append(data)
-                silent_chunks = silent_chunks + 1 if not loud else 0
-                if silent_chunks > silence_chunks_end:
-                    break
-                if len(frames) > max_chunks_recording:
-                    break
-        finally:
-            stream.stop_stream()
-            stream.close()
-
-        if not started or not frames:
-            return ""
-
+    def record_until_silence(self, pre_roll: list[bytes]) -> str:
+        """Continue reading after onset, transcribe when silence ends."""
         import audioop
+        import numpy as np
+
+        stream = self._stream
+        eff_rate = self._eff_rate
+        eff_chunk = self._eff_chunk
+        chunks_per_s = eff_rate / eff_chunk
+        silence_chunks_end = int(self.silence_tail_s * chunks_per_s)
+        max_chunks_recording = int(self.MAX_RECORD_S * chunks_per_s)
+
+        frames: list[bytes] = list(pre_roll)
+        silent_chunks = 0
+
+        while True:
+            data = stream.read(eff_chunk, exception_on_overflow=False)
+            rms = audio_rms_bytes(data)
+            loud = rms >= self.silence_threshold
+            frames.append(data)
+            silent_chunks = silent_chunks + 1 if not loud else 0
+            if silent_chunks > silence_chunks_end:
+                break
+            if len(frames) > max_chunks_recording:
+                break
+
+        if not frames:
+            return ""
 
         raw = b"".join(frames)
         if eff_rate != 16000:
             raw, _ = audioop.ratecv(raw, 2, 1, eff_rate, 16000, None)
-        with wave.open(str(self.tmp_wav), "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(16000)
-            wf.writeframes(raw)
-        return self.whisper.transcribe(self.tmp_wav)
+
+        # Convert int16 PCM bytes -> float32 numpy array normalized to [-1, 1].
+        # Both STT backends accept this directly, skipping a disk write + decode.
+        audio_np = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+        return self.stt.transcribe(audio_np)
+
+    def listen_once(self) -> str:
+        """Backward-compat single-call interface (used by text intent paths)."""
+        started, pre_roll = self.wait_for_onset()
+        if not started:
+            return ""
+        return self.record_until_silence(pre_roll)
 
 
 def audio_rms_bytes(pcm16_bytes: bytes) -> float:
@@ -169,23 +227,27 @@ class _AplayPlayer:
     Avoids inter-utterance underruns (which were clipping the beginning of
     each new reply because the previous aplay was in the middle of a stall).
 
+    Sample rate is set at construction so the aplay invocation matches the
+    Piper voice's native rate (no resample, no pitch shift).
+
     The pipeline calls play() per chunk and end() after the last chunk.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, sample_rate: int = 22050) -> None:
         import subprocess
 
         self._subprocess = subprocess
         self._proc: subprocess.Popen | None = None
+        self._sample_rate = int(sample_rate)
+        # Buffer ~2s, period ~0.2s, scaled to sample rate.
+        self._buffer_size = self._sample_rate * 2
+        self._period_size = self._sample_rate // 5
 
     def play(self, chunk: bytes) -> None:
         if not chunk:
             return
         if self._proc is None or self._proc.poll() is not None:
             device = os.environ.get("LAFUFU_APLAY_DEVICE", "default")
-            # --buffer-size + --period-size in frames at 22050Hz:
-            #   buffer 44100 = 2.0s ring; period 4410 = 0.2s chunks.
-            # Generous enough that brief synthesis pauses don't underrun.
             self._proc = self._subprocess.Popen(
                 [
                     "aplay",
@@ -197,9 +259,9 @@ class _AplayPlayer:
                     "-c",
                     "1",
                     "-r",
-                    "22050",
-                    "--buffer-size=44100",
-                    "--period-size=4410",
+                    str(self._sample_rate),
+                    f"--buffer-size={self._buffer_size}",
+                    f"--period-size={self._period_size}",
                 ],
                 stdin=self._subprocess.PIPE,
             )
@@ -217,7 +279,7 @@ class _AplayPlayer:
         try:
             # Append ~100ms of silence so aplay's last buffer flush carries the
             # full utterance through the speaker without losing the tail samples.
-            silence_frames = int(22050 * 0.10)
+            silence_frames = self._sample_rate // 10
             self._proc.stdin.write(b"\x00\x00" * silence_frames)
             self._proc.stdin.flush()
             self._proc.stdin.close()
@@ -228,27 +290,33 @@ class _AplayPlayer:
         self._proc = None
 
 
-def _aplay_player():
-    """Returns an _AplayPlayer instance. Pipeline calls .play(chunk) and .end()."""
-    return _AplayPlayer()
-
-
 def main() -> None:
-    whisper_model = os.environ.get("LAFUFU_WHISPER_MODEL", "tiny")
+    from .stt import make_stt
+
+    whisper_model = os.environ.get("LAFUFU_WHISPER_MODEL", "tiny.en")
+    stt_backend = os.environ.get("LAFUFU_STT_BACKEND", "openai-whisper")
     qwen_model = os.environ.get("LAFUFU_LLM_MODEL", "qwen2.5:7b")
     piper_model_path = Path(os.environ.get("LAFUFU_PIPER_MODEL", "models/lafufu_voice.onnx"))
     ollama_url = os.environ.get("LAFUFU_OLLAMA_URL", "http://localhost:11434")
 
-    whisper = Whisper(model_name=whisper_model)
+    stt = make_stt(stt_backend, model_name=whisper_model)
     ollama = Ollama(base_url=ollama_url, model=qwen_model, system_prompt=SYSTEM_PROMPT)
     piper = Piper(model_path=piper_model_path)
-    mic = RealMic(whisper=whisper)
-    player = _aplay_player()
+    piper.load()  # populate sample_rate from the .onnx config
+    mic = RealMic(stt=stt)
+    player = _AplayPlayer(sample_rate=piper.sample_rate)
 
     # Mic loop is started/stopped by the config.changed.agent.auto_listen
     # subscriber inside AgentService — driven by the DB setting via the
     # snapshot mechanism. Env vars no longer toggle it.
-    svc = AgentService(mic=mic, ollama=ollama, piper=piper, speaker_play=player)
+    svc = AgentService(
+        mic=mic,
+        ollama=ollama,
+        piper=piper,
+        speaker_play=player,
+        stt=stt,
+        stt_factory=lambda backend, model: make_stt(backend, model_name=model),
+    )
 
     asyncio.run(svc.run())
 

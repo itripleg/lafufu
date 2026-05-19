@@ -45,6 +45,19 @@ async def list_models(_: Request):
     }
 
 
+@router.get("/stt_backends")
+async def list_stt_backends(_: Request):
+    """List installed STT backends.
+
+    Used by the admin settings form to populate a dropdown for agent.stt_backend.
+    Importing lafufu_agent here couples the control package to agent — that's
+    acceptable because they ship in the same monorepo + venv.
+    """
+    from lafufu_agent.stt import available_backends
+
+    return {"backends": available_backends()}
+
+
 class TextMessageBody(BaseModel):
     text: str
 

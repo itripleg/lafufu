@@ -54,3 +54,123 @@ async def test_text_message_intent_triggers_pipeline(nats_server):
     await asyncio.wait_for(task, timeout=3)
     assert len(replies) == 1
     assert replies[0].text == "pong"
+
+
+async def test_stt_backend_change_swaps_stt_instance(nats_server):
+    """When config.changed.agent.stt_backend fires, agent swaps the STT instance."""
+    from lafufu_shared.testing import FakeWhisper
+
+    initial = FakeWhisper(fixed_reply="initial")
+    svc = AgentService(
+        mic=FakeMicForService([]),
+        ollama=FakeOllama(),
+        piper=FakePiper(),
+        nats_url=nats_server,
+        stt=initial,
+        stt_factory=lambda backend, model: FakeWhisper(fixed_reply=f"{backend}:{model}"),
+    )
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.5)
+
+    nc = await nats.connect(nats_server)
+    await publish_model(
+        nc,
+        f"{topics.CONFIG_CHANGED}.agent.stt_backend",
+        schemas.ConfigChanged(key="agent.stt_backend", value="faster-whisper", source="test"),
+    )
+    await asyncio.sleep(0.3)
+    await nc.drain()
+
+    assert svc.stt is not initial
+    assert svc.stt.fixed_reply.startswith("faster-whisper:")
+
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)
+
+
+async def test_on_startup_warms_stt(nats_server):
+    """AgentService.on_startup() should call stt.warmup() so first utterance is fast."""
+    from lafufu_shared.testing import FakeWhisper
+
+    fake_stt = FakeWhisper()
+    svc = AgentService(
+        mic=FakeMicForService([]),
+        ollama=FakeOllama(),
+        piper=FakePiper(),
+        nats_url=nats_server,
+        stt=fake_stt,
+    )
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.5)
+
+    assert fake_stt.warmup_count == 1, "stt.warmup() should be called once during on_startup"
+
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)
+
+
+async def test_text_intent_processes_while_mic_is_waiting_for_onset(nats_server):
+    """Text intent should NOT wait for the mic to give up on silence.
+
+    Before this change, the mic loop holds _cycle_lock for up to 30s of silence
+    listening, blocking text intents. After: mic only takes the lock once it
+    detects speech onset.
+    """
+
+    class _SilentMic:
+        """Pretends to wait for speech onset but always returns empty after a slow pause."""
+
+        def __init__(self):
+            self.set_stt_calls = 0
+
+        def wait_for_onset(self):
+            import time as _t
+
+            _t.sleep(2.0)  # simulate 2s of silence-listening
+            return False, []
+
+        def record_until_silence(self, pre_roll):
+            return ""
+
+        def listen_once(self):
+            self.wait_for_onset()
+            return ""
+
+    svc = AgentService(
+        mic=_SilentMic(),
+        ollama=FakeOllama(scripts=[("ping", "[neutral]\npong")]),
+        piper=FakePiper(chunks=[(b"\x00" * 100, 0.3)]),
+        nats_url=nats_server,
+    )
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.3)
+    svc.start_mic_loop()
+    await asyncio.sleep(0.3)  # let mic loop enter wait_for_onset
+
+    nc = await nats.connect(nats_server)
+    replies: list[schemas.AgentReply] = []
+
+    async def cb(msg):
+        replies.append(schemas.AgentReply.model_validate_json(msg.data))
+
+    await nc.subscribe(topics.AGENT_REPLY, cb=cb)
+
+    import time as _t
+
+    t0 = _t.monotonic()
+    await publish_model(
+        nc, topics.AGENT_INTENT_TEXT_MESSAGE, schemas.AgentIntentTextMessage(text="ping")
+    )
+    # Wait for the reply
+    for _ in range(50):
+        await asyncio.sleep(0.1)
+        if replies:
+            break
+    elapsed = _t.monotonic() - t0
+    await nc.drain()
+
+    assert len(replies) == 1, "text intent should still be processed"
+    assert elapsed < 1.0, f"text intent took {elapsed:.2f}s — mic loop is blocking the lock"
+
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)

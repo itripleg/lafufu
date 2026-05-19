@@ -33,13 +33,29 @@ def _set_alsa_volume(card: str, control: str, pct: int) -> tuple[bool, str]:
 class AgentService(BaseService):
     name = "agent"
 
-    def __init__(self, mic, ollama, piper, speaker_play=None, nats_url: str | None = None) -> None:
+    def __init__(
+        self,
+        mic,
+        ollama,
+        piper,
+        speaker_play=None,
+        nats_url: str | None = None,
+        stt=None,
+        stt_factory=None,
+    ) -> None:
         super().__init__()
         self._mic = mic
         self._ollama = ollama
         self._piper = piper
         self._speaker_play = speaker_play
         self._nats_url = nats_url
+        self.stt = stt
+        self._stt_factory = stt_factory
+        # Seed from the injected stt so a config snapshot that matches the
+        # env-configured backend doesn't trigger a redundant rebuild — which
+        # would discard the already-warmed instance for a cold one.
+        self._stt_backend = getattr(stt, "backend_id", "openai-whisper")
+        self._stt_model = getattr(stt, "model_name", "tiny.en")
         self._pipeline: VoicePipeline | None = None
         self._cycle_lock = asyncio.Lock()
         self._mic_loop_task: asyncio.Task | None = None
@@ -60,6 +76,22 @@ class AgentService(BaseService):
                 self.log.info("ollama.warmed_up elapsed_s=%.1f", elapsed)
             except Exception as e:
                 self.log.warning("ollama.warmup.failed error=%s", e)
+
+        # Hot-warm STT in an executor — same idea as Ollama warmup. Done off
+        # the loop because whisper.load_model + a 0.5s dummy decode is blocking
+        # C code that would freeze NATS subscribers otherwise.
+        if self.stt is not None and hasattr(self.stt, "warmup"):
+            try:
+                loop = asyncio.get_running_loop()
+                elapsed = await loop.run_in_executor(None, self.stt.warmup)
+                self.log.info(
+                    "stt.warmed_up backend=%s elapsed_s=%.1f",
+                    getattr(self.stt, "backend_id", "?"),
+                    elapsed,
+                )
+            except Exception as e:
+                self.log.warning("stt.warmup.failed error=%s", e)
+
         self._pipeline = VoicePipeline(
             self.nats, self._mic, self._ollama, self._piper, self._speaker_play
         )
@@ -87,6 +119,20 @@ class AgentService(BaseService):
             f"{topics.CONFIG_CHANGED}.agent.llm_model",
             schemas.ConfigChanged,
             self._on_config_llm_model,
+        )
+
+        # Live-switch STT backend + whisper model when admin updates settings.
+        await nats_helper.subscribe_model(
+            self.nats,
+            f"{topics.CONFIG_CHANGED}.agent.stt_backend",
+            schemas.ConfigChanged,
+            self._on_config_stt_backend,
+        )
+        await nats_helper.subscribe_model(
+            self.nats,
+            f"{topics.CONFIG_CHANGED}.agent.whisper_model",
+            schemas.ConfigChanged,
+            self._on_config_whisper_model,
         )
 
         # Live-update system prompt when admin changes it.
@@ -188,6 +234,45 @@ class AgentService(BaseService):
             except Exception as e:
                 self.log.warning("llm.model.warmup_failed model=%s error=%s", new_model, e)
 
+    async def _on_config_stt_backend(self, subject: str, msg: schemas.ConfigChanged) -> None:
+        new_backend = str(msg.value).strip()
+        if not new_backend or new_backend == self._stt_backend:
+            return
+        self._stt_backend = new_backend
+        self._rebuild_stt(reason="backend")
+
+    async def _on_config_whisper_model(self, subject: str, msg: schemas.ConfigChanged) -> None:
+        new_model = str(msg.value).strip()
+        if not new_model or new_model == self._stt_model:
+            return
+        self._stt_model = new_model
+        self._rebuild_stt(reason="model")
+
+    def _rebuild_stt(self, reason: str) -> None:
+        if self._stt_factory is None:
+            self.log.warning("stt.rebuild.skipped reason=%s factory_missing", reason)
+            return
+        prev = self.stt
+        self.stt = self._stt_factory(self._stt_backend, self._stt_model)
+        actual_backend = getattr(self.stt, "backend_id", self._stt_backend)
+        if actual_backend != self._stt_backend:
+            self.log.warning(
+                "stt.rebuilt.fallback requested=%s actual=%s model=%s — backend not installed?",
+                self._stt_backend,
+                actual_backend,
+                self._stt_model,
+            )
+        else:
+            self.log.info(
+                "stt.rebuilt reason=%s backend=%s model=%s prev=%r",
+                reason,
+                self._stt_backend,
+                self._stt_model,
+                type(prev).__name__,
+            )
+        if hasattr(self._mic, "set_stt"):
+            self._mic.set_stt(self.stt)
+
     async def _on_config_silence_threshold(self, subject: str, msg: schemas.ConfigChanged) -> None:
         try:
             value = int(msg.value)
@@ -231,6 +316,11 @@ class AgentService(BaseService):
         await self._publish_state("shutdown")
         if self._mic_loop_task:
             self._mic_loop_task.cancel()
+        if hasattr(self._mic, "close"):
+            try:
+                self._mic.close()
+            except Exception as e:
+                self.log.warning("mic.close.failed error=%s", e)
 
     async def _publish_state(self, name: str) -> None:
         await self.publish_state(name, schemas.AgentState(state=name))  # type: ignore[arg-type]
@@ -262,9 +352,48 @@ class AgentService(BaseService):
 
     async def _mic_loop(self) -> None:
         while not self._shutdown.is_set():
+            try:
+                await self._voice_cycle_with_split_lock()
+            except Exception as e:
+                self.log.exception("voice_cycle.failed error=%s", e)
+                await asyncio.sleep(1.0)
+
+    async def _voice_cycle_with_split_lock(self) -> None:
+        """Wait for onset WITHOUT holding the lock. Once speech starts, grab the
+        lock and finish the cycle. This lets text intents jump in during silence.
+        """
+        if self._pipeline is None:
+            await asyncio.sleep(0.5)
+            return
+
+        # Fast-path: if the mic doesn't expose the split interface, just do the
+        # old thing (used by tests with FakeMic).
+        if not hasattr(self._mic, "wait_for_onset"):
             async with self._cycle_lock:
-                try:
-                    await self._pipeline.run_one_cycle()
-                except Exception as e:
-                    self.log.exception("voice_cycle.failed error=%s", e)
-                    await asyncio.sleep(1.0)
+                await self._pipeline.run_one_cycle()
+            return
+
+        loop = asyncio.get_running_loop()
+        await self._publish_state("listening")
+        started, pre_roll = await loop.run_in_executor(None, self._mic.wait_for_onset)
+        if not started:
+            await self._publish_state("idle")
+            return
+
+        async with self._cycle_lock:
+            transcript = await loop.run_in_executor(None, self._mic.record_until_silence, pre_roll)
+            clean = (transcript or "").strip()
+            if len(clean) < 2:
+                await self._publish_state("idle")
+                return
+
+            # Reuse the rest of the pipeline (publish + LLM + speak) by
+            # constructing a one-shot mic that returns this transcript.
+            class _OnceMic:
+                def listen_once(self):
+                    return clean
+
+            tmp = VoicePipeline(
+                self.nats, _OnceMic(), self._ollama, self._piper, self._speaker_play
+            )
+            await tmp.run_one_cycle()
