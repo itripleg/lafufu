@@ -44,6 +44,16 @@ describe("applyDragDelta", () => {
       SERVO_RANGES.head_ud[0],
     );
   });
+  it("clamps at the low end of head_lr", () => {
+    expect(applyDragDelta("head_lr", SERVO_RANGES.head_lr[0], -10000)).toBe(
+      SERVO_RANGES.head_lr[0],
+    );
+  });
+  it("clamps at the high end of head_ud", () => {
+    expect(applyDragDelta("head_ud", SERVO_RANGES.head_ud[1], 10000)).toBe(
+      SERVO_RANGES.head_ud[1],
+    );
+  });
   it("never returns a value outside the axis range", () => {
     const [lo, hi] = SERVO_RANGES.head_lr;
     for (const delta of [-9999, -100, 0, 100, 9999]) {
