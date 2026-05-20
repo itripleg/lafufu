@@ -75,3 +75,13 @@ def test_animator_pose_bounds():
         schemas.AnimatorPose(head_lr=-5, head_ud=3082, eye=2045, jaw=1728, brow=2075)
     with pytest.raises(ValidationError):
         schemas.AnimatorPose(head_lr=2063, head_ud=99999, eye=2045, jaw=1728, brow=2075)
+
+
+def test_agent_reply_source_system_is_valid():
+    r = schemas.AgentReply(text="hi", emotion="neutral", source="system")
+    assert r.source == "system"
+
+
+def test_agent_reply_source_rejects_unknown():
+    with pytest.raises(ValidationError):
+        schemas.AgentReply(text="hi", emotion="neutral", source="bogus")

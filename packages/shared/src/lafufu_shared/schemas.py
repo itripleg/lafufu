@@ -39,8 +39,9 @@ class AgentReply(BaseModel):
     emotion: Emotion
     # Where this reply originated. 'llm' = generated from a chat cycle,
     # 'puppet' = direct text-to-speech via speak_text intent (operator
-    # typed exactly what Lafufu should say).
-    source: Literal["llm", "puppet"] = "llm"
+    # typed exactly what Lafufu should say), 'system' = a built-in intent
+    # answered directly by the agent (e.g. the "what's your IP" query).
+    source: Literal["llm", "puppet", "system"] = "llm"
 
 
 class AgentTtsRms(BaseModel):
