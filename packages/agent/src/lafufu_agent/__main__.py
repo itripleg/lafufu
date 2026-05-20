@@ -9,18 +9,12 @@ import os
 from pathlib import Path
 
 import pyaudio
+from lafufu_shared.prompts import DEFAULT_SYSTEM_PROMPT as SYSTEM_PROMPT
 
 from .audio_capture import get_pyaudio, select_input_device
 from .llm import Ollama
 from .service import AgentService
 from .tts import Piper
-
-SYSTEM_PROMPT = (
-    "You are Lafufu, a mischievous and playful humanoid creature. "
-    'Reply in no more than 20 words. Always output an "[emotion]" tag first '
-    "(happy, sad, angry, surprised, neutral, agree, disagree), then the response. "
-    "Never use emojis."
-)
 
 
 class RealMic:

@@ -41,3 +41,35 @@ def test_strips_surrounding_whitespace():
     e, t = parse("  [agree]\nyes  ")
     assert e == "agree"
     assert t == "yes"
+
+
+def test_bare_word_tag_is_stripped():
+    # Small models often drop the brackets — the bare word must not reach TTS.
+    e, t = parse("happy\nHello world")
+    assert e == "happy"
+    assert t == "Hello world"
+
+
+def test_bare_leading_word_that_is_not_an_emotion_is_kept():
+    # A normal sentence starting on its own line must not lose its first word.
+    e, t = parse("Hello\nthere friend")
+    assert e == "neutral"
+    assert t == "Hello\nthere friend"
+
+
+def test_paren_tag_is_stripped():
+    e, t = parse("(surprised) Whoa!")
+    assert e == "surprised"
+    assert t == "Whoa!"
+
+
+def test_asterisk_tag_is_stripped():
+    e, t = parse("**sad**\nOh no.")
+    assert e == "sad"
+    assert t == "Oh no."
+
+
+def test_emotion_label_prefix_is_stripped():
+    e, t = parse("Emotion: angry\nGo away.")
+    assert e == "angry"
+    assert t == "Go away."

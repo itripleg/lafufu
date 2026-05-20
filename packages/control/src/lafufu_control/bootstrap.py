@@ -6,6 +6,7 @@ Existing values are never overwritten.
 
 import logging
 
+from lafufu_shared.prompts import DEFAULT_SYSTEM_PROMPT
 from sqlmodel import Session, select
 
 from .models.setting import Setting
@@ -36,7 +37,7 @@ DEFAULTS: list[tuple[str, str, str, str]] = [
     ),
     (
         "agent.system_prompt",
-        "You are Lafufu, a mischievous and playful humanoid creature. Reply in no more than 20 words. Always output an emotion tag in brackets first (happy, sad, angry, surprised, neutral, agree, disagree), then the response. Never use emojis.",
+        DEFAULT_SYSTEM_PROMPT,
         "str",
         "Personality prompt sent to the LLM with every request.",
     ),
