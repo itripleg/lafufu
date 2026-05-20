@@ -46,6 +46,8 @@ def test_list_letterheads_includes_bundled_defaults(client):
     names = {i["name"] for i in items if i["kind"] == "default"}
     # The repo ships these default cards, including the plain white fallback.
     assert {"card.png", "cardEmpty.png", "card_white.png", "white.png"} <= names
+    # White is pinned to the top of the gallery.
+    assert items[0]["name"] == "white.png"
     # With nothing chosen, the white card is auto-activated so compose/print
     # always have something to draw on.
     active = [i for i in items if i["active"]]

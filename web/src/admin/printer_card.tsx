@@ -51,6 +51,7 @@ const ROW_H = "264px";
 
 const refOf = (a: PrinterAsset) => `${a.kind}/${a.name}`;
 const displayName = (name: string) => name.replace(/\.(png|jpe?g|webp)$/i, "");
+const kindLabel = (kind: string) => (kind === "default" ? "builtin" : kind);
 
 /**
  * Letterhead + font gallery for the printer.
@@ -289,7 +290,7 @@ export const LetterheadCard: Component = () => {
     <button
       onClick={() => setModal(item)}
       disabled={busy()}
-      title={`${item.kind} · ${item.name}`}
+      title={`${kindLabel(item.kind)} · ${item.name}`}
       style={tileStyle(active)}
     >
       <div style={{ width: "100%", height: IMG_H, display: "flex", "align-items": "center", "justify-content": "center" }}>
@@ -327,7 +328,7 @@ export const LetterheadCard: Component = () => {
           "font-size": "8px", color: "var(--c-stone)",
           background: "rgba(20,16,12,.7)", padding: "1px 5px", "border-radius": "999px",
         }}>
-          default
+          builtin
         </span>
       </Show>
       <Show when={item.kind === "upload"}>
@@ -434,7 +435,7 @@ export const LetterheadCard: Component = () => {
                 <button
                   onClick={() => activateFont(a)}
                   disabled={busy()}
-                  title={`${a.kind} · ${a.name}`}
+                  title={`${kindLabel(a.kind)} · ${a.name}`}
                   style={{
                     position: "relative",
                     padding: "8px 14px",
@@ -513,7 +514,7 @@ export const LetterheadCard: Component = () => {
                 style={{ "max-width": "100%", "max-height": "64vh", "border-radius": "8px", background: "var(--c-shell)" }}
               />
               <span class="f-mono" style={{ "font-size": "11px", color: "var(--c-mist)" }}>
-                {m().kind} · {m().name}
+                {kindLabel(m().kind)} · {m().name}
               </span>
               <div style={{ display: "flex", gap: "10px", "align-self": "stretch", "justify-content": "flex-end" }}>
                 <button class="btn btn--ghost btn--tiny" onClick={() => setModal(null)} disabled={busy()}>
