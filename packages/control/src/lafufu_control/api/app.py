@@ -3,10 +3,12 @@
 from collections.abc import Callable
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from .auth import require_auth
+from .auth import router as auth_router
 from .routers import agent as agent_router
 from .routers import animator as animator_router
 from .routers import printer as printer_router
@@ -17,17 +19,45 @@ from .routers import system as system_router
 STATIC_PATH = Path(__file__).parent.parent / "static"
 
 
-def create_app(*, engine, nats_publish: Callable[[str, dict], None]) -> FastAPI:
+def create_app(
+    *,
+    engine,
+    nats_publish: Callable[[str, dict], None],
+    api_token: str = "",
+) -> FastAPI:
+    """Build the control app.
+
+    ``api_token`` enables optional shared-token auth — when empty (the default)
+    the auth layer is inert. See ``auth.py`` for the model.
+    """
     app = FastAPI(title="lafufu control", version="0.1.0")
     app.state.engine = engine
     app.state.nats_publish = nats_publish
+    app.state.api_token = api_token
 
-    app.include_router(settings_router.router, prefix="/api/settings", tags=["settings"])
-    app.include_router(snapshot_router.router, prefix="/api/state", tags=["state"])
-    app.include_router(system_router.router, prefix="/api/system", tags=["system"])
-    app.include_router(animator_router.router, prefix="/api/animator", tags=["animator"])
-    app.include_router(agent_router.router, prefix="/api/agent", tags=["agent"])
-    app.include_router(printer_router.router, prefix="/api/printer", tags=["printer"])
+    # Every data/command router is guarded. The static SPA, /api/auth/login and
+    # the SPA fallback stay public so an unauthorized browser can still load the
+    # page and reach the lock screen.
+    guarded = [Depends(require_auth)]
+    app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
+    app.include_router(
+        settings_router.router, prefix="/api/settings", tags=["settings"], dependencies=guarded
+    )
+    app.include_router(
+        snapshot_router.router, prefix="/api/state", tags=["state"], dependencies=guarded
+    )
+    app.include_router(
+        system_router.router, prefix="/api/system", tags=["system"], dependencies=guarded
+    )
+    app.include_router(
+        animator_router.router, prefix="/api/animator", tags=["animator"], dependencies=guarded
+    )
+    app.include_router(
+        agent_router.router, prefix="/api/agent", tags=["agent"], dependencies=guarded
+    )
+    app.include_router(
+        printer_router.router, prefix="/api/printer", tags=["printer"], dependencies=guarded
+    )
 
     if STATIC_PATH.exists():
         # Serve hashed Vite assets directly

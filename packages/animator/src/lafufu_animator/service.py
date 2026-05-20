@@ -9,25 +9,16 @@ from typing import Protocol
 from lafufu_shared import nats_helper, schemas, topics
 from lafufu_shared.base_service import BaseService
 
-from . import expressions, lipsync, pose
+from . import expressions, lipsync, motion, pose
 
 
 class DxlBusProtocol(Protocol):
     def write(self, name: str, position: int) -> None: ...
     def read(self, name: str) -> int: ...
+    def enable_torque(self) -> None: ...
     def disable_torque(self) -> None: ...
+    def configure_limits(self) -> None: ...
     def open(self) -> None: ...
-
-
-# Per-servo first-order easing time constants (seconds).
-# Smaller = snappier. Jaw must be near-instant for lipsync responsiveness.
-DEFAULT_TAUS: dict[str, float] = {
-    "head_lr": 0.25,
-    "head_ud": 0.25,
-    "eye": 0.12,
-    "brow": 0.10,
-    "jaw": 0.02,
-}
 
 
 class AnimatorService(BaseService):
@@ -38,7 +29,8 @@ class AnimatorService(BaseService):
         self,
         bus: DxlBusProtocol,
         nats_url: str | None = None,
-        taus: dict[str, float] | None = None,
+        smooth_times: dict[str, float] | None = None,
+        max_speeds: dict[str, float] | None = None,
         stepper_hz: float = 30.0,
     ) -> None:
         super().__init__()
@@ -55,7 +47,12 @@ class AnimatorService(BaseService):
         # operator saves a slider in the admin UI, the new value lands here
         # and any future call to _effective_idle_pose() picks it up.
         self._idle_overrides: dict[str, int] = {}
-        self._taus = taus or DEFAULT_TAUS
+        # Acceleration-limited follower: eases current → target with ease-IN
+        # *and* ease-out (no jerky start) and a hard per-servo speed cap.
+        self._smoother = motion.PoseSmoother(
+            smooth_times=smooth_times or motion.DEFAULT_SMOOTH_TIMES,
+            max_speeds=max_speeds or motion.DEFAULT_MAX_SPEEDS,
+        )
         self._stepper_dt = 1.0 / max(1.0, stepper_hz)
         self._has_u2d2 = True  # set False on disconnect
         self._last_rms_ts = 0.0
@@ -88,10 +85,20 @@ class AnimatorService(BaseService):
             self.log.warning("dxl.open.failed error=%s", e)
             self._has_u2d2 = False
 
-        # Enable torque so the servos actually hold and move to commanded positions.
-        # Without this, writes silently no-op physically — code thinks it commanded a
-        # position but the servo is freewheeling.
         if self._has_u2d2:
+            # Write hardware safety limits (position bounds + Profile
+            # Velocity/Acceleration) while torque is still off — the
+            # position-limit registers are EEPROM. Non-fatal: the software
+            # smoother still limits motion if this fails.
+            try:
+                self._bus.configure_limits()
+                self.log.info("dxl.limits.configured")
+            except Exception as e:
+                self.log.warning("dxl.limits.config_failed error=%s", e)
+
+            # Enable torque so the servos actually hold and move to commanded
+            # positions. Without this, writes silently no-op physically — code
+            # thinks it commanded a position but the servo is freewheeling.
             try:
                 self._bus.enable_torque()
                 self.log.info("dxl.torque.enabled")
@@ -99,13 +106,15 @@ class AnimatorService(BaseService):
                 self.log.warning("dxl.torque.enable_failed error=%s", e)
                 self._has_u2d2 = False
 
-        # Seed current+target at idle and write once so the servos snap there.
+        # Seed the smoother from the servos' ACTUAL positions so the first move
+        # is an eased glide to idle — not a full-speed snap from an unknown
+        # power-up position. Falls back to idle if the read is unavailable.
         # Overrides arrive shortly via the snapshot — handlers update target.
         self._target_pose = self._effective_idle_pose()
-        try:
-            self._move_to_pose(self._target_pose)
-        except OSError:
-            self._has_u2d2 = False
+        start_pose = self._read_present_pose() if self._has_u2d2 else None
+        seed = start_pose or self._target_pose
+        self._smoother.reset_to(seed)
+        self._current_pose = seed
 
         await self._publish_state("idle" if self._has_u2d2 else "degraded")
 
@@ -241,45 +250,43 @@ class AnimatorService(BaseService):
         """Set the target pose. The stepper loop eases current → target and writes."""
         self._target_pose = target_pose
 
-    async def _safe_apply_immediate(self, target_pose: schemas.AnimatorPose) -> None:
-        """Snap directly to a pose, bypassing easing. Used for startup pose only."""
+    def _read_present_pose(self) -> schemas.AnimatorPose | None:
+        """Read the servos' actual positions to seed the smoother at startup.
+
+        Returns None if any read fails or yields an implausible value (e.g. 0
+        from an unseeded fake, or garbage from a flaky bus) — the caller then
+        falls back to seeding at the idle pose.
+        """
         try:
-            self._move_to_pose(target_pose)
-            self._target_pose = target_pose
-            if not self._has_u2d2:
-                self._has_u2d2 = True
-                await self._publish_state("idle")
+            vals: dict[str, int] = {}
+            for name in ("head_lr", "head_ud", "eye", "jaw", "brow"):
+                raw = self._bus.read(name)
+                lo, hi = min(pose.CLAMP[name]), max(pose.CLAMP[name])
+                if not (lo - 200 <= raw <= hi + 200):
+                    self.log.warning("dxl.read.implausible servo=%s value=%s", name, raw)
+                    return None
+                vals[name] = pose.clamp_dxl(name, raw)
+            return schemas.AnimatorPose(**vals)
         except OSError as e:
-            self.log.warning("dxl.write.failed error=%s", e)
-            self._has_u2d2 = False
-            await self._publish_state("degraded", detail=str(e))
+            self.log.warning("dxl.read.failed error=%s", e)
+            return None
 
     async def _stepper_loop(self) -> None:
-        """Ease current pose toward target pose at 30Hz and write to bus.
+        """Ease the current pose toward the target pose and write to the bus.
 
-        Each servo uses its own time constant (DEFAULT_TAUS). Jaw is near-zero
-        tau so it tracks lipsync RMS closely; head/eye/brow are smoothed for
-        non-tweaky motion.
+        Uses the acceleration-limited PoseSmoother (motion.py): every move
+        eases IN and out, so a large target change no longer starts with a
+        jerk. Per-servo smooth-times keep the jaw fast for lipsync while the
+        head stays calm and deliberate.
         """
         last = time.monotonic()
         while not self._shutdown.is_set():
+            now = time.monotonic()
+            dt = now - last
+            last = now
             try:
                 if self._has_u2d2:
-                    now = time.monotonic()
-                    dt = now - last
-                    last = now
-
-                    # First-order exponential easing per servo
-                    new_vals: dict[str, int] = {}
-                    for name in ("head_lr", "head_ud", "eye", "jaw", "brow"):
-                        tau = self._taus.get(name, 0.15)
-                        a = 1.0 - math.exp(-dt / max(1e-6, tau))
-                        cv = float(getattr(self._current_pose, name))
-                        tv = float(getattr(self._target_pose, name))
-                        nv = cv + (tv - cv) * a
-                        new_vals[name] = pose.clamp_dxl(name, nv)
-
-                    new_pose = schemas.AnimatorPose(**new_vals)
+                    new_pose = self._smoother.step(self._target_pose, dt)
                     try:
                         self._move_to_pose(new_pose)
                     except OSError as e:
@@ -384,7 +391,6 @@ class AnimatorService(BaseService):
         Deferred while a user intent is recent (1.5s) or Lafufu is speaking (0.6s).
         Disabled entirely if servo bus is degraded.
         """
-        import math
         import random
 
         HEAD_LR_RANGE = abs(pose.DXL_HEAD_LR_LEFT_POS - pose.DXL_HEAD_LR_RIGHT_POS)

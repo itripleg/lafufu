@@ -13,9 +13,18 @@ nats_server = nats_server_fixture("4240")
 @pytest.fixture
 async def running_animator(nats_server):
     bus = FakeDxlBus()
-    # Use near-zero taus + high stepper rate so tests don't wait on easing.
-    fast_taus = {name: 0.001 for name in ("head_lr", "head_ud", "eye", "jaw", "brow")}
-    svc = AnimatorService(bus=bus, nats_url=nats_server, taus=fast_taus, stepper_hz=200.0)
+    # Near-zero smooth-times + uncapped speed + high stepper rate so tests
+    # converge in ~1 tick instead of waiting on real easing.
+    servos = ("head_lr", "head_ud", "eye", "jaw", "brow")
+    fast_smooth = {name: 0.001 for name in servos}
+    fast_speeds = {name: 1e7 for name in servos}
+    svc = AnimatorService(
+        bus=bus,
+        nats_url=nats_server,
+        smooth_times=fast_smooth,
+        max_speeds=fast_speeds,
+        stepper_hz=200.0,
+    )
     task = asyncio.create_task(svc.run())
     # Wait for service ready
     await asyncio.sleep(0.4)
@@ -203,6 +212,48 @@ async def test_preview_intent_cancels_active_expression(running_animator, nats_s
     await asyncio.sleep(0.15)
     await nc.drain()
     assert svc._current_expression is None
+
+
+async def test_startup_eases_from_real_position_not_snap(nats_server):
+    """On boot the animator reads where the servos actually are and EASES to
+    idle — it must not snap (write idle directly) from an unknown start."""
+    start_lr = 1850  # near an extreme; idle head_lr is ~2063
+    bus = FakeDxlBus(
+        initial_positions={
+            "head_lr": start_lr,
+            "head_ud": 3082,
+            "eye": 2045,
+            "jaw": 1728,
+            "brow": 2075,
+        }
+    )
+    # Default (realistic) smooth_times so the ease is observable over time.
+    svc = AnimatorService(bus=bus, nats_url=nats_server, stepper_hz=120.0)
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.5)
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=2)
+
+    from lafufu_animator import pose
+
+    head_writes = [pos for (servo, pos) in bus.writes if servo == "head_lr"]
+    assert head_writes, "stepper never wrote head_lr"
+    idle_lr = pose.HEAD_IDLE_LR_DXL
+    # First write starts near the real position, NOT snapped to idle.
+    assert abs(head_writes[0] - start_lr) < abs(head_writes[0] - idle_lr)
+    # And it eases toward idle over the run.
+    assert abs(head_writes[-1] - idle_lr) < abs(head_writes[0] - idle_lr)
+
+
+async def test_configures_hardware_limits_on_startup(nats_server):
+    """Animator writes the per-servo hardware safety limits when it boots."""
+    bus = FakeDxlBus()
+    svc = AnimatorService(bus=bus, nats_url=nats_server, stepper_hz=120.0)
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.3)
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=2)
+    assert bus.limits_configured_count >= 1
 
 
 async def test_degrades_gracefully_when_bus_disconnects(running_animator, nats_server):

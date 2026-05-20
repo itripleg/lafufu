@@ -32,6 +32,18 @@ CLAMP = {
     "eye": (DXL_EYE_LEFT_POS, DXL_EYE_RIGHT_POS),
 }
 
+# Hardware motion backstop, written to every servo by DxlBus.configure_limits().
+# The software PoseSmoother (see motion.py) is the PRIMARY motion shaper; these
+# are a safety cap *beneath* it so a bypassed or runaway goal can't slew at the
+# servo's absolute maximum. Chosen generous enough that the servo always tracks
+# the 30 Hz eased command stream without lag.
+#
+# Units are DXL-model-specific (X-series: Profile Velocity ≈ 0.229 rev/min,
+# Profile Acceleration ≈ 214.577 rev/min² per unit). VERIFY against your servo
+# model and tune the feel on real hardware.
+PROFILE_VELOCITY = 300
+PROFILE_ACCELERATION = 80
+
 
 def clamp(value: float, lo: float, hi: float) -> int:
     """Clamp value to [min(lo,hi), max(lo,hi)] and return as int."""

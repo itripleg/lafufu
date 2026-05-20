@@ -14,6 +14,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from nats.aio.subscription import Subscription as NatsSubscription
 from starlette.routing import Mount, WebSocketRoute
 
+from .auth import ws_authorized
+
 log = logging.getLogger(__name__)
 
 
@@ -31,6 +33,12 @@ class WsBridge:
         bridge = self
 
         async def ws_endpoint(ws: WebSocket):
+            # Same optional shared-token auth as the HTTP API. The browser sends
+            # the lafufu_token cookie on the handshake automatically; loopback
+            # (the kiosk) and the no-token-configured case are always allowed.
+            if not ws_authorized(ws):
+                await ws.close(code=1008)  # 1008 = policy violation
+                return
             await ws.accept()
             bridge._ws_patterns[ws] = set()
             try:
