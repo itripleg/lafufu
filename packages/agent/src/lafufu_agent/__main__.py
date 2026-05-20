@@ -156,8 +156,8 @@ class RealMic:
                     # Gave up waiting — nothing said.
                     return False, []
 
-    def record_until_silence(self, pre_roll: list[bytes]) -> str:
-        """Continue reading after onset, transcribe when silence ends."""
+    def record_until_silence(self, pre_roll: list[bytes]) -> "np.ndarray":  # noqa: F821
+        """Continue reading after onset; return float32 audio array (caller transcribes)."""
         import audioop
         import numpy as np
 
@@ -183,7 +183,7 @@ class RealMic:
                 break
 
         if not frames:
-            return ""
+            return np.zeros(0, dtype=np.float32)
 
         raw = b"".join(frames)
         if eff_rate != 16000:
@@ -192,14 +192,17 @@ class RealMic:
         # Convert int16 PCM bytes -> float32 numpy array normalized to [-1, 1].
         # Both STT backends accept this directly, skipping a disk write + decode.
         audio_np = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
-        return self.stt.transcribe(audio_np)
+        return audio_np
 
     def listen_once(self) -> str:
         """Backward-compat single-call interface (used by text intent paths)."""
         started, pre_roll = self.wait_for_onset()
         if not started:
             return ""
-        return self.record_until_silence(pre_roll)
+        audio = self.record_until_silence(pre_roll)
+        if audio.size == 0:
+            return ""
+        return self.stt.transcribe(audio)
 
 
 def audio_rms_bytes(pcm16_bytes: bytes) -> float:

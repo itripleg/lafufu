@@ -342,3 +342,47 @@ async def test_text_intent_processes_while_mic_is_waiting_for_onset(nats_server)
 
     svc._shutdown.set()
     await asyncio.wait_for(task, timeout=3)
+
+
+async def test_voice_cycle_publishes_transcribing_state(nats_server):
+    """Voice cycle should publish 'transcribing' state after speech onset, before LLM."""
+    import numpy
+    from lafufu_shared.testing import FakeWhisper
+
+    class _OnsetMic:
+        def wait_for_onset(self):
+            return (True, [])
+
+        def record_until_silence(self, pre_roll):
+            return numpy.zeros(1600, dtype=numpy.float32)
+
+        def listen_once(self):
+            return ""
+
+    svc = AgentService(
+        mic=_OnsetMic(),
+        ollama=FakeOllama(scripts=[("hello", "[neutral]\nhi")]),
+        piper=FakePiper(chunks=[(b"\x00" * 100, 0.3)]),
+        nats_url=nats_server,
+        stt=FakeWhisper(fixed_reply="hello there"),
+    )
+
+    nc = await nats.connect(nats_server)
+    collected_states: list[str] = []
+
+    async def on_state(msg):
+        # subject is e.g. "agent.state.transcribing" — grab the trailing token
+        token = msg.subject.split(".")[-1]
+        collected_states.append(token)
+
+    await nc.subscribe(f"{topics.AGENT_STATE}.*", cb=on_state)
+
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.3)
+    svc.start_mic_loop()
+    await asyncio.sleep(0.6)
+    await nc.drain()
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)
+
+    assert "transcribing" in collected_states
