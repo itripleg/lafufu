@@ -142,6 +142,9 @@ class PrinterIntentCompose(BaseModel):
     lucky_subway_stop: str | None = Field(default=None, max_length=128)
     lucky_numbers: list[int] | None = Field(default=None, max_length=10)
     title: str | None = Field(default=None, max_length=256)
+    # Font filename, resolved by the printer service against its font dirs.
+    # None → the composer's bundled default.
+    font: str | None = Field(default=None, max_length=128)
 
 
 class PrinterState(BaseModel):

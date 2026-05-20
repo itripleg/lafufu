@@ -1,12 +1,26 @@
 import asyncio
 
 import nats
-from lafufu_printer.service import PrinterService
+from lafufu_printer.service import PrinterService, _resolve_font
 from lafufu_shared import schemas, topics
 from lafufu_shared.nats_helper import publish_model
 from lafufu_shared.testing import nats_server_fixture
 
 nats_server = nats_server_fixture("4260")
+
+
+def test_resolve_font_finds_bundled_default():
+    """The repo's default IM Fell English font resolves to an on-disk path."""
+    path = _resolve_font("IMFellEnglish-Regular.ttf")
+    assert path is not None and path.endswith("IMFellEnglish-Regular.ttf")
+
+
+def test_resolve_font_rejects_unknown_and_unsafe_names():
+    assert _resolve_font(None) is None
+    assert _resolve_font("does-not-exist.ttf") is None
+    # Path traversal / nested names must not resolve.
+    assert _resolve_font("../../../etc/passwd") is None
+    assert _resolve_font("sub/dir.ttf") is None
 
 
 class FakeCups:

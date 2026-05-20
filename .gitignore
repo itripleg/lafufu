@@ -25,6 +25,9 @@ web/public/lafufu-bg.mp4
 /var/lafufu/
 .env
 .env.local
+# Printer runtime data — operator-uploaded letterheads/fonts, active
+# letterhead, composed output. Defaults under <repo>/data/printer.
+/data/
 
 # Piper voice models (large binary files; deployed out-of-band to /srv/lafufu/models/)
 models/*.onnx

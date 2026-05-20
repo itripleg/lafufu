@@ -3,13 +3,17 @@
 import asyncio
 import contextlib
 import logging
-import os
 from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
 from lafufu_shared import nats_helper, schemas, topics
 from lafufu_shared.base_service import BaseService
+from lafufu_shared.paths import (
+    printer_data_dir,
+    printer_default_fonts_dir,
+    printer_fonts_upload_dir,
+)
 
 from .formatter import format_reply, format_transcript
 
@@ -17,9 +21,23 @@ log = logging.getLogger(__name__)
 
 
 def _printer_data_dir() -> Path:
-    """Directory where uploaded letterheads + composed images live. Matches
-    the control router's _data_dir() so the two sides agree."""
-    return Path(os.environ.get("LAFUFU_PRINTER_DATA_DIR", "/srv/lafufu/data/printer"))
+    """Directory where uploaded letterheads + composed images live. Shares
+    lafufu_shared.paths with the control router so the two sides agree."""
+    return printer_data_dir()
+
+
+def _resolve_font(name: str | None) -> str | None:
+    """Resolve a font filename to an absolute path, searching repo default
+    fonts then operator uploads. Returns None for missing/unsafe names so the
+    composer falls back to its bundled default. Bare filenames only — a name
+    containing path separators is rejected to block traversal."""
+    if not name or name != Path(name).name:
+        return None
+    for d in (printer_default_fonts_dir(), printer_fonts_upload_dir()):
+        p = d / name
+        if p.is_file():
+            return str(p)
+    return None
 
 
 def _path_within_allowed_roots(path: Path) -> bool:
@@ -297,6 +315,10 @@ class PrinterService(BaseService):
         if not self._cups.default_printer():
             await self._publish_state("offline")
             return
+        # Resolve the requested font by name; None falls through to the
+        # composer's bundled default.
+        font_path = _resolve_font(msg.font)
+        font_kwargs = {"font_path": font_path, "lucky_font_path": font_path} if font_path else {}
         try:
             # PIL composition is CPU-bound (~200ms-2s on a Pi for full card).
             # Run in a worker thread so heartbeats + other NATS handlers
@@ -307,6 +329,7 @@ class PrinterService(BaseService):
                 body_text=msg.text,
                 lucky_subway_stop=msg.lucky_subway_stop,
                 lucky_numbers=msg.lucky_numbers,
+                **font_kwargs,
             )
         except Exception as e:
             self.log.warning("compose.failed error=%s", e)

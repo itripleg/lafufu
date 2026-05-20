@@ -315,14 +315,26 @@ input[type="range"].slider::-moz-range-track {
   border: 1px solid var(--c-edge);
 }
 
-/* Custom scrollbars to match the warm-dark palette */
-.scroll-warm::-webkit-scrollbar { width: 8px; height: 8px; }
-.scroll-warm::-webkit-scrollbar-track { background: transparent; }
-.scroll-warm::-webkit-scrollbar-thumb {
+/* Warm-dark scrollbars — applied app-wide so every scroll surface (panels,
+   textareas, the NATS firehose, the page itself) shares one consistent look. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--c-edge) transparent;
+}
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
   background: var(--c-edge);
   border-radius: 999px;
 }
-.scroll-warm::-webkit-scrollbar-thumb:hover { background: #5a4838; }
+*::-webkit-scrollbar-thumb:hover { background: #5a4838; }
+*::-webkit-scrollbar-corner { background: transparent; }
+
+/* Reserve the scrollbar gutter so content doesn't jump sideways when a
+   scrollbar appears or disappears — e.g. a settings search that yields no
+   results, collapsing a scrollable panel. */
+html { scrollbar-gutter: stable; }
+.scroll-warm { scrollbar-gutter: stable; }
 
 /* Animations */
 @keyframes breathe {

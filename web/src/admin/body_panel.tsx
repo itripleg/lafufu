@@ -189,6 +189,8 @@ export const BodyPanel: Component<{ nats: NatsWs }> = (props) => {
       title="Body"
       eyebrow="expressions · live pose · servo defaults"
       accent="var(--c-iris)"
+      height="62vh"
+      style={{ "min-height": "62vh" }}
       actions={
         <>
           <Show when={dirtyCount() > 0}>

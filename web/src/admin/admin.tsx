@@ -1,7 +1,7 @@
-import { Component, createSignal, onCleanup, onMount, Show } from "solid-js";
+import { Component, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { NatsWs } from "../shared/nats_ws";
 import { Blob } from "../shared/blob";
-import { lsKeys, lsRemovePrefix } from "../shared/local_storage";
+import { lsGet, lsKeys, lsRemovePrefix, lsSet } from "../shared/local_storage";
 import { toast } from "../shared/toast";
 import { BodyPanel } from "./body_panel";
 import { ChatLog } from "./chat_log";
@@ -14,10 +14,21 @@ import { SystemPulse } from "./system_pulse";
  * developer) needs in a single pane. Layout is asymmetric on desktop and
  * stacks cleanly on mobile.
  */
+type AdminTab = "chat" | "body" | "settings" | "status";
+
+const ADMIN_TABS: { id: AdminTab; label: string; accent: string }[] = [
+  { id: "chat", label: "Chat", accent: "var(--c-moss)" },
+  { id: "body", label: "Body", accent: "var(--c-iris)" },
+  { id: "settings", label: "Settings", accent: "var(--c-amber)" },
+  { id: "status", label: "Status", accent: "var(--c-mauve)" },
+];
+
 const Admin: Component = () => {
   const nats = new NatsWs();
   const [draftCount, setDraftCount] = createSignal(0);
   const [connState, setConnState] = createSignal<"live" | "pending">("pending");
+  const [tab, setTab] = createSignal<AdminTab>(lsGet<AdminTab>("admin/tab", "chat"));
+  const setActiveTab = (t: AdminTab) => { setTab(t); lsSet("admin/tab", t); };
 
   const refreshDraftCount = () => {
     setDraftCount(lsKeys().filter((k) => k.startsWith("settings/draft/")).length);
@@ -171,25 +182,115 @@ const Admin: Component = () => {
         </div>
       </header>
 
-      {/* Services strip — thin horizontal row at the very top. */}
-      <div style={{ "margin-bottom": "20px" }}>
-        <ServiceStatus nats={nats} />
+      {/* TABBED CONTROL GROUP — chat · body · settings.
+          First thing on the page; one panel visible at a time so the three
+          sections are symmetrical in size. All three stay mounted (display
+          toggle, not <Show>) so chat history, live pose, and NATS
+          subscriptions survive tab switches. */}
+      <div
+        role="tablist"
+        aria-label="control sections"
+        style={{
+          display: "flex",
+          gap: "5px",
+          padding: "5px",
+          background: "var(--c-shell)",
+          border: "1px solid var(--c-edge)",
+          "border-radius": "16px",
+          "margin-bottom": "16px",
+        }}
+      >
+        <For each={ADMIN_TABS}>
+          {(t) => {
+            const active = () => tab() === t.id;
+            const showDraftDot = () => t.id === "settings" && draftCount() > 0;
+            return (
+              <button
+                role="tab"
+                aria-selected={active()}
+                onClick={() => setActiveTab(t.id)}
+                style={{
+                  position: "relative",
+                  flex: "1 1 0",
+                  display: "flex",
+                  "align-items": "center",
+                  "justify-content": "center",
+                  gap: "8px",
+                  padding: "13px 16px",
+                  "border-radius": "12px",
+                  border: `1px solid ${active() ? t.accent : "transparent"}`,
+                  background: active()
+                    ? `linear-gradient(160deg, ${t.accent}26, ${t.accent}0d)`
+                    : "transparent",
+                  color: active() ? "var(--c-bone)" : "var(--c-mist)",
+                  "font-family": "var(--f-display-roman, var(--f-display))",
+                  "font-size": "16px",
+                  "letter-spacing": ".01em",
+                  cursor: "pointer",
+                  transition:
+                    "background var(--t-fast), border-color var(--t-fast), color var(--t-fast)",
+                }}
+                onMouseOver={(e) => {
+                  if (!active()) e.currentTarget.style.color = "var(--c-bone)";
+                }}
+                onMouseOut={(e) => {
+                  if (!active()) e.currentTarget.style.color = "var(--c-mist)";
+                }}
+              >
+                <span
+                  style={{
+                    width: "7px",
+                    height: "7px",
+                    "border-radius": "50%",
+                    background: active() ? t.accent : "var(--c-edge)",
+                    "box-shadow": active() ? `0 0 8px ${t.accent}` : "none",
+                    transition: "background var(--t-fast), box-shadow var(--t-fast)",
+                  }}
+                />
+                {t.label}
+                {/* Absolutely positioned so the unsaved-draft count never
+                    nudges the tab label as it appears/disappears. */}
+                <Show when={showDraftDot()}>
+                  <span
+                    class="f-mono"
+                    style={{
+                      position: "absolute",
+                      top: "50%",
+                      right: "10px",
+                      transform: "translateY(-50%)",
+                      "font-size": "10px",
+                      color: "var(--c-amber)",
+                      "letter-spacing": ".04em",
+                      "pointer-events": "none",
+                    }}
+                  >
+                    ● {draftCount()}
+                  </span>
+                </Show>
+              </button>
+            );
+          }}
+        </For>
       </div>
 
-      {/* Body panel — full width below, consolidates Pose / Expressions /
-          Sliders. Sliders double as live pose readout. */}
-      <div style={{ "margin-bottom": "20px" }}>
-        <BodyPanel nats={nats} />
+      <div>
+        <div style={{ display: tab() === "chat" ? "block" : "none" }}>
+          <ChatLog nats={nats} />
+        </div>
+        <div style={{ display: tab() === "body" ? "block" : "none" }}>
+          <BodyPanel nats={nats} />
+        </div>
+        <div style={{ display: tab() === "settings" ? "block" : "none" }}>
+          <SettingsForm onDraftCountChange={refreshDraftCount} />
+        </div>
+        {/* Status / debug — service health + raw NATS firehose. */}
+        <div style={{ display: tab() === "status" ? "block" : "none" }}>
+          <div style={{ "margin-bottom": "20px" }}>
+            <ServiceStatus nats={nats} />
+          </div>
+          <SystemPulse nats={nats} />
+        </div>
       </div>
-
-      {/* CHAT + SETTINGS — side by side on wide screens --------------- */}
-      <div class="cards-grid--wide" style={{ "margin-bottom": "20px" }}>
-        <ChatLog nats={nats} />
-        <SettingsForm onDraftCountChange={refreshDraftCount} />
-      </div>
-
-      {/* SYSTEM PULSE — full width ---------------------------------- */}
-      <SystemPulse nats={nats} />
     </div>
   );
 };

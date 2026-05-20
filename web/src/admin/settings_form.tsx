@@ -4,6 +4,7 @@ import { api } from "../shared/api";
 import { lsGet, lsRemove, lsSet, lsKeys } from "../shared/local_storage";
 import { toast } from "../shared/toast";
 import { Panel } from "./panel";
+import { LetterheadCard, ComposeFortuneCard } from "./printer_card";
 
 interface Row {
   key: string;
@@ -43,348 +44,6 @@ const DYNAMIC_OPTIONS: Record<string, () => Promise<string[]>> = {
 };
 
 const DRAFT_PREFIX = "settings/draft/";
-
-/** Image-upload widget for the printer letterhead. Shown in the Printer tab. */
-const LetterheadCard: Component = () => {
-  // Bumped on every successful upload/delete to bust the <img> cache.
-  const [version, setVersion] = createSignal(Date.now());
-  const [busy, setBusy] = createSignal(false);
-  const [hasImage, setHasImage] = createSignal(true);  // optimistic; <img onerror> flips it
-  let fileInput!: HTMLInputElement;
-
-  const pick = () => fileInput?.click();
-
-  const onFile = async (e: Event) => {
-    const f = (e.currentTarget as HTMLInputElement).files?.[0];
-    if (!f) return;
-    setBusy(true);
-    try {
-      await api.uploadLetterhead(f);
-      setHasImage(true);
-      setVersion(Date.now());
-      toast.ok(`letterhead uploaded`, `${f.name} · ${(f.size / 1024).toFixed(1)} KB`);
-    } catch (err: any) {
-      toast.err("upload failed", err.message);
-    } finally {
-      setBusy(false);
-      if (fileInput) fileInput.value = "";
-    }
-  };
-
-  const remove = async () => {
-    if (!window.confirm("Remove uploaded letterhead?")) return;
-    setBusy(true);
-    try {
-      await api.deleteLetterhead();
-      setHasImage(false);
-      setVersion(Date.now());
-      toast.ok("letterhead removed");
-    } catch (err: any) {
-      toast.err("remove failed", err.message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div
-      style={{
-        padding: "14px",
-        "border-radius": "14px",
-        background: "rgba(243, 236, 220, 0.02)",
-        border: "1px solid var(--c-edge)",
-        "margin-bottom": "16px",
-      }}
-    >
-      <div style={{ display: "flex", "align-items": "center", "margin-bottom": "10px", gap: "10px" }}>
-        <code
-          class="f-mono"
-          style={{
-            "font-size": "12px",
-            color: "var(--c-cream)",
-            background: "var(--c-shell)",
-            padding: "2px 8px",
-            "border-radius": "6px",
-            border: "1px solid var(--c-edge)",
-          }}
-        >
-          printer.letterhead
-        </code>
-        <span
-          class="f-mono"
-          style={{ "font-size": "10px", color: "var(--c-stone)", "letter-spacing": ".08em", "text-transform": "uppercase" }}
-        >
-          image
-        </span>
-        <div style={{ flex: 1 }} />
-        <button class="btn btn--ghost btn--micro" onClick={pick} disabled={busy()}>
-          {busy() ? "…" : hasImage() ? "replace" : "upload"}
-        </button>
-        <button
-          class="btn btn--ghost btn--micro"
-          onClick={async () => {
-            setBusy(true);
-            try {
-              await api.testPrint();
-              toast.ok("calibration print sent", "measure offsets against the half-inch grid");
-            } catch (err: any) {
-              toast.err("test print failed", err.message);
-            } finally {
-              setBusy(false);
-            }
-          }}
-          disabled={busy()}
-          title="Print a half-inch grid + corner markers to dial in offsets"
-        >
-          test print
-        </button>
-        <Show when={hasImage()}>
-          <button
-            class="btn btn--primary btn--micro"
-            onClick={async () => {
-              setBusy(true);
-              try {
-                await api.printLetterhead();
-                toast.ok("print sent", "queued on the default printer");
-              } catch (err: any) {
-                toast.err("print failed", err.message);
-              } finally {
-                setBusy(false);
-              }
-            }}
-            disabled={busy()}
-            title="Send the letterhead image to the printer"
-          >
-            print
-          </button>
-          <button class="btn btn--ghost btn--micro" onClick={remove} disabled={busy()}>
-            remove
-          </button>
-        </Show>
-        <input
-          ref={fileInput}
-          type="file"
-          accept="image/png,image/jpeg,image/webp"
-          style={{ display: "none" }}
-          onChange={onFile}
-        />
-      </div>
-
-      <Show
-        when={hasImage()}
-        fallback={
-          <div
-            style={{
-              padding: "32px 12px",
-              "text-align": "center",
-              color: "var(--c-stone)",
-              "font-style": "italic",
-              "font-family": "var(--f-display)",
-              "font-size": "14px",
-            }}
-          >
-            no letterhead uploaded — replies will print as plain text
-          </div>
-        }
-      >
-        <div
-          style={{
-            display: "flex",
-            "justify-content": "center",
-            background: "var(--c-shell)",
-            "border-radius": "10px",
-            padding: "10px",
-            border: "1px solid var(--c-edge)",
-          }}
-        >
-          <img
-            src={`${api.letterheadUrl()}?v=${version()}`}
-            alt="printer letterhead"
-            style={{ "max-width": "100%", "max-height": "260px", "border-radius": "4px" }}
-            onError={() => setHasImage(false)}
-            onLoad={() => setHasImage(true)}
-          />
-        </div>
-      </Show>
-
-      <div
-        style={{
-          "font-size": "12px",
-          "line-height": 1.4,
-          color: "var(--c-stone)",
-          "margin-top": "10px",
-          "font-style": "italic",
-        }}
-      >
-        Image printed behind each reply — leave the middle area blank for the
-        text overlay. Max 10 MB, PNG/JPEG/WebP.
-      </div>
-    </div>
-  );
-};
-
-/** Manual fortune composer — type text + optional lucky info, server overlays
- *  it on the uploaded letterhead and prints. Useful before the system prompt
- *  is tuned for fortune-style replies. */
-const ComposeFortuneCard: Component = () => {
-  const DEFAULT_TEXT =
-    "I have watched you pass beneath the city lights, carrying questions you have not yet admitted are questions.\n\n" +
-    "Tonight, New York will answer in fragments: a reflection in a train window, a stranger's sentence, a door left open, a sign flickering at the exact wrong moment.\n\n" +
-    "Do not look for one grand revelation. Look for three small glitches in the ordinary world.";
-
-  const [text, setText] = createSignal(lsGet<string>("compose/text", DEFAULT_TEXT));
-  const [stop, setStop] = createSignal(lsGet<string>("compose/stop", "Canal Street"));
-  const [nums, setNums] = createSignal(lsGet<string>("compose/nums", "5, 10, 20"));
-  const [sending, setSending] = createSignal(false);
-
-  const onText = (v: string) => { setText(v); lsSet("compose/text", v); };
-  const onStop = (v: string) => { setStop(v); lsSet("compose/stop", v); };
-  const onNums = (v: string) => { setNums(v); lsSet("compose/nums", v); };
-
-  const parseNums = (s: string): number[] | undefined => {
-    const arr = s.split(/[,\s]+/).map((x) => parseInt(x.trim(), 10)).filter((n) => !Number.isNaN(n));
-    return arr.length ? arr : undefined;
-  };
-
-  const submit = async () => {
-    const body = text().trim();
-    if (!body) { toast.warn("nothing to print", "type some fortune text first"); return; }
-    setSending(true);
-    try {
-      await api.composePrint({
-        text: body,
-        lucky_subway_stop: stop().trim() || undefined,
-        lucky_numbers: parseNums(nums()),
-      });
-      toast.ok("composed fortune sent", "PIL overlay → printer queue");
-    } catch (err: any) {
-      toast.err("compose failed", err.message);
-    } finally {
-      setSending(false);
-    }
-  };
-
-  return (
-    <div
-      style={{
-        padding: "14px",
-        "border-radius": "14px",
-        background: "rgba(243, 236, 220, 0.02)",
-        border: "1px solid var(--c-edge)",
-        "margin-bottom": "16px",
-      }}
-    >
-      <div
-        style={{
-          display: "flex", "align-items": "center", "margin-bottom": "10px", gap: "10px",
-        }}
-      >
-        <code
-          class="f-mono"
-          style={{
-            "font-size": "12px",
-            color: "var(--c-cream)",
-            background: "var(--c-shell)",
-            padding: "2px 8px",
-            "border-radius": "6px",
-            border: "1px solid var(--c-edge)",
-          }}
-        >
-          compose fortune
-        </code>
-        <span
-          class="f-mono"
-          style={{
-            "font-size": "10px",
-            color: "var(--c-stone)",
-            "letter-spacing": ".08em",
-            "text-transform": "uppercase",
-          }}
-        >
-          text → letterhead overlay
-        </span>
-        <div style={{ flex: 1 }} />
-        <button
-          class="btn btn--primary btn--micro"
-          disabled={sending() || !text().trim()}
-          onClick={submit}
-          title="Compose this text onto the letterhead and print it"
-        >
-          {sending() ? "…" : "compose & print"}
-        </button>
-      </div>
-
-      <textarea
-        class="field"
-        rows="6"
-        style={{
-          width: "100%",
-          "font-family": "var(--f-sans)",
-          resize: "vertical",
-          "margin-bottom": "10px",
-        }}
-        placeholder="The fortune body — paragraphs separated by blank lines wrap nicely…"
-        value={text()}
-        onInput={(e) => onText(e.currentTarget.value)}
-      />
-
-      <div style={{ display: "flex", gap: "8px", "flex-wrap": "wrap" }}>
-        <label
-          class="f-mono"
-          style={{
-            "font-size": "11px",
-            color: "var(--c-stone)",
-            display: "flex", "flex-direction": "column", gap: "4px",
-            flex: "1 1 220px",
-          }}
-        >
-          lucky subway stop
-          <input
-            type="text"
-            class="field"
-            style={{ "font-family": "var(--f-sans)" }}
-            value={stop()}
-            onInput={(e) => onStop(e.currentTarget.value)}
-            placeholder="(optional)"
-          />
-        </label>
-        <label
-          class="f-mono"
-          style={{
-            "font-size": "11px",
-            color: "var(--c-stone)",
-            display: "flex", "flex-direction": "column", gap: "4px",
-            flex: "1 1 160px",
-          }}
-        >
-          lucky numbers
-          <input
-            type="text"
-            class="field f-num"
-            style={{ "font-family": "var(--f-mono)" }}
-            value={nums()}
-            onInput={(e) => onNums(e.currentTarget.value)}
-            placeholder="5, 10, 20"
-          />
-        </label>
-      </div>
-
-      <div
-        style={{
-          "font-size": "12px",
-          "line-height": 1.4,
-          color: "var(--c-stone)",
-          "margin-top": "10px",
-          "font-style": "italic",
-        }}
-      >
-        Server-side PIL composition: body text auto-shrinks to fit the empty
-        middle band of the card; lucky info sits in a smaller line near the
-        bottom. Font: IM Fell English (bundled, 17th-c. revival serif).
-      </div>
-    </div>
-  );
-};
 
 type Tab = "audio" | "model" | "printer" | "other";
 
@@ -717,31 +376,35 @@ export const SettingsForm: Component<Props> = (props) => {
     );
   };
 
-  // Per-tab counts so the tab pills can show how many keys live in each
-  // category — and the user can see at a glance which tab has dirty drafts.
+  const matchesQuery = (r: Row, q: string) =>
+    r.key.toLowerCase().includes(q) ||
+    (r.description ?? "").toLowerCase().includes(q);
+
+  // Per-tab counts. `dirty` = unsaved drafts in that category; `matches` =
+  // keys matching the current search query (0 when the search box is empty).
   const countsByTab = createMemo(() => {
-    const out: Record<Tab, { total: number; dirty: number }> = {
-      audio: { total: 0, dirty: 0 },
-      model: { total: 0, dirty: 0 },
-      printer: { total: 0, dirty: 0 },
-      other: { total: 0, dirty: 0 },
+    const q = filter().trim().toLowerCase();
+    const out: Record<Tab, { dirty: number; matches: number }> = {
+      audio: { dirty: 0, matches: 0 },
+      model: { dirty: 0, matches: 0 },
+      printer: { dirty: 0, matches: 0 },
+      other: { dirty: 0, matches: 0 },
     };
     for (const r of rows) {
       const c = categoryOf(r.key);
-      out[c].total++;
       if (isDirty(r)) out[c].dirty++;
+      if (q && matchesQuery(r, q)) out[c].matches++;
     }
     return out;
   });
 
   const filtered = createMemo(() => {
     const q = filter().trim().toLowerCase();
-    const tabbed = rows.filter((r) => categoryOf(r.key) === tab());
-    if (!q) return tabbed;
-    return tabbed.filter((r) =>
-      r.key.toLowerCase().includes(q) ||
-      (r.description ?? "").toLowerCase().includes(q),
-    );
+    // Empty query → scope to the active tab. Non-empty → global search:
+    // match across every category so a search finds settings regardless of
+    // which tab is selected.
+    if (!q) return rows.filter((r) => categoryOf(r.key) === tab());
+    return rows.filter((r) => matchesQuery(r, q));
   });
 
   return (
@@ -750,6 +413,7 @@ export const SettingsForm: Component<Props> = (props) => {
       eyebrow="tunables · per-key drafts → localStorage"
       accent="var(--c-amber)"
       height="62vh"
+      style={{ "min-height": "62vh" }}
       actions={
         <>
           <Show when={dirtyCount() > 0}>
@@ -770,8 +434,9 @@ export const SettingsForm: Component<Props> = (props) => {
         </>
       }
     >
-      {/* Tab bar — categories of settings, with per-tab key counts and a
-          discreet amber dot when that tab has dirty drafts. */}
+      {/* Tab bar — categories of settings. Shows a count only while a search
+          is active (how many matches live in each tab) and a discreet amber
+          dot when that tab has dirty drafts. */}
       <div
         role="tablist"
         style={{
@@ -797,32 +462,53 @@ export const SettingsForm: Component<Props> = (props) => {
                 title={t.hint}
                 class="btn btn--micro"
                 style={{
+                  position: "relative",
                   background: active() ? "var(--c-raised)" : "transparent",
                   border: active() ? "1px solid var(--c-edge)" : "1px solid transparent",
                   color: active() ? "var(--c-bone)" : "var(--c-mist)",
                   display: "flex",
                   "align-items": "center",
-                  gap: "6px",
                   flex: "1 1 auto",
                   "justify-content": "center",
                   "min-width": "0",
                 }}
               >
                 <span>{t.label}</span>
-                <span
-                  class="f-mono"
-                  style={{ "font-size": "10px", color: "var(--c-stone)" }}
-                >
-                  {c().total}
-                </span>
+                {/* Match count + dirty dot are absolutely positioned so they
+                    never change the tab's flow size — no layout shift when a
+                    search toggles the badge on and off. */}
+                <Show when={c().matches > 0}>
+                  <span
+                    class="f-mono"
+                    style={{
+                      position: "absolute",
+                      top: "50%",
+                      right: "5px",
+                      transform: "translateY(-50%)",
+                      "font-size": "9px",
+                      color: "var(--c-amber)",
+                      background: "rgba(212, 162, 89, 0.14)",
+                      "border-radius": "999px",
+                      padding: "1px 5px",
+                      "pointer-events": "none",
+                    }}
+                    title={`${c().matches} search match${c().matches === 1 ? "" : "es"}`}
+                  >
+                    {c().matches}
+                  </span>
+                </Show>
                 <Show when={c().dirty > 0}>
                   <span
                     style={{
+                      position: "absolute",
+                      top: "4px",
+                      left: "5px",
                       width: "6px",
                       height: "6px",
                       "border-radius": "50%",
                       background: "var(--c-amber)",
                       "box-shadow": "0 0 4px var(--c-amber)",
+                      "pointer-events": "none",
                     }}
                     title={`${c().dirty} unsaved draft${c().dirty === 1 ? "" : "s"}`}
                   />
@@ -844,7 +530,9 @@ export const SettingsForm: Component<Props> = (props) => {
         />
       </div>
 
-      <Show when={tab() === "printer"}>
+      {/* Printer-only widgets — hidden during a global search so the results
+          list isn't pushed down by tab-specific chrome. */}
+      <Show when={tab() === "printer" && filter().trim() === ""}>
         <LetterheadCard />
         <ComposeFortuneCard />
       </Show>

@@ -14,6 +14,7 @@ import logging
 import tempfile
 from pathlib import Path
 
+from lafufu_shared.paths import printer_default_fonts_dir
 from PIL import Image, ImageDraw, ImageFont
 
 log = logging.getLogger(__name__)
@@ -24,10 +25,11 @@ log = logging.getLogger(__name__)
 _BODY_REGION_PCT = (0.05, 0.32, 0.95, 0.78)  # (left, top, right, bottom)
 _LUCKY_REGION_PCT = (0.05, 0.79, 0.95, 0.92)
 
-# Bundled fortune-card font — IM Fell English, a 17th-century revival serif
-# that matches the woodcut illustration on the lafufu letterhead. Shipped
-# inside the package so we don't have to install a font on the Pi.
-_BUNDLED_FONT = str(Path(__file__).parent / "fonts" / "IMFellEnglish-Regular.ttf")
+# Default fortune-card font — IM Fell English, a 17th-century revival serif
+# that matches the woodcut illustration on the lafufu letterhead. Lives in
+# the repo's shared default-fonts dir so the font picker and the composer
+# agree on one canonical location.
+_BUNDLED_FONT = str(printer_default_fonts_dir() / "IMFellEnglish-Regular.ttf")
 
 # Fallbacks if the bundled file is missing for any reason (e.g. running tests
 # from an editable install where assets aren't copied).

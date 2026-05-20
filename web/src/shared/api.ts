@@ -10,6 +10,23 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
   return r.status === 204 ? (undefined as T) : (await r.json() as T);
 }
 
+/** Multipart file upload — the browser sets the multipart Content-Type itself. */
+async function upload<T>(path: string, file: File): Promise<T> {
+  const fd = new FormData();
+  fd.append("file", file);
+  const r = await fetch(`${BASE}${path}`, { method: "POST", body: fd });
+  if (!r.ok) throw new Error(`POST ${path}: ${r.status}`);
+  return (await r.json()) as T;
+}
+
+/** A letterhead or font asset — bundled with the repo or operator-uploaded. */
+export type PrinterAsset = {
+  kind: "default" | "upload";
+  name: string;
+  active: boolean;
+  size_bytes: number;
+};
+
 export const api = {
   snapshot: () => req<{
     settings: Array<{ key: string; value: string; value_type: string }>;
@@ -44,19 +61,28 @@ export const api = {
       "/agent/stt_backends",
     ),
 
-  // Printer letterhead — image that Lafufu prints replies onto.
+  // Printer letterhead + font galleries.
+  listLetterheads: () => req<{ items: PrinterAsset[] }>("GET", "/printer/letterheads"),
+  letterheadFileUrl: (kind: string, name: string) =>
+    `${BASE}/printer/letterheads/${kind}/${encodeURIComponent(name)}`,
   letterheadUrl: () => `${BASE}/printer/letterhead`,
-  uploadLetterhead: async (file: File): Promise<{ ok: boolean; size_bytes: number }> => {
-    const fd = new FormData();
-    fd.append("file", file);
-    const r = await fetch(`${BASE}/printer/letterhead`, { method: "POST", body: fd });
-    if (!r.ok) throw new Error(`upload letterhead: ${r.status}`);
-    return await r.json();
-  },
-  deleteLetterhead: async (): Promise<void> => {
-    const r = await fetch(`${BASE}/printer/letterhead`, { method: "DELETE" });
-    if (!r.ok && r.status !== 404) throw new Error(`delete letterhead: ${r.status}`);
-  },
+  uploadLetterhead: async (file: File): Promise<{ ok: boolean; kind: string; name: string }> =>
+    upload("/printer/letterhead", file),
+  activateLetterhead: (kind: string, name: string) =>
+    req("POST", `/printer/letterheads/${kind}/${encodeURIComponent(name)}/activate`),
+  deleteLetterheadFile: (kind: string, name: string) =>
+    req("DELETE", `/printer/letterheads/${kind}/${encodeURIComponent(name)}`),
+
+  listFonts: () => req<{ items: PrinterAsset[] }>("GET", "/printer/fonts"),
+  fontFileUrl: (kind: string, name: string) =>
+    `${BASE}/printer/fonts/${kind}/${encodeURIComponent(name)}`,
+  uploadFont: async (file: File): Promise<{ ok: boolean; kind: string; name: string }> =>
+    upload("/printer/font", file),
+  activateFont: (kind: string, name: string) =>
+    req("POST", `/printer/fonts/${kind}/${encodeURIComponent(name)}/activate`),
+  deleteFont: (kind: string, name: string) =>
+    req("DELETE", `/printer/fonts/${kind}/${encodeURIComponent(name)}`),
+
   printLetterhead: () => req("POST", "/printer/print_letterhead"),
   testPrint:       () => req("POST", "/printer/test_print"),
   composePrint:    (body: { text: string; lucky_subway_stop?: string; lucky_numbers?: number[] }) =>
