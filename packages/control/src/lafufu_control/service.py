@@ -3,6 +3,7 @@
 import asyncio
 import json
 import time
+from datetime import UTC, datetime
 
 import uvicorn
 from lafufu_shared import nats_helper, schemas, settings, topics
@@ -15,6 +16,7 @@ from .api.app import create_app
 from .api.ws_bridge import WsBridge
 from .bootstrap import seed_default_settings
 from .db import create_engine_for_path, init_db
+from .models.chat import ChatMessage
 from .models.expression import Expression
 from .models.frame import Frame
 from .models.setting import Setting
@@ -79,6 +81,8 @@ class ControlService(BaseService):
         self._api_token = api_token
         self._server: uvicorn.Server | None = None
         self._app = None
+        # Arrival time of the most recent agent.transcript; cleared by the reply that consumes it.
+        self._last_transcript_at: datetime | None = None
 
     @property
     def nats_url(self) -> str:
@@ -161,6 +165,44 @@ class ControlService(BaseService):
             on_pose,
         )
 
+        async def on_transcript(subject: str, msg: schemas.AgentTranscript) -> None:
+            self._last_transcript_at = datetime.now(UTC)
+            await self._persist_chat(
+                engine,
+                role="user",
+                text=msg.text,
+                emotion=None,
+                source=None,
+                reply_delay_ms=None,
+            )
+
+        await nats_helper.subscribe_model(
+            self.nats,
+            topics.AGENT_TRANSCRIPT,
+            schemas.AgentTranscript,
+            on_transcript,
+        )
+
+        async def on_reply(subject: str, msg: schemas.AgentReply) -> None:
+            role = "puppet" if msg.source == "puppet" else "lafufu"
+            delay_ms = self._compute_reply_delay_ms(msg.source)
+            self._last_transcript_at = None
+            await self._persist_chat(
+                engine,
+                role=role,
+                text=msg.text,
+                emotion=msg.emotion,
+                source=msg.source,
+                reply_delay_ms=delay_ms,
+            )
+
+        await nats_helper.subscribe_model(
+            self.nats,
+            topics.AGENT_REPLY,
+            schemas.AgentReply,
+            on_reply,
+        )
+
         # Also track server's notion of "now" so the snapshot can return a clock
         # the client can trust without skew worries.
         self._app.state.server_now = lambda: time.time()
@@ -216,6 +258,43 @@ class ControlService(BaseService):
                 )
             except Exception as e:
                 self.log.warning("config.snapshot.publish_failed key=%s error=%s", row.key, e)
+
+    def _compute_reply_delay_ms(self, source: str) -> int | None:
+        """Transcript-to-reply delay in ms; puppet replies and stale (>=120 s) gaps yield None."""
+        if source == "puppet" or self._last_transcript_at is None:
+            return None
+        gap = (datetime.now(UTC) - self._last_transcript_at).total_seconds()
+        if gap < 0 or gap >= 120:
+            return None
+        return int(gap * 1000)
+
+    async def _persist_chat(
+        self,
+        engine,
+        *,
+        role: str,
+        text: str,
+        emotion: str | None,
+        source: str | None,
+        reply_delay_ms: int | None,
+    ) -> None:
+        def _insert() -> None:
+            with Session(engine) as s:
+                s.add(
+                    ChatMessage(
+                        role=role,
+                        text=text,
+                        emotion=emotion,
+                        source=source,
+                        reply_delay_ms=reply_delay_ms,
+                    )
+                )
+                s.commit()
+
+        try:
+            await asyncio.to_thread(_insert)
+        except Exception as e:
+            self.log.warning("chat.persist.failed role=%s error=%s", role, e)
 
     async def main_loop(self) -> None:
         assert self._server

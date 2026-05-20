@@ -1,9 +1,11 @@
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from fastapi.testclient import TestClient
 from lafufu_control.api.app import create_app
 from lafufu_control.db import create_engine_for_path, init_db
 from lafufu_control.models.chat import ChatMessage
+from lafufu_control.service import ControlService
 from sqlmodel import Session, select
 
 
@@ -87,3 +89,53 @@ def test_chat_message_round_trips(tmp_path):
     assert msg.source == "llm"
     assert msg.reply_delay_ms == 1234
     assert isinstance(msg.created_at, datetime)
+
+
+# ---------------------------------------------------------------------------
+# ControlService helpers
+# ---------------------------------------------------------------------------
+
+
+def test_compute_reply_delay_for_llm_reply():
+    svc = ControlService()
+    svc._last_transcript_at = datetime.now(UTC) - timedelta(seconds=2)
+    delay = svc._compute_reply_delay_ms("llm")
+    assert delay is not None
+    assert 1800 <= delay <= 2400
+
+
+def test_compute_reply_delay_none_for_puppet():
+    svc = ControlService()
+    svc._last_transcript_at = datetime.now(UTC) - timedelta(milliseconds=50)
+    assert svc._compute_reply_delay_ms("puppet") is None
+
+
+def test_compute_reply_delay_none_without_transcript():
+    svc = ControlService()
+    svc._last_transcript_at = None
+    assert svc._compute_reply_delay_ms("llm") is None
+
+
+def test_compute_reply_delay_none_when_gap_too_large():
+    svc = ControlService()
+    svc._last_transcript_at = datetime.now(UTC) - timedelta(seconds=600)
+    assert svc._compute_reply_delay_ms("llm") is None
+
+
+@pytest.mark.asyncio
+async def test_persist_chat_inserts_row(tmp_path):
+    engine = create_engine_for_path(str(tmp_path / "t.sqlite"))
+    init_db(engine)
+    svc = ControlService()
+    await svc._persist_chat(
+        engine,
+        role="user",
+        text="hello",
+        emotion=None,
+        source=None,
+        reply_delay_ms=None,
+    )
+    with Session(engine) as session:
+        msg = session.exec(select(ChatMessage)).one()
+    assert msg.role == "user"
+    assert msg.text == "hello"
