@@ -43,12 +43,17 @@ class ControlService(BaseService):
     name = "control"
 
     def __init__(
-        self, host: str = "0.0.0.0", port: int = 8080, nats_url: str | None = None
+        self,
+        host: str = "0.0.0.0",
+        port: int = 8080,
+        nats_url: str | None = None,
+        api_token: str = "",
     ) -> None:
         super().__init__()
         self.host = host
         self.port = port
         self._nats_url = nats_url
+        self._api_token = api_token
         self._server: uvicorn.Server | None = None
         self._app = None
 
@@ -67,7 +72,7 @@ class ControlService(BaseService):
             data = json.dumps(payload).encode("utf-8")
             asyncio.run_coroutine_threadsafe(self.nats.publish(subject, data), loop)
 
-        self._app = create_app(engine=engine, nats_publish=publish_sync)
+        self._app = create_app(engine=engine, nats_publish=publish_sync, api_token=self._api_token)
         self._app.state.service_status = {}
         self._app.state.last_pose = None
 

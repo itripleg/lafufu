@@ -4,6 +4,7 @@ import { Router } from "@solidjs/router";
 import "./index.css";
 import { App } from "./app";
 import { ToastLayer } from "./shared/toast";
+import { TokenGate } from "./shared/token_gate";
 
 render(() => (
   <>
@@ -11,5 +12,6 @@ render(() => (
       <App />
     </Router>
     <ToastLayer />
+    <TokenGate />
   </>
 ), document.getElementById("root")!);

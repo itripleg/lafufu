@@ -32,14 +32,19 @@ def nats_server_fixture(port: str = "4222") -> Callable:
 
 
 class FakeDxlBus:
-    """In-memory fake of animator's DXL bus. Records writes, returns last positions."""
+    """In-memory fake of animator's DXL bus. Records writes, returns last positions.
 
-    def __init__(self) -> None:
+    ``initial_positions`` seeds where the servos "physically are" so tests can
+    exercise the startup read-back (eased boot instead of a snap).
+    """
+
+    def __init__(self, initial_positions: dict[str, int] | None = None) -> None:
         self.writes: list[tuple[str, int]] = []
-        self._positions: dict[str, int] = {}
+        self._positions: dict[str, int] = dict(initial_positions or {})
         self._connected = True
         self.torque_disabled_count = 0
         self.torque_enabled_count = 0
+        self.limits_configured_count = 0
 
     def write(self, name: str, position: int) -> None:
         if not self._connected:
@@ -48,7 +53,14 @@ class FakeDxlBus:
         self._positions[name] = position
 
     def read(self, name: str) -> int:
+        if not self._connected:
+            raise OSError("DXL bus disconnected")
         return self._positions.get(name, 0)
+
+    def configure_limits(self) -> None:
+        if not self._connected:
+            raise OSError("DXL bus disconnected")
+        self.limits_configured_count += 1
 
     def last_position(self, name: str) -> int | None:
         return self._positions.get(name)

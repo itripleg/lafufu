@@ -1,3 +1,5 @@
+import { reportUnauthorized } from "./auth";
+
 const BASE = "/api";
 
 /** Build a human-readable error from a failed response. FastAPI HTTPExceptions
@@ -22,7 +24,13 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
     headers: body !== undefined ? { "Content-Type": "application/json" } : {},
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-  if (!r.ok) throw new Error(await errorMessage(r, method, path));
+  if (!r.ok) {
+    // A 401 means the optional shared-token auth is on and this browser hasn't
+    // presented it — raise the lock screen. (The login call itself also 401s on
+    // a bad token; TokenGate handles that thrown error locally.)
+    if (r.status === 401) reportUnauthorized();
+    throw new Error(await errorMessage(r, method, path));
+  }
   return r.status === 204 ? (undefined as T) : (await r.json() as T);
 }
 
@@ -31,7 +39,10 @@ async function upload<T>(path: string, file: File): Promise<T> {
   const fd = new FormData();
   fd.append("file", file);
   const r = await fetch(`${BASE}${path}`, { method: "POST", body: fd });
-  if (!r.ok) throw new Error(await errorMessage(r, "POST", path));
+  if (!r.ok) {
+    if (r.status === 401) reportUnauthorized();
+    throw new Error(await errorMessage(r, "POST", path));
+  }
   return (await r.json()) as T;
 }
 
@@ -44,6 +55,11 @@ export type PrinterAsset = {
 };
 
 export const api = {
+  /** 200 when this browser is authorized (or auth is disabled / loopback);
+   *  401 otherwise — `req` then raises the lock screen. */
+  authCheck: () => req<{ ok: boolean }>("GET", "/auth/check"),
+  /** Exchange the shared token for a session cookie. Throws on a bad token. */
+  authLogin: (token: string) => req<{ ok: boolean }>("POST", "/auth/login", { token }),
   snapshot: () => req<{
     settings: Array<{ key: string; value: string; value_type: string }>;
     services: Record<string, any>;
