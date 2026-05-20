@@ -16,22 +16,25 @@ from . import pose
 _SERVOS = ("head_lr", "head_ud", "eye", "jaw", "brow")
 
 # Per-servo motion tuning. ``smooth_time`` ≈ how long a move takes to settle;
-# ``max_speed`` is a hard velocity cap in DXL ticks/second. The jaw is tuned
-# fast so lipsync stays crisp; the head is slowest for a calm, deliberate feel.
+# ``max_speed`` is a hard velocity cap in DXL ticks/second. The head is slowest
+# for a calm, deliberate feel. The jaw is near-passthrough: the lipsync envelope
+# (LipsyncEnvelope) already shapes its motion, so a second smoothing stage here
+# only blurs syllable onsets — its smooth_time is kept tiny and its max_speed
+# high enough that the max_change clamp never binds across the jaw's range.
 # These shape the *commanded* motion — TUNE the feel on real hardware.
 DEFAULT_SMOOTH_TIMES: dict[str, float] = {
     "head_lr": 0.26,
     "head_ud": 0.26,
     "eye": 0.16,
     "brow": 0.14,
-    "jaw": 0.045,
+    "jaw": 0.025,
 }
 DEFAULT_MAX_SPEEDS: dict[str, float] = {
     "head_lr": 1100.0,
     "head_ud": 1100.0,
     "eye": 700.0,
     "brow": 420.0,
-    "jaw": 3000.0,
+    "jaw": 12000.0,
 }
 
 

@@ -14,6 +14,7 @@ from typing import Protocol
 from lafufu_shared import nats_helper, netinfo, schemas, topics
 
 from .intents import build_ip_slip, match_ip_intent, spoken_ip_answer
+from .lipsync import LipsyncNormalizer
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +39,9 @@ class VoicePipeline:
         self.ollama = ollama
         self.piper = piper
         self.speaker_play = speaker_play  # callable(chunk_bytes) → None
+        # Adaptive lipsync normalization. Persists across utterances so its
+        # rolling window stays warm — only the first utterance sees a cold start.
+        self._lipsync_norm = LipsyncNormalizer()
 
     async def _publish_state(self, state_name: str) -> None:
         await nats_helper.publish_model(
@@ -150,9 +154,11 @@ class VoicePipeline:
                     item = await queue.get()
                     if item is None:
                         break
-                    audio_bytes, mouth_target = item
+                    audio_bytes, raw_rms = item
                     if play_fn:
                         play_fn(audio_bytes)
+                    # Adapt raw RMS → 0..1 mouth target against recent loudness.
+                    mouth_target = self._lipsync_norm.update(raw_rms)
                     await nats_helper.publish_model(
                         self.nats,
                         topics.AGENT_TTS_RMS,
