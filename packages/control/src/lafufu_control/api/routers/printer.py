@@ -103,8 +103,13 @@ def _write_pointer(p: Path, value: str) -> None:
 
 
 def _safe_name(name: str) -> str:
-    """Reject anything that isn't a bare filename — blocks path traversal."""
-    if not name or name in (".", "..") or name != Path(name).name:
+    """Reject anything that isn't a bare filename — blocks path traversal.
+
+    Path separators are checked explicitly: a backslash is a legal filename
+    character on Linux, so `Path(name).name` alone wouldn't catch `a\\b`
+    there. Names only ever come from bundled defaults or sanitized uploads,
+    so neither separator should appear legitimately."""
+    if not name or name in (".", "..") or "/" in name or "\\" in name or name != Path(name).name:
         raise HTTPException(
             400, detail={"error_code": "bad_name", "message": f"invalid name {name!r}"}
         )
