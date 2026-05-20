@@ -10,6 +10,11 @@ import { applyDragDelta, axisMid } from "./head_drag";
 
 type ChatLine = { who: "you" | "lafufu"; text: string; emotion?: string; ts: number };
 
+/** Settings carry bools as strings ("true"/"1"); NATS config events may carry
+ *  a real boolean. Normalize both. */
+const parseBool = (v: unknown): boolean =>
+  v === true || v === "true" || v === "1" || v === 1;
+
 /**
  * Mobile Tamagotchi-style page — three.js procedural labubu face that mirrors
  * the live servo pose, plus easter-egg interactions (pat / tug / poke /
@@ -26,6 +31,9 @@ const Pet: Component = () => {
   const [chatInput, setChatInput] = createSignal("");
   const [sending, setSending] = createSignal(false);
   const [discovered, setDiscovered] = createSignal<Set<string>>(new Set());
+  // Mirrors the animator.idle_animation.enabled setting. Defaults to true (the
+  // setting's factory default); corrected on mount + by config.changed events.
+  const [idleOn, setIdleOn] = createSignal(true);
 
   const nats = new NatsWs();
   let host!: HTMLDivElement;
@@ -302,7 +310,21 @@ const Pet: Component = () => {
       }
       api3d?.setPose(p);
     }));
+    subs.push(nats.subscribe(
+      "config.changed.animator.idle_animation.enabled",
+      (f) => setIdleOn(parseBool(f.payload?.value)),
+    ));
     onCleanup(() => subs.forEach((u) => u()));
+
+    // Seed the idle toggle from the current server state.
+    api.snapshot()
+      .then((snap) => {
+        const row = snap.settings.find(
+          (s) => s.key === "animator.idle_animation.enabled",
+        );
+        if (row) setIdleOn(parseBool(row.value));
+      })
+      .catch(() => { /* keep the default-on state */ });
 
     // iOS requires explicit permission for devicemotion. Wire it up either way.
     window.addEventListener("devicemotion", onMotion, { passive: true });
@@ -344,6 +366,20 @@ const Pet: Component = () => {
       } catch (e: any) { toast.err("motion error", e.message); }
     } else {
       toast.info("motion already active on this device");
+    }
+  };
+
+  const toggleIdle = async () => {
+    const next = !idleOn();
+    setIdleOn(next); // optimistic
+    try {
+      await api.patchSetting("animator.idle_animation.enabled", {
+        value: next,
+        value_type: "bool",
+      });
+    } catch (e: any) {
+      setIdleOn(!next); // revert
+      toast.err("couldn't toggle idle animation", e.message);
     }
   };
 
@@ -586,6 +622,13 @@ const Pet: Component = () => {
           </button>
           <button class="btn btn--tiny" onClick={requestMotion}>
             enable shake
+          </button>
+          <button
+            class={`btn btn--tiny ${idleOn() ? "btn--primary" : ""}`}
+            onClick={toggleIdle}
+            title="Toggle the lafufu's idle 'living presence' animation. Off = the head holds where you drag it."
+          >
+            {idleOn() ? "idle: on" : "idle: off"}
           </button>
           <button
             class="btn btn--tiny"
