@@ -1,9 +1,13 @@
 """Piper TTS wrapper.
 
 Two APIs:
-  synthesize(text)         -> list of (chunk_bytes, mouth_target_0to1) - buffered
+  synthesize(text)         -> list of (chunk_bytes, raw_rms) - buffered
   synthesize_stream(text)  -> generator yielding the same tuples as Piper produces
                               them, for low-latency streaming playback
+
+The second tuple element is the chunk's *raw* RMS amplitude. Mapping that to a
+0..1 mouth-open target is done downstream by the adaptive LipsyncNormalizer
+(see lipsync.py) — a fixed divisor here cannot adapt to the voice's level.
 """
 
 import logging
@@ -34,11 +38,12 @@ class Piper:
         return list(self.synthesize_stream(text))
 
     def synthesize_stream(self, text: str) -> Iterator[tuple[bytes, float]]:
-        """Stream: yield (chunk, mouth_target) tuples as Piper synthesizes.
+        """Stream: yield (chunk, raw_rms) tuples as Piper synthesizes.
 
         Buffers across Piper's internal chunk boundaries so emitted chunks are
         all exactly `chunk_ms` long (the animator depends on a steady cadence).
-        The final partial chunk is yielded as-is.
+        The final partial chunk is yielded as-is. The RMS is raw amplitude —
+        normalization to a 0..1 mouth target happens downstream.
         """
         if self._voice is None:
             self.load()
@@ -58,12 +63,10 @@ class Piper:
             while len(buf) >= bytes_per_chunk:
                 out = bytes(buf[:bytes_per_chunk])
                 del buf[:bytes_per_chunk]
-                rms = audioop.rms(out, bytes_per_sample)
-                yield out, min(1.0, rms / 8000.0)
+                yield out, float(audioop.rms(out, bytes_per_sample))
         if buf:
             tail = bytes(buf)
-            rms = audioop.rms(tail, bytes_per_sample)
-            yield tail, min(1.0, rms / 8000.0)
+            yield tail, float(audioop.rms(tail, bytes_per_sample))
 
     @property
     def sample_rate(self) -> int:

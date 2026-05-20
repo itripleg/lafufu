@@ -21,6 +21,12 @@ class DxlBusProtocol(Protocol):
     def open(self) -> None: ...
 
 
+# RMS events arrive at the agent's fixed TTS chunk cadence (~40 ms). The lipsync
+# envelope is fed this fixed dt rather than one derived from message timestamps
+# (msg.ts resets to 0 each utterance, which corrupted the attack/release rate).
+_LIPSYNC_DT = 0.04
+
+
 class AnimatorService(BaseService):
     name = "animator"
     heartbeat_interval_s = 5.0
@@ -349,13 +355,15 @@ class AnimatorService(BaseService):
         self._expression_started_mono = time.monotonic()
 
     async def _on_tts_rms(self, subject: str, msg: schemas.AgentTtsRms) -> None:
-        # Drive jaw via envelope
-        dt = msg.ts - self._last_rms_ts if msg.ts > self._last_rms_ts else 0.04
-        self._last_rms_ts = msg.ts
-        smoothed = self._envelope.step(target=msg.mouth_target, dt=dt)
+        # Drive the jaw via the attack/release envelope. mouth_target is already
+        # the adaptively-normalized 0..1 value from the agent's LipsyncNormalizer.
+        smoothed = self._envelope.step(target=msg.mouth_target, dt=_LIPSYNC_DT)
         jaw_pos = lipsync.rms_to_jaw_dxl(smoothed)
         new = self._current_pose.model_copy(update={"jaw": jaw_pos})
         await self._safe_apply(new)
+        # Wall-clock stamp so the idle/expression loops' "is speaking" checks
+        # (which compare against time.monotonic()) actually work.
+        self._last_rms_ts = time.monotonic()
 
     async def _pose_publish_loop(self) -> None:
         """Publish current pose at 20 Hz for live UI."""
