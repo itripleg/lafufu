@@ -93,6 +93,7 @@ const Pet: Component = () => {
   // during this window so the servo round-trip can't fight the drag.
   const headControlActive = () =>
     gesture === "puppeteer" || performance.now() - lastHeadDragTs < 800;
+
   const raycaster = new THREE.Raycaster();
   const ndc = new THREE.Vector2();
 
@@ -204,6 +205,9 @@ const Pet: Component = () => {
         flashHint(e.clientX, e.clientY, "boi-oing!");
       }
     } else if (wasGesture === "puppeteer") {
+      // Keep the 800ms grace window alive past release so the animator.pose
+      // echo can't reclaim the head before the servo settles.
+      lastHeadDragTs = performance.now();
       // Commit the exact release position promptly.
       if (previewTimer !== undefined) {
         clearTimeout(previewTimer);
