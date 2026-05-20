@@ -59,10 +59,12 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
   // when its reply lands. nowTick drives the live counter while pending.
   const [pendingSince, setPendingSince] = createSignal<number | null>(null);
   const [nowTick, setNowTick] = createSignal(Date.now());
+  const [stage, setStage] = createSignal<{ name: string; since: number } | null>(null);
   let scrollEl!: HTMLDivElement;
 
   let unsubT: (() => void) | undefined;
   let unsubR: (() => void) | undefined;
+  let unsubS: (() => void) | undefined;
   let tickTimer: number | undefined;
 
   const appendDedup = (entry: Omit<Entry, "ts">) => {
@@ -107,15 +109,24 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
       }
       appendDedup({ role, text: f.payload.text, emotion: f.payload.emotion, elapsedMs });
     });
+    unsubS = props.nats.subscribe("agent.state.*", (f) => {
+      const name = String(f.payload?.state ?? "");
+      if (name === "transcribing" || name === "thinking" || name === "speaking") {
+        setStage((cur) => (cur?.name === name ? cur : { name, since: Date.now() }));
+      } else {
+        setStage(null);
+      }
+    });
 
-    // Tick the live round-trip counter ~10x/s while a reply is pending.
+    // Tick the live round-trip counter ~10x/s while a reply is pending or a stage is active.
     tickTimer = window.setInterval(() => {
-      if (pendingSince() !== null) setNowTick(Date.now());
+      if (pendingSince() !== null || stage() !== null) setNowTick(Date.now());
     }, 100);
   });
   onCleanup(() => {
     unsubT?.();
     unsubR?.();
+    unsubS?.();
     if (tickTimer) clearInterval(tickTimer);
     // Persist inputs on unmount
     lsSet(DRAFT_INPUTS, {
@@ -303,8 +314,8 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
             </div>
           )}
         </For>
-        <Show when={pendingSince()}>
-          {(since) => (
+        <Show when={stage() ?? (pendingSince() !== null ? { name: "thinking", since: pendingSince()! } : null)}>
+          {(s) => (
             <div
               style={{
                 "align-self": "flex-start",
@@ -324,12 +335,12 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
                   "letter-spacing": ".05em",
                 }}
               >
-                lafufu · thinking… ⧗ {fmtElapsed(nowTick() - since())}
+                lafufu · {s().name}… ⧗ {fmtElapsed(nowTick() - s().since)}
               </span>
             </div>
           )}
         </Show>
-        <Show when={entries().length === 0 && pendingSince() === null}>
+        <Show when={entries().length === 0 && pendingSince() === null && stage() === null}>
           <div
             style={{
               color: "var(--c-stone)",
