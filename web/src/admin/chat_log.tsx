@@ -1,4 +1,4 @@
-import { Component, createSignal, onCleanup, onMount, For, Show } from "solid-js";
+import { Component, createMemo, createSignal, onCleanup, onMount, For, Show } from "solid-js";
 import { NatsWs } from "../shared/nats_ws";
 import { api, type ChatRow } from "../shared/api";
 import { EMOTION_COLORS, EMOTION_GLYPH, type Emotion } from "../shared/design";
@@ -60,6 +60,13 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
   const [pendingSince, setPendingSince] = createSignal<number | null>(null);
   const [nowTick, setNowTick] = createSignal(Date.now());
   const [stage, setStage] = createSignal<{ name: string; since: number } | null>(null);
+
+  // The pipeline stage to show in the indicator: a live agent stage if one is
+  // active, else a "thinking" placeholder while a widget chat send is pending.
+  const activeStage = createMemo(() =>
+    stage() ?? (pendingSince() !== null ? { name: "thinking", since: pendingSince()! } : null),
+  );
+
   let scrollEl!: HTMLDivElement;
 
   let unsubT: (() => void) | undefined;
@@ -111,6 +118,7 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
     });
     unsubS = props.nats.subscribe("agent.state.*", (f) => {
       const name = String(f.payload?.state ?? "");
+      // Only the working stages drive the indicator; any other state clears it.
       if (name === "transcribing" || name === "thinking" || name === "speaking") {
         setStage((cur) => (cur?.name === name ? cur : { name, since: Date.now() }));
       } else {
@@ -314,31 +322,29 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
             </div>
           )}
         </For>
-        <Show when={stage() ?? (pendingSince() !== null ? { name: "thinking", since: pendingSince()! } : null)}>
-          {(s) => (
-            <div
+        <Show when={activeStage()}>
+          <div
+            style={{
+              "align-self": "flex-start",
+              "max-width": "82%",
+              padding: "8px 12px",
+              "border-radius": "14px 14px 14px 4px",
+              background: "rgba(149,176,122,0.10)",
+              border: "1px solid var(--c-edge)",
+              animation: "fade-up .3s cubic-bezier(.2,.7,.3,1.1) both",
+            }}
+          >
+            <span
+              class="f-mono"
               style={{
-                "align-self": "flex-start",
-                "max-width": "82%",
-                padding: "8px 12px",
-                "border-radius": "14px 14px 14px 4px",
-                background: "rgba(149,176,122,0.10)",
-                border: "1px solid var(--c-edge)",
-                animation: "fade-up .3s cubic-bezier(.2,.7,.3,1.1) both",
+                "font-size": "10px",
+                color: "var(--c-moss)",
+                "letter-spacing": ".05em",
               }}
             >
-              <span
-                class="f-mono"
-                style={{
-                  "font-size": "10px",
-                  color: "var(--c-moss)",
-                  "letter-spacing": ".05em",
-                }}
-              >
-                lafufu · {s().name}… ⧗ {fmtElapsed(nowTick() - s().since)}
-              </span>
-            </div>
-          )}
+              lafufu · {activeStage()!.name}… ⧗ {fmtElapsed(nowTick() - activeStage()!.since)}
+            </span>
+          </div>
         </Show>
         <Show when={entries().length === 0 && pendingSince() === null && stage() === null}>
           <div
