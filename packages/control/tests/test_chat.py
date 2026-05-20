@@ -48,7 +48,9 @@ def test_messages_endpoint_clamps_limit(tmp_path):
         ],
     )
     assert len(client.get("/api/chat/messages?limit=2").json()["messages"]) == 2
-    assert len(client.get("/api/chat/messages?limit=0").json()["messages"]) == 1
+    assert (
+        len(client.get("/api/chat/messages?limit=0").json()["messages"]) == 1
+    )  # 0 clamps up to the minimum of 1
     assert len(client.get("/api/chat/messages?limit=9999").json()["messages"]) == 5
 
 
