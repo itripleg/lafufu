@@ -255,3 +255,50 @@ async def test_speak_recovers_when_playback_raises(nats_server):
 
     assert speaker.ended, "speaker.end() must run even when playback raises"
     assert "idle" in states, "state must return to idle even when playback raises"
+
+
+async def test_ip_intent_prints_and_speaks_without_llm(nats_server, monkeypatch):
+    """A 'what's your IP' utterance must print a slip and speak the IP,
+    and must NOT call the LLM."""
+    import nats
+    from lafufu_shared.testing import FakePiper
+
+    monkeypatch.setattr("lafufu_shared.netinfo.primary_lan_ip", lambda: "192.168.1.42")
+
+    nc = await nats.connect(nats_server)
+    prints: list[schemas.PrinterIntentPrintText] = []
+    replies: list[schemas.AgentReply] = []
+
+    async def cb_print(msg):
+        prints.append(schemas.PrinterIntentPrintText.model_validate_json(msg.data))
+
+    async def cb_reply(msg):
+        replies.append(schemas.AgentReply.model_validate_json(msg.data))
+
+    await nc.subscribe(topics.PRINTER_INTENT_PRINT_TEXT, cb=cb_print)
+    await nc.subscribe(topics.AGENT_REPLY, cb=cb_reply)
+
+    class _IpQueryMic:
+        def listen_once(self) -> str:
+            return "hey lafufu what's your ip address"
+
+    class _ExplodingOllama:
+        async def chat(self, user_text: str) -> str:
+            raise AssertionError("LLM must not be called for the IP intent")
+
+    pipeline = VoicePipeline(
+        nats_client=await nats.connect(nats_server, name="pipeline"),
+        mic=_IpQueryMic(),
+        ollama=_ExplodingOllama(),
+        piper=FakePiper(chunks=[(b"\x00" * 1024, 0.5)]),
+    )
+    await pipeline.run_one_cycle()
+    await asyncio.sleep(0.2)
+    await nc.drain()
+
+    assert len(prints) == 1, f"expected 1 print job, got {len(prints)}"
+    assert "192.168.1.42" in prints[0].text
+    assert "http://192.168.1.42:8080/admin" in prints[0].text
+    assert len(replies) == 1, f"expected 1 reply, got {len(replies)}"
+    assert replies[0].source == "system"
+    assert "192.168.1.42" in replies[0].text
