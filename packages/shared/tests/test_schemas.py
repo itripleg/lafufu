@@ -85,3 +85,10 @@ def test_agent_reply_source_system_is_valid():
 def test_agent_reply_source_rejects_unknown():
     with pytest.raises(ValidationError):
         schemas.AgentReply(text="hi", emotion="neutral", source="bogus")
+
+
+def test_agent_state_accepts_transcribing():
+    from lafufu_shared.schemas import AgentState
+
+    s = AgentState(state="transcribing")
+    assert s.state == "transcribing"

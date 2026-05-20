@@ -16,7 +16,7 @@ ServoName = Literal["head_lr", "head_ud", "eye", "jaw", "brow"]
 GestureName = Literal["nod_yes", "nod_no", "look_around"]
 
 AgentStateName = Literal[
-    "warming", "idle", "listening", "thinking", "speaking", "degraded", "shutdown"
+    "warming", "idle", "listening", "transcribing", "thinking", "speaking", "degraded", "shutdown"
 ]
 AnimatorStateName = Literal["idle", "active", "degraded"]
 PrinterStateName = Literal["idle", "printing", "error", "offline"]
