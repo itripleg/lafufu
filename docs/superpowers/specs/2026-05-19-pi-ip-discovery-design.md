@@ -65,12 +65,16 @@ One pure, testable module used by both other components.
 
 ### 4.2 Bluetooth broadcaster — new system service
 
-- **`deploy/lafufu-btcast.sh`** — on start runs `bluetoothctl power on` and
-  `bluetoothctl discoverable on`; then loops every ~30 s: resolve the IP via
-  `python -m lafufu_shared.netinfo`, and when it has changed since the last
-  iteration, set the adapter alias with
-  `bluetoothctl system-alias "lafufu <ip>"` (or `"lafufu offline"` when no IP).
-  `discoverable on` is re-asserted each iteration as cheap insurance.
+- **`deploy/lafufu-btcast.sh`** — on start runs `bluetoothctl power on`; then
+  loops every ~30 s: resolve the IP via `python -m lafufu_shared.netinfo`.
+  - **Online** — when an IP is present, ensure `bluetoothctl discoverable on`
+    and, if the IP changed since the last iteration, set the adapter alias with
+    `bluetoothctl system-alias "lafufu <ip>"`.
+  - **Offline** — when no IP is present, run `bluetoothctl discoverable off` so
+    the Pi does not appear in Bluetooth scans at all. The broadcast exists only
+    while Lafufu is actually on a network; its absence is itself the "no
+    network" signal.
+  The discoverable state is re-asserted each iteration as cheap insurance.
 - **`deploy/systemd/lafufu-btcast.service`** — runs as **root** (Bluetooth
   adapter configuration is a system task; running as root avoids polkit/group
   configuration). Added to `lafufu.target`. `Restart=on-failure` covers a hard
@@ -122,8 +126,9 @@ intent matcher so it can be unit-tested independently.
 ## 5. Data Flow
 
 **Bluetooth (continuous):**
-`lafufu-btcast.sh` loop → `lafufu_shared.netinfo` → `bluetoothctl system-alias`
-→ phone Bluetooth scan shows `lafufu <ip>`.
+`lafufu-btcast.sh` loop → `lafufu_shared.netinfo` → if online: `bluetoothctl
+discoverable on` + `system-alias "lafufu <ip>"`, phone scan shows `lafufu <ip>`;
+if offline: `bluetoothctl discoverable off`, the Pi is absent from scans.
 
 **Voice (on demand):**
 mic utterance → STT → `run_one_cycle` publishes `AGENT_TRANSCRIPT` →
@@ -134,7 +139,9 @@ mic utterance → STT → `run_one_cycle` publishes `AGENT_TRANSCRIPT` →
 ## 6. Error Handling
 
 - **Offline (no IP):** voice intent speaks "I can't find a network connection
-  right now" and prints nothing; broadcaster sets the alias to `lafufu offline`.
+  right now" and prints nothing; the broadcaster turns the adapter
+  non-discoverable (`discoverable off`) so it drops out of Bluetooth scans —
+  its absence is the "no network" signal.
 - **Printer offline:** the NATS publish is fire-and-forget — speech still
   happens, the cycle does not crash.
 - **`bluetoothctl` missing or failing:** the broadcaster logs the error and
@@ -155,7 +162,7 @@ from a phone, confirm the alias updates after an IP change).
 
 ## 8. Caveats
 
-- A permanently discoverable adapter means anyone in Bluetooth range sees
+- While online the adapter is discoverable, so anyone in Bluetooth range sees
   `lafufu <ip>`. Acceptable for a hobby device — a LAN IP is not sensitive.
 - A phone that has already cached the device may show a stale name until it
   re-scans.
