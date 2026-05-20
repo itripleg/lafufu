@@ -482,6 +482,10 @@ class AgentService(BaseService):
                 await self._publish_state("idle")
                 return
 
+            if self.stt is None:
+                await self._publish_state("idle")
+                return
+
             await self._publish_state("transcribing")
             transcript = await loop.run_in_executor(None, self.stt.transcribe, audio)
             clean = (transcript or "").strip()

@@ -1,6 +1,7 @@
 import asyncio
 
 import nats
+import numpy as np
 from lafufu_agent.service import AgentService
 from lafufu_shared import schemas, topics
 from lafufu_shared.nats_helper import publish_model
@@ -298,7 +299,7 @@ async def test_text_intent_processes_while_mic_is_waiting_for_onset(nats_server)
             return False, []
 
         def record_until_silence(self, pre_roll):
-            return ""
+            return np.zeros(0, dtype=np.float32)
 
         def listen_once(self):
             self.wait_for_onset()
@@ -346,7 +347,6 @@ async def test_text_intent_processes_while_mic_is_waiting_for_onset(nats_server)
 
 async def test_voice_cycle_publishes_transcribing_state(nats_server):
     """Voice cycle should publish 'transcribing' state after speech onset, before LLM."""
-    import numpy
     from lafufu_shared.testing import FakeWhisper
 
     class _OnsetMic:
@@ -354,7 +354,7 @@ async def test_voice_cycle_publishes_transcribing_state(nats_server):
             return (True, [])
 
         def record_until_silence(self, pre_roll):
-            return numpy.zeros(1600, dtype=numpy.float32)
+            return np.zeros(1600, dtype=np.float32)
 
         def listen_once(self):
             return ""
