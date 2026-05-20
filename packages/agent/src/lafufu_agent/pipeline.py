@@ -50,9 +50,10 @@ class VoicePipeline:
             schemas.AgentState(state=state_name),  # type: ignore[arg-type]
         )
 
-    async def run_one_cycle(self) -> None:
+    async def run_one_cycle(self, publish_listening: bool = True) -> None:
         # ---- Listening ----
-        await self._publish_state("listening")
+        if publish_listening:
+            await self._publish_state("listening")
         # Run blocking mic call in executor
         loop = asyncio.get_running_loop()
         transcript = await loop.run_in_executor(None, self.mic.listen_once)

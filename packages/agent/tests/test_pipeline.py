@@ -302,3 +302,32 @@ async def test_ip_intent_prints_and_speaks_without_llm(nats_server, monkeypatch)
     assert len(replies) == 1, f"expected 1 reply, got {len(replies)}"
     assert replies[0].source == "system"
     assert "192.168.1.42" in replies[0].text
+
+
+async def test_run_one_cycle_can_skip_listening_state(nats_server):
+    """run_one_cycle(publish_listening=False) must not emit the 'listening' state
+    but must still emit 'thinking' (and the rest of the cycle)."""
+    import nats
+
+    nc = await nats.connect(nats_server)
+    state_tails: list[str] = []
+
+    async def cb_state(msg):
+        state_tails.append(msg.subject.rsplit(".", 1)[-1])
+
+    await nc.subscribe(f"{topics.AGENT_STATE}.*", cb=cb_state)
+
+    pipeline = VoicePipeline(
+        nats_client=await nats.connect(nats_server, name="pipeline-skip-listening"),
+        mic=FakeMic(),
+        ollama=FakeOllama(scripts=[("hello", "[neutral]\nhi")]),
+        piper=FakePiper(chunks=[(b"\x00" * 100, 0.3)]),
+    )
+    await pipeline.run_one_cycle(publish_listening=False)
+    await asyncio.sleep(0.2)
+    await nc.drain()
+
+    assert "listening" not in state_tails, (
+        f"'listening' must be suppressed when publish_listening=False; got {state_tails}"
+    )
+    assert "thinking" in state_tails, f"'thinking' must still be published; got {state_tails}"
