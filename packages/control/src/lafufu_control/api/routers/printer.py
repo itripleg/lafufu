@@ -133,12 +133,17 @@ def _atomic_write(target: Path, data: bytes) -> None:
     os.replace(tmp, target)
 
 
-def _list_assets(kinds_dirs: list[tuple[str, Path]], exts: set[str], active: str) -> list[dict]:
+def _list_assets(
+    kinds_dirs: list[tuple[str, Path]], exts: set[str], active: str, first: str | None = None
+) -> list[dict]:
     items: list[dict] = []
     for kind, d in kinds_dirs:
         if not d.is_dir():
             continue
-        for f in sorted(d.iterdir()):
+        # `first` (e.g. the white card) is pinned to the top of its kind;
+        # everything else is alphabetical.
+        ordered = sorted(d.iterdir(), key=lambda f: (f.name != first, f.name.lower()))
+        for f in ordered:
             if f.is_file() and f.suffix.lower() in exts:
                 ref = f"{kind}/{f.name}"
                 items.append(
@@ -157,13 +162,14 @@ def _list_assets(kinds_dirs: list[tuple[str, Path]], exts: set[str], active: str
 
 @router.get("/letterheads")
 def list_letterheads():
-    """All letterheads — bundled defaults followed by operator uploads."""
+    """All letterheads — bundled built-ins (white first) then operator uploads."""
     _ensure_active_letterhead()
     active = _read_pointer(_active_letterhead_file())
     items = _list_assets(
         [("default", _letterhead_dir("default")), ("upload", _letterhead_dir("upload"))],
         _IMAGE_EXTS,
         active,
+        first=_WHITE_LETTERHEAD,
     )
     return {"items": items}
 
