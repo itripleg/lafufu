@@ -44,10 +44,13 @@ def test_list_letterheads_includes_bundled_defaults(client):
     assert r.status_code == 200
     items = r.json()["items"]
     names = {i["name"] for i in items if i["kind"] == "default"}
-    # The repo ships these default cards.
-    assert {"card.png", "cardEmpty.png", "card_white.png"} <= names
-    # Nothing is active until the operator picks one.
-    assert all(not i["active"] for i in items)
+    # The repo ships these default cards, including the plain white fallback.
+    assert {"card.png", "cardEmpty.png", "card_white.png", "white.png"} <= names
+    # With nothing chosen, the white card is auto-activated so compose/print
+    # always have something to draw on.
+    active = [i for i in items if i["active"]]
+    assert len(active) == 1
+    assert active[0]["kind"] == "default" and active[0]["name"] == "white.png"
 
 
 def test_upload_letterhead_becomes_active(client):
@@ -143,6 +146,29 @@ def test_compose_carries_active_font(client):
     assert compose_msgs[0]["font"] == "IMFellEnglish-Regular.ttf"
 
 
-def test_compose_without_letterhead_404s(client):
+def test_compose_with_no_selection_falls_back_to_white(client):
+    # No letterhead activated — compose should auto-fall-back to the white
+    # card (plain text on white) rather than dead-ending.
     r = client.post("/api/printer/compose", json={"text": "x"})
-    assert r.status_code == 404
+    assert r.status_code == 202
+    compose_msgs = [p for s, p in client.published if s == "printer.intent.compose"]  # type: ignore[attr-defined]
+    assert len(compose_msgs) == 1
+    assert compose_msgs[0]["letterhead_path"].endswith("letterhead.png")
+    # The white default is now the active letterhead.
+    listing = client.get("/api/printer/letterheads").json()["items"]
+    active = next(i for i in listing if i["active"])
+    assert active["name"] == "white.png"
+
+
+def test_deleting_active_upload_falls_back_to_white(client):
+    name = client.post(
+        "/api/printer/letterhead",
+        files={"file": ("z.png", _png_bytes(), "image/png")},
+    ).json()["name"]
+    # The upload is active; deleting it leaves the white card active rather
+    # than a cleared/no-letterhead state.
+    r = client.delete(f"/api/printer/letterheads/upload/{name}")
+    assert r.status_code == 204
+    listing = client.get("/api/printer/letterheads").json()["items"]
+    active = next(i for i in listing if i["active"])
+    assert active["name"] == "white.png"

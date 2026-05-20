@@ -158,6 +158,7 @@ def _list_assets(kinds_dirs: list[tuple[str, Path]], exts: set[str], active: str
 @router.get("/letterheads")
 def list_letterheads():
     """All letterheads — bundled defaults followed by operator uploads."""
+    _ensure_active_letterhead()
     active = _read_pointer(_active_letterhead_file())
     items = _list_assets(
         [("default", _letterhead_dir("default")), ("upload", _letterhead_dir("upload"))],
@@ -196,10 +197,11 @@ def delete_letterhead_file(kind: str, name: str):
             },
         )
     (printer_uploads_dir() / safe).unlink(missing_ok=True)
-    # If we just deleted the active letterhead, drop the active selection too.
+    # If we just deleted the active letterhead, fall back to the white card.
     if _read_pointer(_active_letterhead_file()) == f"upload/{safe}":
         _active_letterhead_file().unlink(missing_ok=True)
         _letterhead_path().unlink(missing_ok=True)
+        _ensure_active_letterhead()
     return None
 
 
@@ -214,6 +216,21 @@ def _activate_letterhead(kind: str, name: str) -> None:
         )
     _atomic_write(_letterhead_path(), src.read_bytes())
     _write_pointer(_active_letterhead_file(), f"{kind}/{name}")
+
+
+# The bundled plain-white card — the always-available fallback. Composing onto
+# it is effectively a plain-text print, so compose/print never dead-end.
+_WHITE_LETTERHEAD = "white.png"
+
+
+def _ensure_active_letterhead() -> None:
+    """Guarantee an active letterhead exists, falling back to the white card.
+    Keeps compose/print working on a fresh install and after the active
+    upload is deleted — there is always something to draw on."""
+    if _letterhead_path().exists():
+        return
+    if (printer_default_letterheads_dir() / _WHITE_LETTERHEAD).is_file():
+        _activate_letterhead("default", _WHITE_LETTERHEAD)
 
 
 @router.post("/letterhead")
@@ -263,20 +280,13 @@ async def upload_letterhead(file: Annotated[UploadFile, File()]):
 @router.get("/letterhead")
 def get_active_letterhead():
     """Serve the currently-active letterhead (the print/compose source)."""
+    _ensure_active_letterhead()
     p = _letterhead_path()
     if not p.exists():
         raise HTTPException(
             404, detail={"error_code": "no_letterhead", "message": "no letterhead active"}
         )
     return FileResponse(str(p), media_type="image/png")
-
-
-@router.delete("/letterhead", status_code=204)
-def clear_active_letterhead():
-    """Clear the active selection — uploads stay in the gallery."""
-    _letterhead_path().unlink(missing_ok=True)
-    _active_letterhead_file().unlink(missing_ok=True)
-    return None
 
 
 # ─────────────────────── font gallery ─────────────────────
@@ -369,11 +379,8 @@ async def upload_font(file: Annotated[UploadFile, File()]):
 @router.post("/print_letterhead", status_code=202)
 def print_letterhead(req: Request):
     """Trigger a one-shot print of the currently active letterhead."""
+    _ensure_active_letterhead()
     p = _letterhead_path()
-    if not p.exists():
-        raise HTTPException(
-            404, detail={"error_code": "no_letterhead", "message": "activate a letterhead first"}
-        )
     req.app.state.nats_publish(
         "printer.intent.print_file", {"path": str(p), "title": "lafufu letterhead"}
     )
@@ -389,16 +396,10 @@ class ComposeReq(BaseModel):
 @router.post("/compose", status_code=202)
 def compose_print(body: ComposeReq, req: Request):
     """Composite text onto the active letterhead with the active font and queue
-    it for printing. PIL composition happens in the printer service."""
+    it for printing. With the white card active this is just a plain-text
+    print. PIL composition happens in the printer service."""
+    _ensure_active_letterhead()
     p = _letterhead_path()
-    if not p.exists():
-        raise HTTPException(
-            404,
-            detail={
-                "error_code": "no_letterhead",
-                "message": "activate a letterhead first — compose draws text on it",
-            },
-        )
     active_font = _read_pointer(_active_font_file())
     font_name = active_font.split("/", 1)[-1] if active_font else None
     req.app.state.nats_publish(

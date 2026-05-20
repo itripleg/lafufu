@@ -1,12 +1,28 @@
 const BASE = "/api";
 
+/** Build a human-readable error from a failed response. FastAPI HTTPExceptions
+ *  carry a `detail` that is either a string or a `{error_code, message}` object —
+ *  surface that message so toasts say something useful (e.g. "activate a
+ *  letterhead first") instead of a bare "POST /printer/compose: 404". */
+async function errorMessage(r: Response, method: string, path: string): Promise<string> {
+  try {
+    const data = await r.json();
+    const d = data?.detail;
+    if (typeof d === "string" && d) return d;
+    if (d && typeof d.message === "string" && d.message) return d.message;
+  } catch {
+    /* response body was not JSON — fall through to the generic message */
+  }
+  return `${method} ${path}: ${r.status}`;
+}
+
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
   const r = await fetch(`${BASE}${path}`, {
     method,
     headers: body !== undefined ? { "Content-Type": "application/json" } : {},
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-  if (!r.ok) throw new Error(`${method} ${path}: ${r.status}`);
+  if (!r.ok) throw new Error(await errorMessage(r, method, path));
   return r.status === 204 ? (undefined as T) : (await r.json() as T);
 }
 
@@ -15,7 +31,7 @@ async function upload<T>(path: string, file: File): Promise<T> {
   const fd = new FormData();
   fd.append("file", file);
   const r = await fetch(`${BASE}${path}`, { method: "POST", body: fd });
-  if (!r.ok) throw new Error(`POST ${path}: ${r.status}`);
+  if (!r.ok) throw new Error(await errorMessage(r, "POST", path));
   return (await r.json()) as T;
 }
 
