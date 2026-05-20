@@ -87,8 +87,9 @@ cp deploy/systemd/lafufu-*.service /etc/systemd/system/
 cp deploy/systemd/lafufu.target /etc/systemd/system/
 systemctl daemon-reload
 
-# 9b. Bluetooth: keep the adapter permanently discoverable so the
-#     lafufu-btcast IP broadcast is always visible (0 = no timeout).
+# 9b. Bluetooth: stop the discoverable window from auto-expiring (0 = no
+#     timeout) so lafufu-btcast controls visibility itself — discoverable
+#     while online, hidden while offline.
 if [[ -f /etc/bluetooth/main.conf ]]; then
   if grep -qE '^[[:space:]]*#?[[:space:]]*DiscoverableTimeout' /etc/bluetooth/main.conf; then
     sed -i -E 's/^[[:space:]]*#?[[:space:]]*DiscoverableTimeout.*/DiscoverableTimeout = 0/' \
