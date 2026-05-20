@@ -18,7 +18,7 @@ echo "==> lafufu install ($MODE)"
 apt-get update
 
 apt-get install -y python3.13 python3.13-venv python3-pip nodejs npm \
-                   cups \
+                   cups bluez \
                    build-essential libasound2-dev portaudio19-dev \
                    curl ca-certificates git
 
@@ -87,11 +87,24 @@ cp deploy/systemd/lafufu-*.service /etc/systemd/system/
 cp deploy/systemd/lafufu.target /etc/systemd/system/
 systemctl daemon-reload
 
+# 9b. Bluetooth: stop the discoverable window from auto-expiring (0 = no
+#     timeout) so lafufu-btcast controls visibility itself — discoverable
+#     while online, hidden while offline.
+if [[ -f /etc/bluetooth/main.conf ]]; then
+  if grep -qE '^[[:space:]]*#?[[:space:]]*DiscoverableTimeout' /etc/bluetooth/main.conf; then
+    sed -i -E 's/^[[:space:]]*#?[[:space:]]*DiscoverableTimeout.*/DiscoverableTimeout = 0/' \
+      /etc/bluetooth/main.conf
+  else
+    sed -i '/^\[General\]/a DiscoverableTimeout = 0' /etc/bluetooth/main.conf
+  fi
+  systemctl restart bluetooth || true
+fi
+
 # 10. Enable + start
 systemctl enable nats.service
 systemctl enable lafufu-animator.service lafufu-agent.service \
                  lafufu-printer.service lafufu-control.service \
-                 lafufu-kiosk.service lafufu.target
+                 lafufu-btcast.service lafufu-kiosk.service lafufu.target
 
 if [[ "$MODE" == "--update" ]]; then
   systemctl restart lafufu.target

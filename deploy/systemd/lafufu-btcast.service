@@ -1,0 +1,15 @@
+[Unit]
+Description=Lafufu Bluetooth IP broadcast
+After=bluetooth.service
+Wants=bluetooth.service
+PartOf=lafufu.target
+
+[Service]
+Type=simple
+WorkingDirectory=/srv/lafufu
+ExecStart=/bin/bash /srv/lafufu/deploy/lafufu-btcast.sh
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=lafufu.target

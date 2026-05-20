@@ -5,11 +5,15 @@ Decoupled from concrete mic/Whisper/Ollama/Piper — uses Protocol-style duck ty
 
 import asyncio
 import logging
+import socket
 import threading
 import time
+from datetime import datetime
 from typing import Protocol
 
-from lafufu_shared import nats_helper, schemas, topics
+from lafufu_shared import nats_helper, netinfo, schemas, topics
+
+from .intents import build_ip_slip, match_ip_intent, spoken_ip_answer
 
 log = logging.getLogger(__name__)
 
@@ -61,6 +65,11 @@ class VoicePipeline:
             schemas.AgentTranscript(text=clean, timestamp=time.time()),
         )
 
+        # ---- System intents (answered directly, no LLM) ----
+        if match_ip_intent(clean):
+            await self._answer_ip_query()
+            return
+
         # ---- Thinking ----
         await self._publish_state("thinking")
         reply_raw = await self.ollama.chat(clean)
@@ -71,6 +80,19 @@ class VoicePipeline:
 
         # ---- Speaking (also publishes agent.reply) ----
         await self.speak(body, emotion)
+
+    async def _answer_ip_query(self) -> None:
+        """Answer the 'what's your IP' voice intent directly: print a slip
+        on the receipt printer and speak the address. Bypasses the LLM."""
+        ip = netinfo.primary_lan_ip()
+        if ip is not None:
+            slip = build_ip_slip(ip, socket.gethostname(), datetime.now())
+            await nats_helper.publish_model(
+                self.nats,
+                topics.PRINTER_INTENT_PRINT_TEXT,
+                schemas.PrinterIntentPrintText(text=slip),
+            )
+        await self.speak(spoken_ip_answer(ip), emotion="neutral", source="system")
 
     async def speak(self, text: str, emotion: str = "neutral", source: str = "llm") -> None:
         """Publish a reply event then synthesize + play TTS for the given text.
