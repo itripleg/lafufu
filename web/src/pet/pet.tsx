@@ -6,8 +6,14 @@ import { emotionToColor, EMOTION_GLYPH, type Emotion } from "../shared/design";
 import { toast } from "../shared/toast";
 import { Blob } from "../shared/blob";
 import { createPetScene, SERVO_RANGES } from "./pet_scene";
+import { applyDragDelta, axisMid } from "./head_drag";
 
 type ChatLine = { who: "you" | "lafufu"; text: string; emotion?: string; ts: number };
+
+/** Settings carry bools as strings ("true"/"1"); NATS config events may carry
+ *  a real boolean. Normalize both. */
+const parseBool = (v: unknown): boolean =>
+  v === true || v === "true" || v === "1" || v === 1;
 
 /**
  * Mobile Tamagotchi-style page — three.js procedural labubu face that mirrors
@@ -25,6 +31,13 @@ const Pet: Component = () => {
   const [chatInput, setChatInput] = createSignal("");
   const [sending, setSending] = createSignal(false);
   const [discovered, setDiscovered] = createSignal<Set<string>>(new Set());
+  // Mirrors the animator.idle_animation.enabled setting. Defaults to true (the
+  // setting's factory default); corrected on mount + by config.changed events.
+  const [idleOn, setIdleOn] = createSignal(true);
+  // Guards: idleBusy drops concurrent taps; idleSeeded blocks the slower
+  // snapshot seed once a live value (NATS echo or a user toggle) has settled.
+  const [idleBusy, setIdleBusy] = createSignal(false);
+  let idleSeeded = false;
 
   const nats = new NatsWs();
   let host!: HTMLDivElement;
@@ -66,14 +79,33 @@ const Pet: Component = () => {
     }
   };
 
-  // ---- Pointer interaction: drag rotates head; tap detects zones ----------
+  // ---- Pointer interaction: drag puppeteers the head; tap detects zones ----
   let dragging = false;
   let didDrag = false;
+  let gesture: "none" | "puppeteer" | "tug" = "none";
+  let tugSide: "L" | "R" | null = null;
   let lastX = 0, lastY = 0;
   let downX = 0, downY = 0;
   let downT = 0;
-  let yaw = 0, pitch = 0; // user-applied offsets on top of servo pose
   let velY = 0;            // last drag dy — used to detect downward "tug" gestures
+
+  // Commanded head-servo targets (DXL units) while puppeteering.
+  let headLr = axisMid("head_lr");
+  let headUd = axisMid("head_ud");
+  let lastHeadDragTs = 0;                       // post-release grace window
+  let lastPose: Record<string, number> = {};   // latest animator.pose payload
+
+  // Spin easter-egg: timestamps of recent left<->right reversals near a
+  // range extreme. Replaces the old unbounded-yaw detector.
+  let sweepReversals: number[] = [];
+  let sweepDir = 0;        // -1 / +1 — last horizontal drag direction
+
+  // True while the user owns the head: actively puppeteering, or within 800ms
+  // of release. The animator.pose echo is suppressed for head_lr/head_ud
+  // during this window so the servo round-trip can't fight the drag.
+  const headControlActive = () =>
+    gesture === "puppeteer" || performance.now() - lastHeadDragTs < 800;
+
   const raycaster = new THREE.Raycaster();
   const ndc = new THREE.Vector2();
 
@@ -91,45 +123,115 @@ const Pet: Component = () => {
     return hits.length ? (hits[0].object.userData.zone as string) : null;
   };
 
+  // Throttled servo command — sends the latest headLr/headUd at most ~every
+  // 40ms. A throttle (not body_panel's trailing debounce) so the servos keep
+  // tracking during a continuous drag, not only when the finger pauses.
+  let previewTimer: ReturnType<typeof setTimeout> | undefined;
+  const flushPreview = () => {
+    previewTimer = undefined;
+    api.animatorPreview("head_lr", Math.round(headLr)).catch(() => {});
+    api.animatorPreview("head_ud", Math.round(headUd)).catch(() => {});
+  };
+  const schedulePreview = () => {
+    if (previewTimer === undefined) previewTimer = setTimeout(flushPreview, 40);
+  };
+
+  // Count a reversal when the horizontal drag flips direction while the head
+  // is near a head_lr extreme. 3 within 1.5s trips the "spin" easter egg.
+  const trackSweep = (dx: number) => {
+    if (Math.abs(dx) < 2) return;
+    const dir = dx > 0 ? 1 : -1;
+    const [lo, hi] = SERVO_RANGES.head_lr;
+    const span = hi - lo;
+    const nearEnd = headLr <= lo + span * 0.12 || headLr >= hi - span * 0.12;
+    if (sweepDir !== 0 && dir !== sweepDir && nearEnd) {
+      const now = performance.now();
+      sweepReversals = sweepReversals.filter((t) => now - t < 1500);
+      sweepReversals.push(now);
+    }
+    sweepDir = dir;
+  };
+
   const onPointerDown = (e: PointerEvent) => {
     dragging = true;
     didDrag = false;
     lastX = e.clientX; lastY = e.clientY;
     downX = e.clientX; downY = e.clientY; downT = performance.now();
+    velY = 0;
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
+
+    // The zone under the initial press decides the gesture for this drag.
+    const zone = pickZone(e.clientX, e.clientY);
+    if (zone === "earL" || zone === "earR") {
+      gesture = "tug";
+      tugSide = zone === "earL" ? "L" : "R";
+    } else {
+      gesture = "puppeteer";
+      tugSide = null;
+      // Grab the head wherever it currently is.
+      headLr = lastPose.head_lr ?? axisMid("head_lr");
+      headUd = lastPose.head_ud ?? axisMid("head_ud");
+      sweepReversals = [];
+      sweepDir = 0;
+    }
   };
   const onPointerMove = (e: PointerEvent) => {
     if (!dragging) return;
     const dx = e.clientX - lastX, dy = e.clientY - lastY;
     if (Math.hypot(e.clientX - downX, e.clientY - downY) > 5) didDrag = true;
     lastX = e.clientX; lastY = e.clientY;
-    yaw   += dx * 0.006;
-    pitch += dy * 0.006;
     velY = dy;
-    void dx;
-    // Clamp pitch so we never look behind ourselves.
-    pitch = Math.max(-0.7, Math.min(0.7, pitch));
+
+    if (gesture === "puppeteer") {
+      // Drag right -> head turns right; drag down -> head tilts down. If the
+      // rig moves the wrong way during manual verification, negate dx/dy here.
+      headLr = applyDragDelta("head_lr", headLr, dx);
+      headUd = applyDragDelta("head_ud", headUd, dy);
+      lastHeadDragTs = performance.now();
+      // Optimistic visual update — the model tracks the drag immediately.
+      api3d?.setPose({ head_lr: headLr, head_ud: headUd });
+      schedulePreview();
+      trackSweep(dx);
+    }
   };
   const onPointerUp = (e: PointerEvent) => {
     if (!dragging) return;
     dragging = false;
     const heldMs = performance.now() - downT;
+    const wasGesture = gesture;
+    gesture = "none";
 
     if (!didDrag && heldMs < 350) {
-      // Tap — check zone.
+      // Tap — check zone (pat / poke / tickle).
       const zone = pickZone(e.clientX, e.clientY);
       if (zone) handleTap(zone, e.clientX, e.clientY);
-    } else {
-      // Drag end — was it a "tug" on an ear?
-      const zone = pickZone(downX, downY);
-      if (zone === "earL" && velY > 6) { markFound("tugL"); api3d?.wobbleEar("L"); triggerExpression("surprised"); flashHint(e.clientX, e.clientY, "boi-oing!"); }
-      if (zone === "earR" && velY > 6) { markFound("tugR"); api3d?.wobbleEar("R"); triggerExpression("surprised"); flashHint(e.clientX, e.clientY, "boi-oing!"); }
-      // Big spin?
-      if (Math.abs(yaw) > Math.PI * 1.4) {
+      return;
+    }
+
+    if (wasGesture === "tug") {
+      // Drag that started on an ear, flicked downward — "tug" easter egg.
+      if (tugSide && velY > 6) {
+        markFound(tugSide === "L" ? "tugL" : "tugR");
+        api3d?.wobbleEar(tugSide);
+        triggerExpression("surprised");
+        flashHint(e.clientX, e.clientY, "boi-oing!");
+      }
+    } else if (wasGesture === "puppeteer") {
+      // Keep the 800ms grace window alive past release so the animator.pose
+      // echo can't reclaim the head before the servo settles.
+      lastHeadDragTs = performance.now();
+      // Commit the exact release position promptly.
+      if (previewTimer !== undefined) {
+        clearTimeout(previewTimer);
+        previewTimer = undefined;
+      }
+      flushPreview();
+      // "Spin" easter egg — 3 rapid end-to-end reversals.
+      if (sweepReversals.length >= 3) {
+        sweepReversals = [];
         markFound("spin");
         triggerExpression("disagree");
         flashHint(e.clientX, e.clientY, "stop spinning me!");
-        yaw = yaw % (Math.PI * 2);
       }
     }
   };
@@ -202,30 +304,38 @@ const Pet: Component = () => {
       setChat((c) => [...c.slice(-30), { who: "you", text: f.payload.text, ts: Date.now() }]);
     }));
     subs.push(nats.subscribe("animator.pose", (f) => {
-      api3d?.setPose(f.payload);
+      lastPose = f.payload;
+      // While the user owns the head, drop the head axes from the echo so the
+      // servo round-trip can't fight the drag. Eyes/jaw/brow keep flowing.
+      const p = { ...f.payload };
+      if (headControlActive()) {
+        delete p.head_lr;
+        delete p.head_ud;
+      }
+      api3d?.setPose(p);
     }));
+    subs.push(nats.subscribe(
+      "config.changed.animator.idle_animation.enabled",
+      (f) => { idleSeeded = true; setIdleOn(parseBool(f.payload?.value)); },
+    ));
     onCleanup(() => subs.forEach((u) => u()));
 
-    // Combine raw user drag with the latest servo target so the user can
-    // override / overlay on top of the live pose.
-    let frame: number | undefined;
-    const blend = () => {
-      if (api3d) {
-        // Decay user yaw toward 0 so it gently rests back to the servo pose.
-        yaw   *= 0.985;
-        pitch *= 0.985;
-        api3d.head.rotation.y += yaw   * 0.04;
-        api3d.head.rotation.x += pitch * 0.04;
-      }
-      frame = requestAnimationFrame(blend);
-    };
-    frame = requestAnimationFrame(blend);
+    // Seed the idle toggle from the current server state.
+    api.snapshot()
+      .then((snap) => {
+        if (idleSeeded) return; // a live event already set it — don't clobber
+        const row = snap.settings.find(
+          (s) => s.key === "animator.idle_animation.enabled",
+        );
+        if (row) setIdleOn(parseBool(row.value));
+      })
+      .catch(() => { /* keep the default-on state */ });
 
     // iOS requires explicit permission for devicemotion. Wire it up either way.
     window.addEventListener("devicemotion", onMotion, { passive: true });
 
     onCleanup(() => {
-      if (frame) cancelAnimationFrame(frame);
+      if (previewTimer !== undefined) clearTimeout(previewTimer);
       window.removeEventListener("devicemotion", onMotion);
     });
   });
@@ -261,6 +371,26 @@ const Pet: Component = () => {
       } catch (e: any) { toast.err("motion error", e.message); }
     } else {
       toast.info("motion already active on this device");
+    }
+  };
+
+  const toggleIdle = async () => {
+    if (idleBusy()) return; // ignore taps while a write is in flight
+    const before = idleOn();
+    const next = !before;
+    idleSeeded = true;
+    setIdleBusy(true);
+    setIdleOn(next); // optimistic
+    try {
+      await api.patchSetting("animator.idle_animation.enabled", {
+        value: next,
+        value_type: "bool",
+      });
+    } catch (e: any) {
+      setIdleOn(before); // revert
+      toast.err("couldn't toggle idle animation", e.message);
+    } finally {
+      setIdleBusy(false);
     }
   };
 
@@ -505,6 +635,14 @@ const Pet: Component = () => {
             enable shake
           </button>
           <button
+            class={`btn btn--tiny ${idleOn() ? "btn--primary" : ""}`}
+            onClick={toggleIdle}
+            disabled={idleBusy()}
+            title="Toggle the lafufu's idle 'living presence' animation. Off = the head holds where you drag it."
+          >
+            {idleOn() ? "idle: on" : "idle: off"}
+          </button>
+          <button
             class="btn btn--tiny"
             onClick={() => {
               const found = discovered();
@@ -523,5 +661,3 @@ const Pet: Component = () => {
 };
 
 export default Pet;
-// keep import to satisfy unused-import linters if SERVO_RANGES is added later
-void SERVO_RANGES;
