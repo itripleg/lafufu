@@ -34,6 +34,10 @@ const Pet: Component = () => {
   // Mirrors the animator.idle_animation.enabled setting. Defaults to true (the
   // setting's factory default); corrected on mount + by config.changed events.
   const [idleOn, setIdleOn] = createSignal(true);
+  // Guards: idleBusy drops concurrent taps; idleSeeded blocks the slower
+  // snapshot seed once a live value (NATS echo or a user toggle) has settled.
+  const [idleBusy, setIdleBusy] = createSignal(false);
+  let idleSeeded = false;
 
   const nats = new NatsWs();
   let host!: HTMLDivElement;
@@ -312,13 +316,14 @@ const Pet: Component = () => {
     }));
     subs.push(nats.subscribe(
       "config.changed.animator.idle_animation.enabled",
-      (f) => setIdleOn(parseBool(f.payload?.value)),
+      (f) => { idleSeeded = true; setIdleOn(parseBool(f.payload?.value)); },
     ));
     onCleanup(() => subs.forEach((u) => u()));
 
     // Seed the idle toggle from the current server state.
     api.snapshot()
       .then((snap) => {
+        if (idleSeeded) return; // a live event already set it — don't clobber
         const row = snap.settings.find(
           (s) => s.key === "animator.idle_animation.enabled",
         );
@@ -370,7 +375,11 @@ const Pet: Component = () => {
   };
 
   const toggleIdle = async () => {
-    const next = !idleOn();
+    if (idleBusy()) return; // ignore taps while a write is in flight
+    const before = idleOn();
+    const next = !before;
+    idleSeeded = true;
+    setIdleBusy(true);
     setIdleOn(next); // optimistic
     try {
       await api.patchSetting("animator.idle_animation.enabled", {
@@ -378,8 +387,10 @@ const Pet: Component = () => {
         value_type: "bool",
       });
     } catch (e: any) {
-      setIdleOn(!next); // revert
+      setIdleOn(before); // revert
       toast.err("couldn't toggle idle animation", e.message);
+    } finally {
+      setIdleBusy(false);
     }
   };
 
@@ -626,6 +637,7 @@ const Pet: Component = () => {
           <button
             class={`btn btn--tiny ${idleOn() ? "btn--primary" : ""}`}
             onClick={toggleIdle}
+            disabled={idleBusy()}
             title="Toggle the lafufu's idle 'living presence' animation. Off = the head holds where you drag it."
           >
             {idleOn() ? "idle: on" : "idle: off"}
