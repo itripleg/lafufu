@@ -29,14 +29,17 @@ const fmtElapsed = (ms: number): string => {
   return s < 10 ? `${s.toFixed(1)}s` : `${Math.round(s)}s`;
 };
 
-const rowToEntry = (r: ChatRow): Entry => ({
-  id: r.id,
-  role: r.role,
-  text: r.text,
-  emotion: r.emotion ?? undefined,
-  ts: Date.parse(r.created_at),
-  elapsedMs: r.reply_delay_ms ?? undefined,
-});
+const rowToEntry = (r: ChatRow): Entry => {
+  const hasTz = /(?:Z|[+-]\d\d:?\d\d)$/.test(r.created_at);
+  return {
+    id: r.id,
+    role: r.role,
+    text: r.text,
+    emotion: r.emotion ?? undefined,
+    ts: Date.parse(hasTz ? r.created_at : r.created_at + "Z"),
+    elapsedMs: r.reply_delay_ms ?? undefined,
+  };
+};
 
 const DEFAULT_PUPPET =
   "Hello! I'm Lafufu, a little mischievous creature. " +
@@ -80,7 +83,9 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
       const { messages } = await api.chatMessages();
       setEntries(messages.map(rowToEntry));
       queueMicrotask(() => { if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight; });
-    } catch {}
+    } catch (err) {
+      toast.err("chat history failed to load", err instanceof Error ? err.message : String(err));
+    }
 
     // Hydrate drafted inputs (so a refresh doesn't lose the puppet text)
     const cached = lsGet<{ chat?: string; speak?: string; emotion?: Emotion }>(DRAFT_INPUTS, {});
