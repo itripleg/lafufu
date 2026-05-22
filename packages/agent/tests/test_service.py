@@ -57,6 +57,39 @@ async def test_text_message_intent_triggers_pipeline(nats_server):
     assert replies[0].text == "pong"
 
 
+async def test_text_message_intent_does_not_publish_listening(nats_server):
+    """A text intent has no mic phase — it must not emit a 'listening' state."""
+    svc = AgentService(
+        mic=FakeMicForService([]),  # mic does nothing
+        ollama=FakeOllama(scripts=[("ping", "[neutral]\npong")]),
+        piper=FakePiper(chunks=[(b"\x00" * 100, 0.3)]),
+        nats_url=nats_server,
+    )
+
+    nc = await nats.connect(nats_server)
+    states: list[str] = []
+
+    async def on_state(msg):
+        states.append(msg.subject.split(".")[-1])
+
+    await nc.subscribe(f"{topics.AGENT_STATE}.*", cb=on_state)
+
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.5)  # wait for ready
+
+    await publish_model(
+        nc, topics.AGENT_INTENT_TEXT_MESSAGE, schemas.AgentIntentTextMessage(text="ping")
+    )
+    await asyncio.sleep(0.5)
+    await nc.drain()
+
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)
+
+    assert "listening" not in states, f"text intent must not emit 'listening'; got {states}"
+    assert "thinking" in states, f"text intent should still emit 'thinking'; got {states}"
+
+
 async def test_stt_backend_change_swaps_stt_instance(nats_server):
     """When config.changed.agent.stt_backend fires, agent swaps the STT instance."""
     from lafufu_shared.testing import FakeWhisper

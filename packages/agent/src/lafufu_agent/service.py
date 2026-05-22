@@ -434,7 +434,9 @@ class AgentService(BaseService):
             tmp = VoicePipeline(
                 self.nats, _OnceMic(msg.text), self._ollama, self._piper, self._speaker_play
             )
-            await tmp.run_one_cycle()
+            # A typed intent never used the mic — suppress the spurious
+            # 'listening' state so the pipeline view reflects reality.
+            await tmp.run_one_cycle(publish_listening=False)
 
     async def _on_speak_text(self, subject: str, msg: schemas.AgentIntentSpeakText) -> None:
         """Direct text-to-speech: skip LLM, play exactly what was sent."""
