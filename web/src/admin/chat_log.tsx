@@ -6,7 +6,7 @@ import { lsGet, lsSet } from "../shared/local_storage";
 import { toast } from "../shared/toast";
 import { Panel } from "./panel";
 
-interface Entry {
+export interface Entry {
   /** DB row id — absent for live (not-yet-persisted) entries. */
   id?: number;
   role: "user" | "lafufu" | "puppet";
@@ -39,6 +39,21 @@ const rowToEntry = (r: ChatRow): Entry => {
     ts: Date.parse(hasTz ? r.created_at : r.created_at + "Z"),
     elapsedMs: r.reply_delay_ms ?? undefined,
   };
+};
+
+/**
+ * Merge loaded history in front of entries that arrived live during the fetch.
+ * History is older so it goes first; a live entry that duplicates the tail of
+ * history — the same turn fanned out live while the GET was in flight — is
+ * dropped. The result keeps the most recent 100 entries.
+ */
+export const mergeHistory = (history: Entry[], live: Entry[]): Entry[] => {
+  if (live.length === 0) return history.slice(-100);
+  if (history.length === 0) return live.slice(-100);
+  const tail = history[history.length - 1];
+  const deduped =
+    live[0].role === tail.role && live[0].text === tail.text ? live.slice(1) : live;
+  return [...history, ...deduped].slice(-100);
 };
 
 const DEFAULT_PUPPET =
@@ -86,22 +101,9 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
     queueMicrotask(() => { if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight; });
   };
 
-  onMount(async () => {
-    // Hydrate persisted chat history from the backend.
-    try {
-      const { messages } = await api.chatMessages();
-      setEntries(messages.map(rowToEntry));
-      queueMicrotask(() => { if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight; });
-    } catch (err) {
-      toast.err("chat history failed to load", err instanceof Error ? err.message : String(err));
-    }
-
-    // Hydrate drafted inputs (so a refresh doesn't lose the puppet text)
-    const cached = lsGet<{ chat?: string; speak?: string; emotion?: Emotion }>(DRAFT_INPUTS, {});
-    if (cached.chat)    setChatInput(cached.chat);
-    if (cached.speak)   setSpeakInput(cached.speak);
-    if (cached.emotion) setSpeakEmotion(cached.emotion);
-
+  onMount(() => {
+    // Subscribe to the live stream FIRST — before the history fetch below — so
+    // a turn that completes while the GET is in flight isn't missed.
     unsubT = props.nats.subscribe("agent.transcript", (f) => {
       appendDedup({ role: "user", text: f.payload.text });
     });
@@ -125,6 +127,26 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
         setStage(null);
       }
     });
+
+    // Hydrate persisted history, merging it in front of any entries that
+    // arrived live while the request was in flight. A failed load degrades
+    // gracefully to live-only.
+    void api
+      .chatMessages()
+      .then(({ messages }) => {
+        const history = messages.map(rowToEntry);
+        setEntries((live) => mergeHistory(history, live));
+        queueMicrotask(() => { if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight; });
+      })
+      .catch((err) => {
+        toast.err("chat history failed to load", err instanceof Error ? err.message : String(err));
+      });
+
+    // Hydrate drafted inputs (so a refresh doesn't lose the puppet text)
+    const cached = lsGet<{ chat?: string; speak?: string; emotion?: Emotion }>(DRAFT_INPUTS, {});
+    if (cached.chat)    setChatInput(cached.chat);
+    if (cached.speak)   setSpeakInput(cached.speak);
+    if (cached.emotion) setSpeakEmotion(cached.emotion);
 
     // Tick the live round-trip counter ~10x/s while a reply is pending or a stage is active.
     tickTimer = window.setInterval(() => {
