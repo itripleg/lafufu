@@ -24,6 +24,10 @@ class Piper:
         self._voice = None
         self._sample_rate = 22050  # piper default; refined on load
         self._sample_width = 2
+        # When set, overrides the .onnx.json default length_scale on every
+        # synthesize call. <1 = faster speech, >1 = slower. AgentService
+        # updates this from the tts.length_scale setting.
+        self.length_scale: float | None = None
 
     def load(self) -> None:
         if self._voice is not None:
@@ -57,8 +61,14 @@ class Piper:
         samples_per_chunk = int(self._sample_rate * self.chunk_ms / 1000)
         bytes_per_chunk = samples_per_chunk * bytes_per_sample
 
+        syn_config = None
+        if self.length_scale is not None:
+            from piper.config import SynthesisConfig  # lazy
+
+            syn_config = SynthesisConfig(length_scale=self.length_scale)
+
         buf = bytearray()
-        for piper_chunk in self._voice.synthesize(text):
+        for piper_chunk in self._voice.synthesize(text, syn_config=syn_config):
             buf.extend(piper_chunk.audio_int16_bytes)
             while len(buf) >= bytes_per_chunk:
                 out = bytes(buf[:bytes_per_chunk])
