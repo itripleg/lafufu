@@ -82,3 +82,64 @@ def test_delete_expression(client):
     assert r2.status_code == 204
     r3 = client.get("/api/animator/expressions")
     assert r3.json()["items"] == []
+
+
+def test_play_publishes_resolved_payload(client):
+    """POST /expressions/{name}/play resolves frames and publishes the
+    AnimatorIntentPlayExpression payload."""
+    # Seed a frame.
+    client.post(
+        "/api/animator/frames",
+        json={
+            "name": "agree_low",
+            "head_lr": 2063,
+            "head_ud": 3122,
+            "eye": 2045,
+            "jaw": 1728,
+            "brow": 2075,
+        },
+    )
+    # Seed an expression that references it.
+    client.post(
+        "/api/animator/expressions",
+        json={
+            "name": "agree",
+            "playback": "once",
+            "default_duration_ms": 220,
+            "steps": [{"frame": "agree_low"}],
+        },
+    )
+
+    r = client.post("/api/animator/expressions/agree/play")
+    assert r.status_code == 202, r.text
+
+    # The fixture's nats_publish appended to client.published.
+    topics = [t for (t, _) in client.published]
+    assert "animator.intent.play_expression" in topics
+
+    # Find the most recent play_expression publish.
+    payload = next(
+        p for (t, p) in reversed(client.published) if t == "animator.intent.play_expression"
+    )
+    assert payload["name"] == "agree"
+    assert payload["playback"] == "once"
+    assert len(payload["steps"]) == 1
+    assert payload["steps"][0]["pose"]["head_ud"] == 3122
+
+
+def test_play_404_missing_expression(client):
+    r = client.post("/api/animator/expressions/ghost/play")
+    assert r.status_code == 404
+
+
+def test_play_409_missing_frames(client):
+    """Expression that references a non-existent frame fails 409."""
+    client.post(
+        "/api/animator/expressions",
+        json={
+            "name": "dangling",
+            "steps": [{"frame": "noexist"}],
+        },
+    )
+    r = client.post("/api/animator/expressions/dangling/play")
+    assert r.status_code == 409

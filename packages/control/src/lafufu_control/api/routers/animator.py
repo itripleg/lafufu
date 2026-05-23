@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
+from ...animation.compile import compile_expression, required_frame_names
 from ...models import Expression, Frame
 
 router = APIRouter()
@@ -255,3 +256,28 @@ def delete_expression(name: str, req: Request):
             s.delete(e)
             s.commit()
     return None
+
+
+@router.post("/expressions/{name}/play", status_code=202)
+def play_expression(name: str, req: Request):
+    with Session(req.app.state.engine) as s:
+        e = s.get(Expression, name)
+        if e is None:
+            raise HTTPException(
+                404,
+                detail={"error_code": "not_found", "message": f"no expression {name!r}"},
+            )
+        need = list(required_frame_names(e))
+        frames = {f.name: f for f in s.exec(select(Frame).where(Frame.name.in_(need))).all()}
+        missing = [n for n in need if n not in frames]
+        if missing:
+            raise HTTPException(
+                409,
+                detail={
+                    "error_code": "missing_frames",
+                    "message": f"expression references unknown frames: {missing}",
+                },
+            )
+        payload = compile_expression(e, frames)
+    req.app.state.nats_publish("animator.intent.play_expression", payload.model_dump())
+    return {"ok": True, "name": name}
