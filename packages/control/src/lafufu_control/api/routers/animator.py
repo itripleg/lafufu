@@ -281,3 +281,33 @@ def play_expression(name: str, req: Request):
         payload = compile_expression(e, frames)
     req.app.state.nats_publish("animator.intent.play_expression", payload.model_dump())
     return {"ok": True, "name": name}
+
+
+@router.post("/expressions/{name}/activate")
+def activate_expression(name: str, req: Request):
+    """Make this expression the owner of its emotion binding, evicting any
+    previous expression that held the same emotion."""
+    with Session(req.app.state.engine) as s:
+        e = s.get(Expression, name)
+        if e is None:
+            raise HTTPException(
+                404,
+                detail={"error_code": "not_found", "message": f"no expression {name!r}"},
+            )
+        if not e.emotion:
+            raise HTTPException(
+                400,
+                detail={
+                    "error_code": "no_emotion",
+                    "message": "expression must have an emotion to activate",
+                },
+            )
+        # Strip the emotion from any other expression that currently owns it.
+        others = s.exec(select(Expression).where(Expression.emotion == e.emotion)).all()
+        for other in others:
+            if other.name != e.name:
+                other.emotion = None
+                s.add(other)
+        s.commit()
+        emotion = e.emotion  # capture before session closes
+    return {"ok": True, "name": name, "emotion": emotion}
