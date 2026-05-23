@@ -385,20 +385,33 @@ class AnimatorService(BaseService):
     async def _keyframe_player_loop(self) -> None:
         """Drive _target_pose at 20Hz from the active KeyframePlayer.
 
-        If no expression is active and an idle payload is cached, falls back
-        to looping idle. Lipsync ownership of the jaw is preserved when a
-        recent RMS event is present.
+        Idle fallback: when no expression is active, no recent operator intent,
+        and an idle payload is cached, spin up a fresh idle player. The
+        intent-quiet deferral matters because _on_preview/_on_set_pose clear
+        _active_player and set a slider-driven target — without the deferral
+        this loop would respawn idle on the very next tick and stomp the
+        slider value back to current pose.
+
+        Lipsync ownership of the jaw is preserved when a recent RMS event is
+        present.
         """
         TICK_DT = 0.05  # 20Hz
+        INTENT_QUIET_S = 1.5
         while not self._shutdown.is_set():
             try:
                 if self._has_u2d2:
                     now_mono = time.monotonic()
                     now_ms = int(now_mono * 1000)
+                    operator_active = (now_mono - self._last_intent_mono) <= INTENT_QUIET_S
 
-                    # Idle fallback: when no active player (or it just finished),
-                    # spin up a fresh idle player from the cached payload.
-                    if self._active_player is None and self._idle_payload is not None:
+                    # Idle fallback: only when nothing is playing AND no recent
+                    # operator activity. Otherwise the slider-driven target
+                    # would be overridden on the next tick.
+                    if (
+                        self._active_player is None
+                        and self._idle_payload is not None
+                        and not operator_active
+                    ):
                         self._active_player = KeyframePlayer(
                             payload=self._idle_payload,
                             start_pose=self._current_pose,
