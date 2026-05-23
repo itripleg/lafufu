@@ -137,6 +137,87 @@ async def test_voice_model_change_swaps_piper_instance(nats_server):
     await asyncio.wait_for(task, timeout=3)
 
 
+async def test_tts_length_scale_change_updates_piper(nats_server):
+    """When config.changed.tts.length_scale fires, the agent mirrors the
+    new float onto self._piper.length_scale so the next synthesize call
+    uses it. Also stores the value on the service so a subsequent voice
+    swap propagates it onto the new Piper instance.
+    """
+    initial = FakePiper()
+    svc = AgentService(
+        mic=FakeMicForService([]),
+        ollama=FakeOllama(),
+        piper=initial,
+        nats_url=nats_server,
+    )
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.5)
+
+    nc = await nats.connect(nats_server)
+    await publish_model(
+        nc,
+        f"{topics.CONFIG_CHANGED}.tts.length_scale",
+        schemas.ConfigChanged(key="tts.length_scale", value="0.85", source="test"),
+    )
+    await asyncio.sleep(0.3)
+    await nc.drain()
+
+    assert initial.length_scale == 0.85
+    assert svc._tts_length_scale == 0.85
+
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)
+
+
+async def test_voice_swap_carries_current_length_scale(nats_server):
+    """A voice swap must apply the operator's current length_scale to the new
+    Piper — otherwise the swap would silently revert speed to the .onnx.json
+    default.
+    """
+    from pathlib import Path
+
+    def make_fake_piper(name: str) -> FakePiper:
+        p = FakePiper()
+        p.model_path = Path(f"/fake/{name}.onnx")
+        p.voice_name = name
+        return p
+
+    initial = make_fake_piper("lafufu_voice")
+    svc = AgentService(
+        mic=FakeMicForService([]),
+        ollama=FakeOllama(),
+        piper=initial,
+        nats_url=nats_server,
+        piper_factory=make_fake_piper,
+    )
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.5)
+
+    nc = await nats.connect(nats_server)
+    # First set the length scale, then swap the voice.
+    await publish_model(
+        nc,
+        f"{topics.CONFIG_CHANGED}.tts.length_scale",
+        schemas.ConfigChanged(key="tts.length_scale", value="0.85", source="test"),
+    )
+    await asyncio.sleep(0.2)
+    await publish_model(
+        nc,
+        f"{topics.CONFIG_CHANGED}.agent.voice_model",
+        schemas.ConfigChanged(
+            key="agent.voice_model", value="lafufu_voice_kristian", source="test"
+        ),
+    )
+    await asyncio.sleep(0.3)
+    await nc.drain()
+
+    assert svc._piper is not initial
+    assert svc._piper.length_scale == 0.85, "new voice must inherit current length_scale"
+
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)
+
+
 async def test_voice_model_change_keeps_prev_on_missing_file(nats_server):
     """If piper_factory raises FileNotFoundError, agent keeps the previous voice."""
     from pathlib import Path

@@ -69,6 +69,10 @@ class AgentService(BaseService):
         self._piper_factory = piper_factory
         self._player_factory = player_factory
         self._voice_model = _voice_name_of(piper)
+        # TTS length scale lives in settings (tts.length_scale, default 0.95).
+        # Seeded from the config snapshot on startup; mirrored into self._piper
+        # and into any new piper produced by _rebuild_tts.
+        self._tts_length_scale: float | None = None
         self._pipeline: VoicePipeline | None = None
         self._cycle_lock = asyncio.Lock()
         self._mic_loop_task: asyncio.Task | None = None
@@ -152,6 +156,12 @@ class AgentService(BaseService):
             f"{topics.CONFIG_CHANGED}.agent.voice_model",
             schemas.ConfigChanged,
             self._on_config_voice_model,
+        )
+        await nats_helper.subscribe_model(
+            self.nats,
+            f"{topics.CONFIG_CHANGED}.tts.length_scale",
+            schemas.ConfigChanged,
+            self._on_config_tts_length_scale,
         )
 
         # Live-update system prompt when admin changes it.
@@ -292,6 +302,17 @@ class AgentService(BaseService):
         if hasattr(self._mic, "set_stt"):
             self._mic.set_stt(self.stt)
 
+    async def _on_config_tts_length_scale(self, subject: str, msg: schemas.ConfigChanged) -> None:
+        try:
+            value = float(msg.value)
+        except (TypeError, ValueError):
+            self.log.warning("tts.length_scale.bad_value value=%r", msg.value)
+            return
+        self._tts_length_scale = value
+        if self._piper is not None:
+            self._piper.length_scale = value
+        self.log.info("tts.length_scale.set value=%.3f", value)
+
     async def _on_config_voice_model(self, subject: str, msg: schemas.ConfigChanged) -> None:
         new_name = str(msg.value).strip()
         if not new_name or new_name == self._voice_model:
@@ -326,6 +347,10 @@ class AgentService(BaseService):
         old_rate = getattr(prev, "sample_rate", None)
         new_rate = getattr(new_piper, "sample_rate", None)
         self._piper = new_piper
+        # Carry the operator's current length scale onto the new voice so a
+        # swap doesn't silently revert speed to the .onnx.json default.
+        if self._tts_length_scale is not None:
+            self._piper.length_scale = self._tts_length_scale
         if self._player_factory is not None and new_rate is not None and new_rate != old_rate:
             self._speaker_play = self._player_factory(new_rate)
             self.log.info("tts.player.rebuilt sample_rate=%s prev_rate=%s", new_rate, old_rate)

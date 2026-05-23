@@ -56,13 +56,17 @@ type Tab = "audio" | "model" | "printer" | "other";
 
 const TABS: Array<{ id: Tab; label: string; hint: string }> = [
   { id: "audio",   label: "audio",   hint: "speaker, tts, mic" },
-  { id: "model",   label: "model",   hint: "llm + system prompt" },
+  { id: "model",   label: "model",   hint: "llm + tts voice + system prompt" },
   { id: "printer", label: "printer", hint: "auto-print + letterhead" },
   { id: "other",   label: "other",   hint: "animator, misc" },
 ];
 
 function categoryOf(key: string): Tab {
-  if (key === "agent.llm_model" || key === "agent.system_prompt") return "model";
+  if (
+    key === "agent.llm_model" ||
+    key === "agent.system_prompt" ||
+    key === "agent.voice_model"
+  ) return "model";
   if (key.startsWith("printer.")) return "printer";
   if (
     key.startsWith("speaker.") ||
@@ -71,8 +75,7 @@ function categoryOf(key: string): Tab {
     key === "agent.silence_seconds" ||
     key === "agent.auto_listen" ||
     key === "agent.stt_backend" ||
-    key === "agent.whisper_model" ||
-    key === "agent.voice_model"
+    key === "agent.whisper_model"
   ) return "audio";
   return "other";
 }
@@ -362,11 +365,14 @@ export const SettingsForm: Component<Props> = (props) => {
       );
     }
     if (row.value.length > 80) {
+      // Long strings (agent.system_prompt, etc.) — give them enough vertical
+      // room to read/edit without scrolling. resize: vertical lets the
+      // operator stretch further when needed.
       return (
         <textarea
-          rows="3"
+          rows="10"
           class={`field ${isDirty(row) ? "field--dirty" : ""}`}
-          style={{ flex: 1, resize: "vertical", "font-family": "var(--f-sans)" }}
+          style={{ flex: 1, resize: "vertical", "font-family": "var(--f-sans)", "min-height": "200px" }}
           value={row.value}
           onInput={(e) => update(row.key, e.currentTarget.value)}
         />
