@@ -31,6 +31,10 @@ def create_app(
     ``api_token`` enables optional shared-token auth — when empty (the default)
     the auth layer is inert. See ``auth.py`` for the model.
     """
+    from ..migration import migrate_letterhead_data
+
+    migrate_letterhead_data()
+
     app = FastAPI(title="lafufu control", version="0.1.0")
     app.state.engine = engine
     app.state.nats_publish = nats_publish
