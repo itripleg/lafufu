@@ -150,9 +150,31 @@ def update_frame(name: str, body: FrameBody, req: Request):
 def delete_frame(name: str, req: Request):
     with Session(req.app.state.engine) as s:
         f = s.get(Frame, name)
-        if f is not None:
-            s.delete(f)
-            s.commit()
+        if f is None:
+            return None  # idempotent
+        # Refuse if any expression references this frame — otherwise /play would
+        # 409 on the orphan reference later. Scan via LIKE on the JSON column;
+        # cheap given the table size.
+        like = f'%"frame": "{name}"%'
+        referencing = s.exec(select(Expression).where(Expression.steps_json.like(like))).all()
+        # LIKE may match false positives if a frame name is a substring of another
+        # name — confirm by parsing steps_json.
+        actual = [
+            e.name
+            for e in referencing
+            if name in (s["frame"] for s in json.loads(e.steps_json or "[]"))
+        ]
+        if actual:
+            raise HTTPException(
+                409,
+                detail={
+                    "error_code": "frame_in_use",
+                    "message": f"frame {name!r} is used by: {', '.join(actual)}",
+                    "referenced_by": actual,
+                },
+            )
+        s.delete(f)
+        s.commit()
     return None
 
 
@@ -274,9 +296,27 @@ def update_expression(name: str, body: ExpressionBody, req: Request):
 def delete_expression(name: str, req: Request):
     with Session(req.app.state.engine) as s:
         e = s.get(Expression, name)
-        if e is not None:
-            s.delete(e)
-            s.commit()
+        if e is None:
+            return None  # idempotent
+        # Refuse if this expression is bound to an emotion — the agent service
+        # (and idle bootstrap) rely on emotion → expression resolution; deleting
+        # a bound expression silently orphans those code paths. Operator must
+        # unbind via PUT first, or activate a replacement.
+        if e.emotion:
+            raise HTTPException(
+                409,
+                detail={
+                    "error_code": "expression_bound",
+                    "message": (
+                        f"expression {name!r} is bound to emotion {e.emotion!r}; "
+                        "clear the emotion (PUT with emotion=null) or activate "
+                        "another expression for this emotion first"
+                    ),
+                    "emotion": e.emotion,
+                },
+            )
+        s.delete(e)
+        s.commit()
     return None
 
 

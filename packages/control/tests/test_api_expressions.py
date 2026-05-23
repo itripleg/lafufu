@@ -84,6 +84,28 @@ def test_delete_expression(client):
     assert r3.json()["items"] == []
 
 
+def test_delete_expression_refuses_when_bound_to_emotion(client):
+    """An expression with a non-null emotion can't be deleted — the agent
+    service and idle bootstrap rely on emotion → expression resolution."""
+    client.post(
+        "/api/animator/expressions",
+        json={"name": "bound", "steps": [{"frame": "x"}], "emotion": "happy"},
+    )
+    r = client.delete("/api/animator/expressions/bound")
+    assert r.status_code == 409
+    detail = r.json()["detail"]
+    assert detail["error_code"] == "expression_bound"
+    assert detail["emotion"] == "happy"
+
+    # Unbind via PUT, then delete succeeds.
+    client.put(
+        "/api/animator/expressions/bound",
+        json={"name": "bound", "steps": [{"frame": "x"}], "emotion": None},
+    )
+    r2 = client.delete("/api/animator/expressions/bound")
+    assert r2.status_code == 204
+
+
 def test_play_publishes_resolved_payload(client):
     """POST /expressions/{name}/play resolves frames and publishes the
     AnimatorIntentPlayExpression payload."""

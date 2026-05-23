@@ -65,6 +65,26 @@ def test_delete_frame(client):
     assert r3.json()["items"] == []
 
 
+def test_delete_frame_refuses_when_referenced(client):
+    """A frame referenced by any expression can't be deleted — otherwise
+    /play would 409 on the orphan reference."""
+    client.post("/api/animator/frames", json={"name": "used_a", **_pose()})
+    client.post(
+        "/api/animator/expressions",
+        json={"name": "uses_a", "steps": [{"frame": "used_a"}]},
+    )
+    r = client.delete("/api/animator/frames/used_a")
+    assert r.status_code == 409
+    detail = r.json()["detail"]
+    assert detail["error_code"] == "frame_in_use"
+    assert "uses_a" in detail["referenced_by"]
+
+    # After the expression is gone, the frame is deletable again.
+    client.delete("/api/animator/expressions/uses_a")
+    r2 = client.delete("/api/animator/frames/used_a")
+    assert r2.status_code == 204
+
+
 def test_snapshot_current_pose(client):
     """POST /frames/{name}/snapshot upserts using app.state.last_pose."""
     # Tests can poke app.state directly via the underlying app.
