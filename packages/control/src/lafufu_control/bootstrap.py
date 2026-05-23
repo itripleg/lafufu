@@ -59,6 +59,12 @@ DEFAULTS: list[tuple[str, str, str, str]] = [
         "str",
         "STT model name. For openai-whisper: tiny/base/small/medium/large (or .en variants). For faster-whisper: same names work. Changing live forces a reload on the next utterance.",
     ),
+    (
+        "agent.voice_model",
+        "lafufu_voice",
+        "str",
+        "Piper TTS voice (bare filename, no .onnx). Files live in LAFUFU_MODELS_DIR (default /srv/lafufu/models). Switched live by the agent — next utterance uses the new voice.",
+    ),
     # Animator
     (
         "animator.idle_animation.enabled",

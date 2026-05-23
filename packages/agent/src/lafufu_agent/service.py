@@ -12,6 +12,12 @@ from .pipeline import VoicePipeline
 log = logging.getLogger(__name__)
 
 
+def _voice_name_of(piper) -> str:
+    """Bare voice name (stem) from a Piper instance — what the setting takes."""
+    path = getattr(piper, "model_path", None)
+    return path.stem if path is not None else "lafufu_voice"
+
+
 def _set_alsa_volume(card: str, control: str, pct: int) -> tuple[bool, str]:
     """Set ALSA mixer volume. Returns (ok, message)."""
     pct = max(0, min(100, int(pct)))
@@ -42,6 +48,8 @@ class AgentService(BaseService):
         nats_url: str | None = None,
         stt=None,
         stt_factory=None,
+        piper_factory=None,
+        player_factory=None,
     ) -> None:
         super().__init__()
         self._mic = mic
@@ -56,6 +64,11 @@ class AgentService(BaseService):
         # would discard the already-warmed instance for a cold one.
         self._stt_backend = getattr(stt, "backend_id", "openai-whisper")
         self._stt_model = getattr(stt, "model_name", "tiny.en")
+        # TTS voice swap (mirrors STT factory pattern). Seed from the injected
+        # piper so a snapshot matching the env-configured voice is a no-op.
+        self._piper_factory = piper_factory
+        self._player_factory = player_factory
+        self._voice_model = _voice_name_of(piper)
         self._pipeline: VoicePipeline | None = None
         self._cycle_lock = asyncio.Lock()
         self._mic_loop_task: asyncio.Task | None = None
@@ -133,6 +146,12 @@ class AgentService(BaseService):
             f"{topics.CONFIG_CHANGED}.agent.whisper_model",
             schemas.ConfigChanged,
             self._on_config_whisper_model,
+        )
+        await nats_helper.subscribe_model(
+            self.nats,
+            f"{topics.CONFIG_CHANGED}.agent.voice_model",
+            schemas.ConfigChanged,
+            self._on_config_voice_model,
         )
 
         # Live-update system prompt when admin changes it.
@@ -272,6 +291,50 @@ class AgentService(BaseService):
             )
         if hasattr(self._mic, "set_stt"):
             self._mic.set_stt(self.stt)
+
+    async def _on_config_voice_model(self, subject: str, msg: schemas.ConfigChanged) -> None:
+        new_name = str(msg.value).strip()
+        if not new_name or new_name == self._voice_model:
+            return
+        self._voice_model = new_name
+        self._rebuild_tts(reason="voice_model")
+
+    def _rebuild_tts(self, reason: str) -> None:
+        """Swap the Piper voice. In-flight pipelines keep the old voice for the
+        current utterance (they hold a closure over self._piper); the next
+        VoicePipeline construction picks up the new instance.
+
+        If the new voice has a different sample rate, also rebuild the speaker
+        player via player_factory so PCM playback stays in sync.
+        """
+        if self._piper_factory is None:
+            self.log.warning("tts.rebuild.skipped reason=%s factory_missing", reason)
+            return
+        prev = self._piper
+        try:
+            new_piper = self._piper_factory(self._voice_model)
+        except FileNotFoundError as e:
+            self.log.warning(
+                "tts.rebuild.failed voice=%s error=%s — keeping previous voice",
+                self._voice_model,
+                e,
+            )
+            # Restore the previous voice name so the next change is detected.
+            self._voice_model = _voice_name_of(prev)
+            return
+        old_rate = getattr(prev, "sample_rate", None)
+        new_rate = getattr(new_piper, "sample_rate", None)
+        self._piper = new_piper
+        if self._player_factory is not None and new_rate is not None and new_rate != old_rate:
+            self._speaker_play = self._player_factory(new_rate)
+            self.log.info("tts.player.rebuilt sample_rate=%s prev_rate=%s", new_rate, old_rate)
+        self.log.info(
+            "tts.rebuilt reason=%s voice=%s prev=%s sample_rate=%s",
+            reason,
+            self._voice_model,
+            _voice_name_of(prev),
+            new_rate,
+        )
 
     async def _on_config_silence_threshold(self, subject: str, msg: schemas.ConfigChanged) -> None:
         try:

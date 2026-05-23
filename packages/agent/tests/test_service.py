@@ -88,6 +88,88 @@ async def test_stt_backend_change_swaps_stt_instance(nats_server):
     await asyncio.wait_for(task, timeout=3)
 
 
+async def test_voice_model_change_swaps_piper_instance(nats_server):
+    """When config.changed.agent.voice_model fires, agent swaps the Piper instance.
+
+    Mirrors the stt_backend swap test — confirms _rebuild_tts is wired in and
+    the factory result replaces self._piper.
+    """
+    from pathlib import Path
+
+    def make_fake_piper(name: str) -> FakePiper:
+        p = FakePiper()
+        p.model_path = Path(f"/fake/{name}.onnx")
+        p.voice_name = name
+        return p
+
+    initial = make_fake_piper("lafufu_voice")
+    svc = AgentService(
+        mic=FakeMicForService([]),
+        ollama=FakeOllama(),
+        piper=initial,
+        nats_url=nats_server,
+        piper_factory=make_fake_piper,
+    )
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.5)
+
+    nc = await nats.connect(nats_server)
+    await publish_model(
+        nc,
+        f"{topics.CONFIG_CHANGED}.agent.voice_model",
+        schemas.ConfigChanged(
+            key="agent.voice_model", value="lafufu_voice_kristian", source="test"
+        ),
+    )
+    await asyncio.sleep(0.3)
+    await nc.drain()
+
+    assert svc._piper is not initial
+    assert svc._piper.voice_name == "lafufu_voice_kristian"
+    assert svc._voice_model == "lafufu_voice_kristian"
+
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)
+
+
+async def test_voice_model_change_keeps_prev_on_missing_file(nats_server):
+    """If piper_factory raises FileNotFoundError, agent keeps the previous voice."""
+    from pathlib import Path
+
+    initial = FakePiper()
+    initial.model_path = Path("/fake/lafufu_voice.onnx")
+
+    def bad_factory(name: str):
+        raise FileNotFoundError(f"no such voice: {name}")
+
+    svc = AgentService(
+        mic=FakeMicForService([]),
+        ollama=FakeOllama(),
+        piper=initial,
+        nats_url=nats_server,
+        piper_factory=bad_factory,
+    )
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.5)
+
+    nc = await nats.connect(nats_server)
+    await publish_model(
+        nc,
+        f"{topics.CONFIG_CHANGED}.agent.voice_model",
+        schemas.ConfigChanged(key="agent.voice_model", value="missing_voice", source="test"),
+    )
+    await asyncio.sleep(0.3)
+    await nc.drain()
+
+    # Previous piper kept; voice_model reverted to the previous voice name so
+    # a subsequent valid change is detected (not silently equal to the prior).
+    assert svc._piper is initial
+    assert svc._voice_model == "lafufu_voice"
+
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)
+
+
 async def test_on_startup_warms_stt(nats_server):
     """AgentService.on_startup() should call stt.warmup() so first utterance is fast."""
     from lafufu_shared.testing import FakeWhisper

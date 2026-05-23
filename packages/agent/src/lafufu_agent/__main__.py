@@ -290,15 +290,31 @@ def main() -> None:
     whisper_model = os.environ.get("LAFUFU_WHISPER_MODEL", "tiny.en")
     stt_backend = os.environ.get("LAFUFU_STT_BACKEND", "openai-whisper")
     qwen_model = os.environ.get("LAFUFU_LLM_MODEL", "qwen2.5:7b")
-    piper_model_path = Path(os.environ.get("LAFUFU_PIPER_MODEL", "models/lafufu_voice.onnx"))
+    models_dir = Path(os.environ.get("LAFUFU_MODELS_DIR", "/srv/lafufu/models"))
+    voice_model = os.environ.get("LAFUFU_VOICE_MODEL", "lafufu_voice")
+    # LAFUFU_PIPER_MODEL (full path) wins over LAFUFU_VOICE_MODEL (bare name)
+    # for backwards compat with existing systemd units.
+    if "LAFUFU_PIPER_MODEL" in os.environ:
+        piper_model_path = Path(os.environ["LAFUFU_PIPER_MODEL"])
+    else:
+        piper_model_path = models_dir / f"{voice_model}.onnx"
     ollama_url = os.environ.get("LAFUFU_OLLAMA_URL", "http://localhost:11434")
+
+    def make_piper(name: str) -> Piper:
+        """Build + load a Piper for a voice name (resolved against models_dir)."""
+        p = Piper(model_path=models_dir / f"{name}.onnx")
+        p.load()  # raises FileNotFoundError if the .onnx is missing
+        return p
+
+    def make_player(sample_rate: int) -> _AplayPlayer:
+        return _AplayPlayer(sample_rate=sample_rate)
 
     stt = make_stt(stt_backend, model_name=whisper_model)
     ollama = Ollama(base_url=ollama_url, model=qwen_model, system_prompt=SYSTEM_PROMPT)
     piper = Piper(model_path=piper_model_path)
     piper.load()  # populate sample_rate from the .onnx config
     mic = RealMic(stt=stt)
-    player = _AplayPlayer(sample_rate=piper.sample_rate)
+    player = make_player(piper.sample_rate)
 
     # Mic loop is started/stopped by the config.changed.agent.auto_listen
     # subscriber inside AgentService — driven by the DB setting via the
@@ -310,6 +326,8 @@ def main() -> None:
         speaker_play=player,
         stt=stt,
         stt_factory=lambda backend, model: make_stt(backend, model_name=model),
+        piper_factory=make_piper,
+        player_factory=make_player,
     )
 
     asyncio.run(svc.run())
