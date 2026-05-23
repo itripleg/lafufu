@@ -92,6 +92,16 @@ export const api = {
       "GET",
       "/agent/stt_backends",
     ),
+  listVoices: () =>
+    req<{
+      voices: Array<{
+        name: string;
+        label: string;
+        sample_rate: number | null;
+        size_bytes: number;
+        has_config: boolean;
+      }>;
+    }>("GET", "/agent/voices"),
 
   // Printer letterhead + font galleries.
   listLetterheads: () => req<{ items: PrinterAsset[] }>("GET", "/printer/letterheads"),

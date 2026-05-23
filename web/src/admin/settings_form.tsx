@@ -41,6 +41,13 @@ const DYNAMIC_OPTIONS: Record<string, () => Promise<string[]>> = {
     const { backends } = await api.listSttBackends();
     return backends.filter((b) => b.available).map((b) => b.id);
   },
+  "agent.voice_model": async () => {
+    const { voices } = await api.listVoices();
+    // Piper needs both the .onnx and the .onnx.json — drop voices that are
+    // missing the companion config so the operator can't select something
+    // that would fail to load.
+    return voices.filter((v) => v.has_config).map((v) => v.name);
+  },
 };
 
 const DRAFT_PREFIX = "settings/draft/";
@@ -64,7 +71,8 @@ function categoryOf(key: string): Tab {
     key === "agent.silence_seconds" ||
     key === "agent.auto_listen" ||
     key === "agent.stt_backend" ||
-    key === "agent.whisper_model"
+    key === "agent.whisper_model" ||
+    key === "agent.voice_model"
   ) return "audio";
   return "other";
 }
