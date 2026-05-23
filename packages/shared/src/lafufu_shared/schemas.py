@@ -101,9 +101,29 @@ class AnimatorIntentPreview(BaseModel):
     position: int = Field(ge=_DXL_MIN, le=_DXL_MAX)
 
 
+class AnimatorPlayStep(BaseModel):
+    pose: AnimatorPose
+    image: str | None = None
+    duration_ms: int | None = None
+    delay_ms: int | None = None
+    easing: str | None = None
+
+
 class AnimatorIntentPlayExpression(BaseModel):
     name: str
-    intensity: float = 1.0
+    playback: Literal["once", "loop", "shuffle"] = "once"
+    steps: list[AnimatorPlayStep] = []
+    default_duration_ms: int = 250
+    default_delay_ms: int = 80
+    default_easing: str = "ease-in-out"
+
+
+class AnimatorEventFrame(BaseModel):
+    expression: str
+    step_index: int
+    frame: str
+    image: str | None = None
+    started_at_ms: int
 
 
 class AnimatorIntentGesture(BaseModel):
