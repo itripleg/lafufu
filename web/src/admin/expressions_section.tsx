@@ -7,12 +7,47 @@ import {
   Show,
 } from "solid-js";
 import {
+  DragDropProvider,
+  DragDropSensors,
+  SortableProvider,
+  createSortable,
+  type Id,
+} from "@thisbeyond/solid-dnd";
+import {
   api,
   type ExpressionDTO,
   type ExpressionStepDTO,
   type FrameDTO,
 } from "../shared/api";
 import { toast } from "../shared/toast";
+
+const SortableStep: Component<{
+  id: string;
+  label: string;
+  onRemove: () => void;
+}> = (props) => {
+  const sortable = createSortable(props.id);
+  return (
+    <div
+      ref={sortable.ref}
+      {...sortable.dragActivators}
+      class="flex items-center gap-1 px-2 py-1 bg-stone-800 rounded text-sm cursor-grab active:cursor-grabbing select-none touch-none"
+    >
+      <span class="font-mono">{props.label}</span>
+      <button
+        type="button"
+        class="text-red-400 hover:text-red-200"
+        onClick={(ev) => {
+          ev.stopPropagation();
+          props.onRemove();
+        }}
+        aria-label="remove"
+      >
+        ×
+      </button>
+    </div>
+  );
+};
 
 const PLAYBACK: ExpressionDTO["playback"][] = ["once", "loop", "shuffle"];
 const EMOTIONS = [
@@ -237,30 +272,55 @@ export const ExpressionsSection: Component = () => {
                   <div class="text-xs uppercase tracking-wide text-stone-400 mb-1">
                     Steps
                   </div>
-                  <div class="flex flex-wrap gap-1">
-                    <For
-                      each={e().steps}
-                      fallback={
-                        <span class="text-xs text-stone-500 italic">
-                          no steps — add a frame below
-                        </span>
-                      }
+                  <DragDropProvider
+                    onDragEnd={({ draggable, droppable }) => {
+                      if (!draggable || !droppable) return;
+                      const from = parseInt(
+                        String(draggable.id).split("-")[1],
+                        10,
+                      );
+                      const to = parseInt(
+                        String(droppable.id).split("-")[1],
+                        10,
+                      );
+                      if (
+                        Number.isNaN(from) ||
+                        Number.isNaN(to) ||
+                        from === to
+                      )
+                        return;
+                      const expr = selectedEff();
+                      if (!expr) return;
+                      const next = expr.steps.slice();
+                      const [moved] = next.splice(from, 1);
+                      next.splice(to, 0, moved);
+                      mutateSelected({ steps: next });
+                    }}
+                  >
+                    <DragDropSensors />
+                    <SortableProvider
+                      ids={e().steps.map((_, i) => `step-${i}`) as Id[]}
                     >
-                      {(step, i) => (
-                        <div class="flex items-center gap-1 px-2 py-1 bg-stone-800 rounded text-sm">
-                          <span class="font-mono">{step.frame}</span>
-                          <button
-                            type="button"
-                            class="text-red-400 hover:text-red-200"
-                            onClick={() => removeStep(i())}
-                            aria-label="remove"
-                          >
-                            ×
-                          </button>
-                        </div>
-                      )}
-                    </For>
-                  </div>
+                      <div class="flex flex-wrap gap-1">
+                        <For
+                          each={e().steps}
+                          fallback={
+                            <span class="text-xs text-stone-500 italic">
+                              no steps — add a frame below
+                            </span>
+                          }
+                        >
+                          {(step, i) => (
+                            <SortableStep
+                              id={`step-${i()}`}
+                              label={step.frame}
+                              onRemove={() => removeStep(i())}
+                            />
+                          )}
+                        </For>
+                      </div>
+                    </SortableProvider>
+                  </DragDropProvider>
                 </div>
 
                 <div>
