@@ -50,6 +50,22 @@ def test_animator_preview_publishes(client_factory):
 
 def test_animator_expression_publishes(client_factory):
     client, published = client_factory()
+    # Seed frame + expression so the legacy endpoint can resolve them.
+    client.post(
+        "/api/animator/frames",
+        json={
+            "name": "happy_a",
+            "head_lr": 2063,
+            "head_ud": 3052,
+            "eye": 2045,
+            "jaw": 1688,
+            "brow": 2093,
+        },
+    )
+    client.post(
+        "/api/animator/expressions",
+        json={"name": "happy", "playback": "loop", "steps": [{"frame": "happy_a"}]},
+    )
     r = client.post("/api/animator/expression", json={"name": "happy"})
     assert r.status_code == 202
     assert any(s == "animator.intent.play_expression" for s, _ in published)
