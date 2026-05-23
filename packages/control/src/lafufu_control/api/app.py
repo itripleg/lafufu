@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .auth import require_auth
 from .auth import router as auth_router
+from .image_library import router as images_router
 from .routers import agent as agent_router
 from .routers import animator as animator_router
 from .routers import printer as printer_router
@@ -58,6 +59,7 @@ def create_app(
     app.include_router(
         printer_router.router, prefix="/api/printer", tags=["printer"], dependencies=guarded
     )
+    app.include_router(images_router, prefix="/api", tags=["images"], dependencies=guarded)
 
     if STATIC_PATH.exists():
         # Serve hashed Vite assets directly
