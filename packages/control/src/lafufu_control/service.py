@@ -9,6 +9,7 @@ from lafufu_shared import nats_helper, schemas, settings, topics
 from lafufu_shared.base_service import BaseService
 from sqlmodel import Session, select
 
+from .animation.seed import seed_animations
 from .api.app import create_app
 from .api.ws_bridge import WsBridge
 from .bootstrap import seed_default_settings
@@ -65,6 +66,7 @@ class ControlService(BaseService):
         engine = create_engine_for_path(str(settings.db_path()))
         init_db(engine)
         seed_default_settings(engine)
+        seed_animations(engine)
         loop = asyncio.get_running_loop()
 
         def publish_sync(subject: str, payload: dict) -> None:

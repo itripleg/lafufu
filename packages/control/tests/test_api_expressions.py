@@ -143,3 +143,32 @@ def test_play_409_missing_frames(client):
     )
     r = client.post("/api/animator/expressions/dangling/play")
     assert r.status_code == 409
+
+
+def test_seed_inserts_eight_emotions(client):
+    """Call seed_animations, list expressions, verify all 8 emotions present.
+
+    Then call again -- count stays at 8 (idempotent)."""
+    from lafufu_control.animation.seed import seed_animations
+
+    engine = client.app.state.engine
+
+    seed_animations(engine)
+    items = client.get("/api/animator/expressions").json()["items"]
+    emotions = {e["emotion"] for e in items if e["emotion"]}
+    assert emotions == {
+        "agree",
+        "disagree",
+        "happy",
+        "sad",
+        "angry",
+        "surprised",
+        "neutral",
+        "idle",
+    }
+    assert len(items) == 8
+
+    # Idempotent -- second call is a no-op.
+    seed_animations(engine)
+    items2 = client.get("/api/animator/expressions").json()["items"]
+    assert len(items2) == 8
