@@ -46,7 +46,29 @@ def preview(body: PreviewBody, req: Request):
 
 @router.post("/expression", status_code=202)
 def expression(body: LegacyExpressionBody, req: Request):
-    req.app.state.nats_publish("animator.intent.play_expression", body.model_dump())
+    """Back-compat: legacy callers (the /pet page) POST {name, intensity}.
+    Resolve the named expression through the DB + compiler and publish the
+    new AnimatorIntentPlayExpression shape so the animator can consume it."""
+    with Session(req.app.state.engine) as s:
+        e = s.get(Expression, body.name)
+        if e is None:
+            raise HTTPException(
+                404,
+                detail={"error_code": "not_found", "message": f"no expression {body.name!r}"},
+            )
+        need = list(required_frame_names(e))
+        frames = {f.name: f for f in s.exec(select(Frame).where(Frame.name.in_(need))).all()}
+        missing = [n for n in need if n not in frames]
+        if missing:
+            raise HTTPException(
+                409,
+                detail={
+                    "error_code": "missing_frames",
+                    "message": f"expression references unknown frames: {missing}",
+                },
+            )
+        payload = compile_expression(e, frames)
+    req.app.state.nats_publish("animator.intent.play_expression", payload.model_dump())
     return {"ok": True}
 
 

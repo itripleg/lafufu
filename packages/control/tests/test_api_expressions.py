@@ -246,3 +246,41 @@ def test_activate_400_no_emotion(client):
     )
     r = client.post("/api/animator/expressions/no_emo/activate")
     assert r.status_code == 400
+
+
+def test_legacy_expression_endpoint_compiles_and_publishes(client):
+    """POST /api/animator/expression (legacy {name, intensity}) should look up
+    the expression, compile it, and publish the resolved AnimatorIntentPlayExpression
+    shape — not the legacy {name, intensity} that the new schema rejects."""
+    client.post(
+        "/api/animator/frames",
+        json={
+            "name": "agree_low",
+            "head_lr": 2063,
+            "head_ud": 3122,
+            "eye": 2045,
+            "jaw": 1728,
+            "brow": 2075,
+        },
+    )
+    client.post(
+        "/api/animator/expressions",
+        json={"name": "agree", "playback": "once", "steps": [{"frame": "agree_low"}]},
+    )
+
+    # Legacy shape: name + intensity. Intensity is ignored by the resolved schema.
+    r = client.post("/api/animator/expression", json={"name": "agree", "intensity": 1.0})
+    assert r.status_code == 202, r.text
+
+    payload = next(
+        p for (t, p) in reversed(client.published) if t == "animator.intent.play_expression"
+    )
+    # Critical: resolved shape, NOT {name, intensity}.
+    assert "steps" in payload
+    assert payload["name"] == "agree"
+    assert payload["steps"][0]["pose"]["head_ud"] == 3122
+
+
+def test_legacy_expression_endpoint_404_missing(client):
+    r = client.post("/api/animator/expression", json={"name": "ghost", "intensity": 1.0})
+    assert r.status_code == 404
