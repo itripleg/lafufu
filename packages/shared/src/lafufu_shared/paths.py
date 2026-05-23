@@ -39,7 +39,7 @@ def printer_fonts_upload_dir() -> Path:
 
 def printer_default_letterheads_dir() -> Path:
     """Letterhead images shipped with the repo — always present in the gallery."""
-    return _REPO_ROOT / "assets" / "printer" / "letterheads"
+    return _REPO_ROOT / "assets" / "images" / "letterheads"
 
 
 def printer_default_fonts_dir() -> Path:
