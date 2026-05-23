@@ -67,17 +67,27 @@ export const FramesSection: Component<{ nats: NatsWs }> = (_props) => {
     () => frames()?.find((f) => f.name === selectedName()) ?? null,
   );
 
-  // When selection changes, copy that frame's pose into the local sliders
-  // and clear any pending image from the previous selection.
+  // When selection changes, copy that frame's pose into the local sliders,
+  // clear any pending image from the previous selection, AND drive Lafufu
+  // physically to the selected pose so the operator can see the frame.
   createEffect(() => {
     const f = selected();
     if (f) {
-      setPose({
+      const p: Pose = {
         head_lr: f.head_lr, head_ud: f.head_ud,
         eye: f.eye, jaw: f.jaw, brow: f.brow,
-      });
+      };
+      setPose(p);
       setPickerOpen(false);
       setPendingImage(undefined);
+      // Fire preview for all 5 servos in parallel — the animator's _on_preview
+      // handler clears the active player and applies each servo's target. The
+      // 1.5s intent-quiet window then keeps idle from immediately overriding.
+      Promise.all(
+        (Object.keys(p) as Array<keyof Pose>).map((k) =>
+          api.animatorPreview(k, p[k]).catch(() => undefined),
+        ),
+      );
     }
   });
 
