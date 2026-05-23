@@ -2,14 +2,14 @@
 
 import asyncio
 import contextlib
-import math
 import time
 from typing import Protocol
 
 from lafufu_shared import nats_helper, schemas, topics
 from lafufu_shared.base_service import BaseService
 
-from . import expressions, lipsync, motion, pose
+from . import lipsync, motion, pose
+from .keyframe_player import KeyframePlayer
 
 
 class DxlBusProtocol(Protocol):
@@ -64,16 +64,20 @@ class AnimatorService(BaseService):
         self._last_rms_ts = 0.0
         self._last_intent_mono = 0.0  # monotonic timestamp of last intent/preview/reply
         self.idle_animation_enabled = True  # toggleable via settings (Phase 0 default: on)
-        # Active looping expression — drives _target_pose at 20 Hz via
-        # _expression_animation_loop. Set by play_expression / agent reply,
-        # cleared by neutral / preview / set_pose / auto-expiry.
-        self._current_expression: str | None = None
-        self._expression_intensity: float = 1.0
-        self._expression_started_mono: float = 0.0
+        # CONCERN: idle_animation_enabled is now a no-op — the new keyframe player loop
+        # treats idle as just-another-expression. The field and subscriber are kept alive
+        # so config snapshot replay does not break, but the value is unused by the loop.
+
+        # Single active KeyframePlayer (None when no expression is playing).
+        # Idle fallback: when _active_player is done/None and _idle_payload is
+        # cached, we instantiate a fresh idle player.
+        self._active_player: KeyframePlayer | None = None
+        self._active_expression_name: str | None = None
+        self._idle_payload: schemas.AnimatorIntentPlayExpression | None = None
+
         self._pose_publish_task: asyncio.Task | None = None
         self._lipsync_watchdog_task: asyncio.Task | None = None
-        self._idle_animation_task: asyncio.Task | None = None
-        self._expression_animation_task: asyncio.Task | None = None
+        self._keyframe_player_task: asyncio.Task | None = None
         self._stepper_task: asyncio.Task | None = None
 
     @property
@@ -182,16 +186,14 @@ class AnimatorService(BaseService):
         # Background tasks
         self._pose_publish_task = asyncio.create_task(self._pose_publish_loop())
         self._lipsync_watchdog_task = asyncio.create_task(self._lipsync_watchdog())
-        self._idle_animation_task = asyncio.create_task(self._idle_animation_loop())
-        self._expression_animation_task = asyncio.create_task(self._expression_animation_loop())
+        self._keyframe_player_task = asyncio.create_task(self._keyframe_player_loop())
         self._stepper_task = asyncio.create_task(self._stepper_loop())
 
     async def on_shutdown(self) -> None:
         for t in (
             self._pose_publish_task,
             self._lipsync_watchdog_task,
-            self._idle_animation_task,
-            self._expression_animation_task,
+            self._keyframe_player_task,
             self._stepper_task,
         ):
             if t:
@@ -309,7 +311,8 @@ class AnimatorService(BaseService):
         self._last_intent_mono = time.monotonic()
         # Operator is hand-driving a servo — kill any looping expression so
         # the two don't fight for _target_pose.
-        self._current_expression = None
+        self._active_player = None
+        self._active_expression_name = None
         new = self._current_pose.model_copy(
             update={msg.name: pose.clamp_dxl(msg.name, msg.position)}
         )
@@ -317,42 +320,34 @@ class AnimatorService(BaseService):
 
     async def _on_set_pose(self, subject: str, msg: schemas.AnimatorIntentSetPose) -> None:
         self._last_intent_mono = time.monotonic()
-        self._current_expression = None
+        self._active_player = None
+        self._active_expression_name = None
         await self._safe_apply(msg.pose)
 
     async def _on_play_expression(
         self, subject: str, msg: schemas.AnimatorIntentPlayExpression
     ) -> None:
         self._last_intent_mono = time.monotonic()
-        # "neutral" is the cancel command — clear current expression and let
-        # idle take back over. Fire gesture_done so the UI clears its active
-        # state pill.
-        if msg.name == "neutral":
-            previous = self._current_expression
-            self._current_expression = None
-            if previous is not None:
-                await nats_helper.publish_model(
-                    self.nats,
-                    topics.ANIMATOR_EVENT_GESTURE_DONE,
-                    schemas.AnimatorEvent(event="gesture_done", name=previous),
-                )
-            return
-        # Set the active expression; the animation loop picks it up on its
-        # next tick and starts driving _target_pose. gesture_done is emitted
-        # when the expression auto-expires or is replaced.
-        self._current_expression = msg.name
-        self._expression_intensity = max(0.0, min(1.0, msg.intensity))
-        self._expression_started_mono = time.monotonic()
+        # If this is the idle expression, cache its payload as the fallback that
+        # plays whenever no other expression is active.
+        if msg.name == "idle":
+            self._idle_payload = msg
+        # Instantiate a fresh player from the resolved payload.
+        start = self._current_pose
+        self._active_player = KeyframePlayer(
+            payload=msg,
+            start_pose=start,
+            now_ms=int(time.monotonic() * 1000),
+        )
+        self._active_expression_name = msg.name
 
     async def _on_agent_reply(self, subject: str, msg: schemas.AgentReply) -> None:
-        """When agent emits a reply with an emotion, set the matching expression."""
+        """Reply triggers lipsync; the agent emits a separate play_expression
+        intent for the emotion. We don't synthesise it here anymore."""
+        # CONCERN: _on_agent_reply no longer maps emotion → expression.
+        # The agent now needs to publish play_expression itself with a
+        # pre-resolved AnimatorIntentPlayExpression payload.
         self._last_intent_mono = time.monotonic()
-        if msg.emotion == "neutral":
-            self._current_expression = None
-            return
-        self._current_expression = msg.emotion
-        self._expression_intensity = 1.0
-        self._expression_started_mono = time.monotonic()
 
     async def _on_tts_rms(self, subject: str, msg: schemas.AgentTtsRms) -> None:
         # Drive the jaw via the attack/release envelope. mouth_target is already
@@ -387,159 +382,52 @@ class AnimatorService(BaseService):
             except Exception as e:
                 self.log.warning("lipsync_watchdog.error error=%s", e)
 
-    async def _idle_animation_loop(self) -> None:
-        """Living-presence motion when idle — ported from the original monolith's
-        _idle_loop. Multi-segment random sinusoidal motion with occasional pauses.
+    async def _keyframe_player_loop(self) -> None:
+        """Drive _target_pose at 20Hz from the active KeyframePlayer.
 
-        Each segment lasts 2-5s with re-randomized amplitudes/frequencies/phases
-        per servo; 30% of segments are pause segments holding the idle pose.
-        Amplitudes are fractions of each servo's full range so motion is visible:
-          head_lr ±6%, head_ud ±5%, eye ±45%, brow ±16%.
-
-        Deferred while a user intent is recent (1.5s) or Lafufu is speaking (0.6s).
-        Disabled entirely if servo bus is degraded.
+        If no expression is active and an idle payload is cached, falls back
+        to looping idle. Lipsync ownership of the jaw is preserved when a
+        recent RMS event is present.
         """
-        import random
-
-        HEAD_LR_RANGE = abs(pose.DXL_HEAD_LR_LEFT_POS - pose.DXL_HEAD_LR_RIGHT_POS)
-        HEAD_UD_RANGE = abs(pose.DXL_HEAD_UD_DOWN_POS - pose.DXL_HEAD_UD_UP_POS)
-        EYE_RANGE = abs(pose.DXL_EYE_RIGHT_POS - pose.DXL_EYE_LEFT_POS)
-        BROW_RANGE = abs(pose.DXL_BROW_UP_POS - pose.DXL_BROW_DOWN_POS)
-
-        IDLE_HEAD_LR_AMP = HEAD_LR_RANGE * 0.06
-        IDLE_HEAD_UD_AMP = HEAD_UD_RANGE * 0.05
-        IDLE_EYE_AMP = EYE_RANGE * 0.45
-        IDLE_BROW_AMP = BROW_RANGE * 0.16
-
-        IDLE_HEAD_FREQ = (0.08, 0.22)
-        IDLE_EYE_FREQ = (0.15, 0.45)
-        IDLE_SEG = (2.0, 5.0)
-        IDLE_PAUSE = (1.0, 3.5)
-        IDLE_PAUSE_CHANCE = 0.30
-        INTENT_QUIET_S = 1.5
-        RMS_QUIET_S = 0.6
-        TICK_DT = 0.05  # 20 Hz
-
-        rng = random.Random()
-        idle = self._effective_idle_pose()
-        seg_end = 0.0
-        seg_start = 0.0
-        mode = "pause"
-        lr_amp = ud_amp = eye_amp = brow_amp = 0.0
-        lr_freq = ud_freq = eye_freq = brow_freq = 0.0
-        lr_phase = ud_phase = eye_phase = brow_phase = 0.0
-
+        TICK_DT = 0.05  # 20Hz
         while not self._shutdown.is_set():
             try:
-                # Skip when an expression is animating — the expression loop
-                # owns _target_pose then, and idle's sinusoids would visibly
-                # smear the gesture.
-                if not (self.idle_animation_enabled and self._has_u2d2) or (
-                    self._current_expression is not None
-                ):
-                    seg_end = 0.0
-                else:
-                    now = time.monotonic()
-                    if (now - self._last_intent_mono) <= INTENT_QUIET_S or (
-                        now - self._last_rms_ts
-                    ) <= RMS_QUIET_S:
-                        seg_end = 0.0
-                    else:
-                        if now >= seg_end:
-                            seg_start = now
-                            # Re-read the idle center each segment so saved
-                            # animator.<servo>.default settings actually take
-                            # effect without restarting the service.
-                            idle = self._effective_idle_pose()
-                            if rng.random() < IDLE_PAUSE_CHANCE:
-                                mode = "pause"
-                                seg_end = now + rng.uniform(*IDLE_PAUSE)
-                            else:
-                                mode = "move"
-                                seg_end = now + rng.uniform(*IDLE_SEG)
-                                lr_amp = IDLE_HEAD_LR_AMP * rng.uniform(0.5, 1.0)
-                                ud_amp = IDLE_HEAD_UD_AMP * rng.uniform(0.4, 0.9)
-                                eye_amp = IDLE_EYE_AMP * rng.uniform(0.4, 1.0)
-                                brow_amp = IDLE_BROW_AMP * rng.uniform(0.4, 1.0)
-                                lr_freq = rng.uniform(*IDLE_HEAD_FREQ)
-                                ud_freq = rng.uniform(*IDLE_HEAD_FREQ)
-                                eye_freq = rng.uniform(*IDLE_EYE_FREQ)
-                                brow_freq = rng.uniform(*IDLE_EYE_FREQ)
-                                lr_phase = rng.uniform(0.0, math.tau)
-                                ud_phase = rng.uniform(0.0, math.tau)
-                                eye_phase = rng.uniform(0.0, math.tau)
-                                brow_phase = rng.uniform(0.0, math.tau)
+                if self._has_u2d2:
+                    now_mono = time.monotonic()
+                    now_ms = int(now_mono * 1000)
 
-                        if mode == "pause":
-                            target = idle.model_copy(update={"jaw": self._current_pose.jaw})
-                        else:
-                            t = now - seg_start
-                            target = schemas.AnimatorPose(
-                                head_lr=pose.clamp_dxl(
-                                    "head_lr",
-                                    idle.head_lr
-                                    + lr_amp * math.sin(math.tau * lr_freq * t + lr_phase),
-                                ),
-                                head_ud=pose.clamp_dxl(
-                                    "head_ud",
-                                    idle.head_ud
-                                    + ud_amp * math.sin(math.tau * ud_freq * t + ud_phase),
-                                ),
-                                eye=pose.clamp_dxl(
-                                    "eye",
-                                    idle.eye
-                                    + eye_amp * math.sin(math.tau * eye_freq * t + eye_phase),
-                                ),
-                                jaw=self._current_pose.jaw,
-                                brow=pose.clamp_dxl(
-                                    "brow",
-                                    idle.brow
-                                    + brow_amp * math.sin(math.tau * brow_freq * t + brow_phase),
-                                ),
-                            )
-                        await self._safe_apply(target)
-            except Exception as e:
-                self.log.warning("idle_animation.error error=%s", e)
-
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(self._shutdown.wait(), timeout=TICK_DT)
-
-    async def _expression_animation_loop(self) -> None:
-        """Drive _target_pose at 20 Hz while an expression is active.
-
-        Computes the expression's pose (idle + offsets + sinusoidal motion)
-        per tick. Preserves whatever the jaw is currently doing so lipsync
-        (TTS RMS) keeps owning the mouth without us trampling it. Auto-clears
-        the expression when its `duration_s` elapses and emits a
-        ``gesture_done`` event so the UI can drop its active pill.
-        """
-        TICK_DT = 0.05  # 20 Hz — matches idle loop
-        while not self._shutdown.is_set():
-            try:
-                name = self._current_expression
-                if name is not None and self._has_u2d2:
-                    t_active = time.monotonic() - self._expression_started_mono
-                    if expressions.is_expired(name, t_active):
-                        self._current_expression = None
-                        with contextlib.suppress(Exception):
-                            await nats_helper.publish_model(
-                                self.nats,
-                                topics.ANIMATOR_EVENT_GESTURE_DONE,
-                                schemas.AnimatorEvent(event="gesture_done", name=name),
-                            )
-                    else:
-                        base = self._effective_idle_pose()
-                        target = expressions.compute_target(
-                            name, base, t_active, self._expression_intensity
+                    # Idle fallback: when no active player (or it just finished),
+                    # spin up a fresh idle player from the cached payload.
+                    if self._active_player is None and self._idle_payload is not None:
+                        self._active_player = KeyframePlayer(
+                            payload=self._idle_payload,
+                            start_pose=self._current_pose,
+                            now_ms=now_ms,
                         )
-                        # If lipsync is actively driving the jaw (recent RMS),
-                        # leave the jaw alone — otherwise the expression
-                        # offset would flap against the TTS-driven motion.
-                        if time.monotonic() - self._last_rms_ts <= 0.5:
+                        self._active_expression_name = "idle"
+
+                    if self._active_player is not None:
+                        target = self._active_player.pose_at(now_ms)
+                        # If lipsync is currently driving the jaw, preserve it.
+                        if now_mono - self._last_rms_ts <= 0.5:
                             target = target.model_copy(update={"jaw": self._current_pose.jaw})
                         await self._safe_apply(target)
+
+                        if self._active_player.is_done(now_ms):
+                            finished_name = self._active_expression_name
+                            self._active_player = None
+                            self._active_expression_name = None
+                            if finished_name is not None and finished_name != "idle":
+                                with contextlib.suppress(Exception):
+                                    await nats_helper.publish_model(
+                                        self.nats,
+                                        topics.ANIMATOR_EVENT_GESTURE_DONE,
+                                        schemas.AnimatorEvent(
+                                            event="gesture_done", name=finished_name
+                                        ),
+                                    )
             except Exception as e:
-                self.log.warning("expression_animation.error error=%s", e)
+                self.log.warning("keyframe_player.error error=%s", e)
 
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._shutdown.wait(), timeout=TICK_DT)
