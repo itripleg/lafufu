@@ -39,9 +39,29 @@ def printer_fonts_upload_dir() -> Path:
 
 def printer_default_letterheads_dir() -> Path:
     """Letterhead images shipped with the repo — always present in the gallery."""
-    return _REPO_ROOT / "assets" / "printer" / "letterheads"
+    return _REPO_ROOT / "assets" / "images" / "letterheads"
 
 
 def printer_default_fonts_dir() -> Path:
     """Fonts shipped with the repo — always present in the font picker."""
     return _REPO_ROOT / "assets" / "printer" / "fonts"
+
+
+def image_letterheads_dir() -> Path:
+    """Runtime letterhead images in the shared image library (gitignored)."""
+    return _REPO_ROOT / "data" / "images" / "letterheads"
+
+
+def image_sprites_dir() -> Path:
+    """Runtime sprite images in the shared image library (gitignored)."""
+    return _REPO_ROOT / "data" / "images" / "sprites"
+
+
+def image_letterheads_defaults_dir() -> Path:
+    """Bundled default letterhead images shipped with the repo."""
+    return _REPO_ROOT / "assets" / "images" / "letterheads"
+
+
+def image_sprites_defaults_dir() -> Path:
+    """Bundled default sprite images shipped with the repo."""
+    return _REPO_ROOT / "assets" / "images" / "sprites"

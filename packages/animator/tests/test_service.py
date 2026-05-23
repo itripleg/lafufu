@@ -67,23 +67,24 @@ async def test_preview_intent_moves_servo(running_animator, nats_server):
     assert abs(bus.last_position("head_lr") - 2100) <= 1
 
 
-async def test_play_expression_intent_applies_offsets(running_animator, nats_server):
-    _svc, bus = running_animator
-    bus.writes.clear()
+async def test_play_expression_intent_sets_active_name(running_animator, nats_server):
+    """Publishing a play_expression intent should immediately set the active expression name."""
+    svc, _bus = running_animator
     nc = await nats.connect(nats_server)
-    await publish_model(
-        nc,
-        topics.ANIMATOR_INTENT_PLAY_EXPRESSION,
-        schemas.AnimatorIntentPlayExpression(name="surprised", intensity=1.0),
+    payload = schemas.AnimatorIntentPlayExpression(
+        name="happy",
+        playback="once",
+        steps=[
+            schemas.AnimatorPlayStep(
+                pose=schemas.AnimatorPose(head_lr=2100, head_ud=3082, eye=2045, jaw=1728, brow=2075)
+            )
+        ],
+        default_duration_ms=100,
     )
-    await asyncio.sleep(0.3)
+    await publish_model(nc, topics.ANIMATOR_INTENT_PLAY_EXPRESSION, payload)
+    await asyncio.sleep(0.05)
     await nc.drain()
-    # surprised opens the jaw — expect jaw to have moved toward MOUTH_OPEN
-    from lafufu_animator import pose
-
-    final_jaw = bus.last_position("jaw")
-    assert final_jaw is not None
-    assert final_jaw < pose.MOUTH_CLOSE_DXL  # opened
+    assert svc._active_expression_name == "happy"
 
 
 async def test_tts_rms_drives_jaw_during_speaking(running_animator, nats_server):
@@ -102,107 +103,24 @@ async def test_tts_rms_drives_jaw_during_speaking(running_animator, nats_server)
     assert len(jaw_writes) >= 2
 
 
-async def test_agree_drives_head_ud_oscillation_over_time(running_animator, nats_server):
-    """`agree` is a discrete nod — confirm head_ud actually moves through the
-    expression-animation loop rather than locking to a single position."""
-    _svc, bus = running_animator
-    bus.writes.clear()
-    nc = await nats.connect(nats_server)
-    await publish_model(
-        nc,
-        topics.ANIMATOR_INTENT_PLAY_EXPRESSION,
-        schemas.AnimatorIntentPlayExpression(name="agree", intensity=1.0),
-    )
-    # Let several expression-loop ticks land (~20 Hz; ~0.4s window).
-    await asyncio.sleep(0.4)
-    await nc.drain()
-
-    head_ud_positions = [pos for (servo, pos) in bus.writes if servo == "head_ud"]
-    # Multiple writes across the window — not just one snap-to-pose.
-    assert len(head_ud_positions) >= 3
-    # The nod sinusoid swings ~40 ticks → range should be clearly > 10.
-    assert max(head_ud_positions) - min(head_ud_positions) >= 10
-
-
-async def test_expression_auto_clears_when_duration_elapses(running_animator, nats_server):
-    """surprised has duration_s=2.0 → after that, animator publishes gesture_done
-    and idle/neutral resumes ownership of _target_pose."""
-    svc, _bus = running_animator
-    nc = await nats.connect(nats_server)
-    seen: list[schemas.AnimatorEvent] = []
-
-    async def cb(msg):
-        seen.append(schemas.AnimatorEvent.model_validate_json(msg.data))
-
-    await nc.subscribe(topics.ANIMATOR_EVENT_GESTURE_DONE, cb=cb)
-    # Force a short-lived expression. We override duration via the registry
-    # so the test doesn't sleep 2s.
-    from lafufu_animator import expressions
-
-    short = expressions.Expression(
-        offsets={"head_lr": 0, "head_ud": 0, "eye": 0, "jaw": 0, "brow": 0},
-        motion=(),
-        duration_s=0.1,
-    )
-    expressions._EXPRESSIONS["__test_short__"] = short
-    try:
-        await publish_model(
-            nc,
-            topics.ANIMATOR_INTENT_PLAY_EXPRESSION,
-            schemas.AnimatorIntentPlayExpression(name="__test_short__", intensity=1.0),
-        )
-        await asyncio.sleep(0.4)
-        await nc.drain()
-    finally:
-        expressions._EXPRESSIONS.pop("__test_short__", None)
-
-    assert svc._current_expression is None
-    assert any(e.event == "gesture_done" and e.name == "__test_short__" for e in seen)
-
-
-async def test_neutral_expression_cancels_an_active_one(running_animator, nats_server):
-    """Sending `neutral` is the cancel command — clears the active expression
-    and emits gesture_done so the UI can drop its pill."""
-    svc, _bus = running_animator
-    nc = await nats.connect(nats_server)
-    seen: list[schemas.AnimatorEvent] = []
-
-    async def cb(msg):
-        seen.append(schemas.AnimatorEvent.model_validate_json(msg.data))
-
-    await nc.subscribe(topics.ANIMATOR_EVENT_GESTURE_DONE, cb=cb)
-    await publish_model(
-        nc,
-        topics.ANIMATOR_INTENT_PLAY_EXPRESSION,
-        schemas.AnimatorIntentPlayExpression(name="happy", intensity=1.0),
-    )
-    await asyncio.sleep(0.15)
-    assert svc._current_expression == "happy"
-
-    await publish_model(
-        nc,
-        topics.ANIMATOR_INTENT_PLAY_EXPRESSION,
-        schemas.AnimatorIntentPlayExpression(name="neutral", intensity=1.0),
-    )
-    await asyncio.sleep(0.15)
-    await nc.drain()
-
-    assert svc._current_expression is None
-    assert any(e.event == "gesture_done" and e.name == "happy" for e in seen)
-
-
 async def test_preview_intent_cancels_active_expression(running_animator, nats_server):
     """Operator-driven slider preview must take priority over a looping
     expression — otherwise the two fight for _target_pose."""
     svc, _bus = running_animator
     nc = await nats.connect(nats_server)
-    await publish_model(
-        nc,
-        topics.ANIMATOR_INTENT_PLAY_EXPRESSION,
-        schemas.AnimatorIntentPlayExpression(name="happy", intensity=1.0),
+    payload = schemas.AnimatorIntentPlayExpression(
+        name="happy",
+        playback="loop",
+        steps=[
+            schemas.AnimatorPlayStep(
+                pose=schemas.AnimatorPose(head_lr=2100, head_ud=3082, eye=2045, jaw=1728, brow=2075)
+            )
+        ],
+        default_duration_ms=500,
     )
+    await publish_model(nc, topics.ANIMATOR_INTENT_PLAY_EXPRESSION, payload)
     await asyncio.sleep(0.15)
-    assert svc._current_expression == "happy"
+    assert svc._active_expression_name == "happy"
 
     await publish_model(
         nc,
@@ -211,7 +129,7 @@ async def test_preview_intent_cancels_active_expression(running_animator, nats_s
     )
     await asyncio.sleep(0.15)
     await nc.drain()
-    assert svc._current_expression is None
+    assert svc._active_expression_name is None
 
 
 async def test_startup_eases_from_real_position_not_snap(nats_server):
@@ -273,3 +191,29 @@ async def test_degrades_gracefully_when_bus_disconnects(running_animator, nats_s
     await asyncio.sleep(0.3)
     await nc.drain()
     assert any(s.state == "degraded" for s in seen)
+
+
+async def test_play_expression_drives_target_through_keyframes(running_animator, nats_server):
+    """A 2-step once expression should converge to the LAST step's pose."""
+    svc, bus = running_animator
+    nc = await nats.connect(nats_server)
+    payload = schemas.AnimatorIntentPlayExpression(
+        name="agree",
+        playback="once",
+        default_duration_ms=120,
+        default_delay_ms=0,
+        steps=[
+            schemas.AnimatorPlayStep(
+                pose=schemas.AnimatorPose(head_lr=2100, head_ud=3082, eye=2045, jaw=1728, brow=2075)
+            ),
+            schemas.AnimatorPlayStep(
+                pose=schemas.AnimatorPose(head_lr=2200, head_ud=3082, eye=2045, jaw=1728, brow=2075)
+            ),
+        ],
+    )
+    await publish_model(nc, topics.ANIMATOR_INTENT_PLAY_EXPRESSION, payload)
+    await asyncio.sleep(0.5)  # plenty of time for 240ms total
+    # Final pose should be the second step (give or take +/-2 for rounding).
+    assert abs(bus.last_position("head_lr") - 2200) <= 5
+    assert svc._active_expression_name is None  # done + cleared
+    await nc.drain()

@@ -9,11 +9,34 @@ from lafufu_shared import nats_helper, schemas, settings, topics
 from lafufu_shared.base_service import BaseService
 from sqlmodel import Session, select
 
+from .animation.compile import compile_expression, required_frame_names
+from .animation.seed import seed_animations
 from .api.app import create_app
 from .api.ws_bridge import WsBridge
 from .bootstrap import seed_default_settings
 from .db import create_engine_for_path, init_db
+from .models.expression import Expression
+from .models.frame import Frame
 from .models.setting import Setting
+
+
+async def _publish_idle_expression(engine, nats_client) -> None:
+    """Look up the seeded idle expression, compile it, publish to animator.
+
+    Called once at control startup so the animator can cache the idle payload
+    as its fallback and begin looping immediately without waiting for an
+    external play_expression publish.
+    """
+    with Session(engine) as s:
+        e = s.exec(select(Expression).where(Expression.emotion == "idle")).first()
+        if e is None:
+            return  # No idle seeded yet (fresh, unseeded DB)
+        need = list(required_frame_names(e))
+        frames = {f.name: f for f in s.exec(select(Frame).where(Frame.name.in_(need))).all()}
+        if any(n not in frames for n in need):
+            return  # Broken seed — don't crash, just skip
+        payload = compile_expression(e, frames)
+    await nats_helper.publish_model(nats_client, topics.ANIMATOR_INTENT_PLAY_EXPRESSION, payload)
 
 
 def _decode_setting_value(raw: str, value_type: str):
@@ -65,6 +88,11 @@ class ControlService(BaseService):
         engine = create_engine_for_path(str(settings.db_path()))
         init_db(engine)
         seed_default_settings(engine)
+        seed_animations(engine)
+        # Publish the idle expression so the animator can cache it as its fallback —
+        # without this, the animator sits frozen at startup pose until something else
+        # publishes a play_expression.
+        await _publish_idle_expression(engine, self.nats)
         loop = asyncio.get_running_loop()
 
         def publish_sync(subject: str, payload: dict) -> None:

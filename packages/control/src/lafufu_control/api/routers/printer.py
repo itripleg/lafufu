@@ -12,9 +12,6 @@ passed to the compose intent.
 """
 
 import io
-import os
-import re
-import time
 from pathlib import Path
 from typing import Annotated
 
@@ -28,6 +25,16 @@ from lafufu_shared.paths import (
     printer_uploads_dir,
 )
 from pydantic import BaseModel
+
+from ..image_library import (
+    atomic_write as _atomic_write,
+)
+from ..image_library import (
+    safe_name as _safe_name,
+)
+from ..image_library import (
+    sanitize_upload_name as _sanitize_upload_name,
+)
 
 router = APIRouter()
 
@@ -100,37 +107,6 @@ def _read_pointer(p: Path) -> str:
 def _write_pointer(p: Path, value: str) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(value, encoding="utf-8")
-
-
-def _safe_name(name: str) -> str:
-    """Reject anything that isn't a bare filename — blocks path traversal.
-
-    Path separators are checked explicitly: a backslash is a legal filename
-    character on Linux, so `Path(name).name` alone wouldn't catch `a\\b`
-    there. Names only ever come from bundled defaults or sanitized uploads,
-    so neither separator should appear legitimately."""
-    if not name or name in (".", "..") or "/" in name or "\\" in name or name != Path(name).name:
-        raise HTTPException(
-            400, detail={"error_code": "bad_name", "message": f"invalid name {name!r}"}
-        )
-    return name
-
-
-def _sanitize_upload_name(raw: str | None, default_stem: str, ext: str) -> str:
-    """Turn an arbitrary client-supplied filename into a safe one with `ext`."""
-    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", Path(raw or "").stem).strip("-._")
-    if not stem:
-        stem = f"{default_stem}-{int(time.time())}"
-    return f"{stem}{ext}"
-
-
-def _atomic_write(target: Path, data: bytes) -> None:
-    """Write via a sibling tmp file + os.replace so a crash mid-write can't
-    leave a half-written asset behind."""
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_suffix(target.suffix + ".tmp")
-    tmp.write_bytes(data)
-    os.replace(tmp, target)
 
 
 def _list_assets(

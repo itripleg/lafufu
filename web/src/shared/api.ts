@@ -54,6 +54,43 @@ export type PrinterAsset = {
   size_bytes: number;
 };
 
+export type ImageAsset = {
+  kind: "default" | "upload";
+  name: string;
+  size_bytes: number;
+};
+
+export type FrameDTO = {
+  name: string;
+  head_lr: number;
+  head_ud: number;
+  eye: number;
+  jaw: number;
+  brow: number;
+  image: string | null;
+  description: string | null;
+};
+
+export type ExpressionStepDTO = {
+  frame: string;
+  duration_ms?: number;
+  delay_ms?: number;
+  easing?: string;
+};
+
+export type ExpressionDTO = {
+  name: string;
+  playback: "once" | "loop" | "shuffle";
+  default_duration_ms: number;
+  default_delay_ms: number;
+  default_easing: string;
+  steps: ExpressionStepDTO[];
+  emotion: string | null;
+  description: string | null;
+};
+
+export type ImageBucket = "letterheads" | "sprites";
+
 export const api = {
   /** 200 when this browser is authorized (or auth is disabled / loopback);
    *  401 otherwise — `req` then raises the lock screen. */
@@ -129,4 +166,49 @@ export const api = {
   testPrint:       () => req("POST", "/printer/test_print"),
   composePrint:    (body: { text: string; lucky_subway_stop?: string; lucky_numbers?: number[] }) =>
     req("POST", "/printer/compose", body),
+
+  // Generic image library — /api/images/{bucket}/...
+  listImages: (bucket: ImageBucket) =>
+    req<{ items: ImageAsset[] }>("GET", `/images/${bucket}`),
+  imageFileUrl: (bucket: ImageBucket, kind: string, name: string) =>
+    `${BASE}/images/${bucket}/${kind}/${encodeURIComponent(name)}`,
+  uploadImage: async (
+    bucket: ImageBucket,
+    file: File,
+  ): Promise<{ ok: boolean; kind: string; name: string }> =>
+    upload(`/images/${bucket}/upload`, file),
+  deleteImage: (bucket: ImageBucket, name: string) =>
+    req("DELETE", `/images/${bucket}/upload/${encodeURIComponent(name)}`),
+
+  // Animator frames CRUD.
+  listFrames: () => req<{ items: FrameDTO[] }>("GET", "/animator/frames"),
+  createFrame: (body: Partial<FrameDTO> & { name: string }) =>
+    req<FrameDTO>("POST", "/animator/frames", body),
+  updateFrame: (name: string, body: Partial<FrameDTO>) =>
+    req<FrameDTO>("PUT", `/animator/frames/${encodeURIComponent(name)}`, body),
+  deleteFrame: (name: string) =>
+    req("DELETE", `/animator/frames/${encodeURIComponent(name)}`),
+  snapshotFrame: (name: string) =>
+    req<{ ok: boolean; name: string }>(
+      "POST",
+      `/animator/frames/${encodeURIComponent(name)}/snapshot`,
+    ),
+
+  // Animator expressions CRUD.
+  listExpressions: () =>
+    req<{ items: ExpressionDTO[] }>("GET", "/animator/expressions"),
+  createExpression: (body: Partial<ExpressionDTO> & { name: string }) =>
+    req<ExpressionDTO>("POST", "/animator/expressions", body),
+  updateExpression: (name: string, body: Partial<ExpressionDTO>) =>
+    req<ExpressionDTO>(
+      "PUT",
+      `/animator/expressions/${encodeURIComponent(name)}`,
+      body,
+    ),
+  deleteExpression: (name: string) =>
+    req("DELETE", `/animator/expressions/${encodeURIComponent(name)}`),
+  playExpression: (name: string) =>
+    req("POST", `/animator/expressions/${encodeURIComponent(name)}/play`),
+  activateExpression: (name: string) =>
+    req("POST", `/animator/expressions/${encodeURIComponent(name)}/activate`),
 };
