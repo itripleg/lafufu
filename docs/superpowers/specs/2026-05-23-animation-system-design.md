@@ -9,15 +9,19 @@ with a user-editable keyframe animation system. Operators capture poses from
 the live sliders, sequence them into expressions, and have those expressions
 drive both the servos and (optionally) a sprite display.
 
-**Canonical runtime model: Bottango.** Bottango is an existing open-source
-animation system with a well-tested bezier-curve player and a documented
-file format. We adopt its `ServoChannel` / `ServoKeyframe` / `ServoAnimation`
-shape as the **single canonical runtime model** and lift its reference player
-(BezierCurve, Effector) rather than write our own from scratch. Our hand-built
-UI is *one* way to populate that model; a bottango export is the *other*.
-Same player downstream.
+**Primary system: our own.** Frame + Expression authored in the admin UI;
+a small keyframe player in the animator service interpolates between frame
+poses with easing.
 
-## Three concepts (UI layer)
+**Bottango: forward-compat nice-to-have.** Bottango is a polished external
+animation tool whose exports look really good. We've never used it on this
+robot, so we don't commit to it being our internal model. Instead, we shape
+our data model so a bottango import is a plausible follow-up — lossy where
+necessary (bezier curves → easing curves, multi-channel hardware → our 5
+servos) but not architecturally blocked. The bridge is sketched at the end
+of this doc; implementing it is out of scope here.
+
+## Three concepts
 
 1. **Frame** — `{ name, pose (5 servo positions), image? }`. Built by
    positioning the live sliders and saving; image is an optional sprite
@@ -40,8 +44,9 @@ Same player downstream.
 - Body admin page is laid out like the Settings page: one panel with two
   clear sections (Frames, Expressions); the existing servo sliders move
   inside the Frames section as the live editor.
-- **Bottango-format imports** are first-class — externally authored
-  animations land in the same DB and run on the same player.
+- The data model leaves room for a future bottango importer without rework
+  — channel-naming, easing curves, timing units are all chosen with that
+  bridge in mind.
 
 ## Non-goals (this build)
 
@@ -54,48 +59,17 @@ Same player downstream.
   follow-up.
 - No auth on the new sprite upload endpoint (consistent with the letterhead
   upload — flagged `# TODO(auth)`).
-- No live Bottango REST polling. Bottango isn't running on the Pi at playback
-  time — file-drop / paste-into-import is the only ingest mode.
-- No bottango effector kinds we don't have hardware for in this build
-  (stepper, RGB, on/off). The parser tolerates them but the player ignores
-  them — keeps the door open for later expansion.
-
-## Architecture — two layers
-
-```
-   ┌────────────────────────────┐    ┌────────────────────────────┐
-   │ Authoring schema (DB)      │    │ Bottango export (file)     │
-   │  Frame · Expression        │    │  command-string array      │
-   └──────────────┬─────────────┘    └─────────────┬──────────────┘
-                  │ compile                        │ parse
-                  ▼                                ▼
-       ┌────────────────────────────────────────────────────┐
-       │  Canonical runtime: ServoAnimation                 │
-       │   { channels[], keyframes[], duration_ms }         │
-       │   (Bottango shape — same as the OSS player consumes)│
-       └─────────────────────────┬──────────────────────────┘
-                                 │ play
-                                 ▼
-              ┌──────────────────────────────────┐
-              │  Player (lifted from Bottango)   │
-              │  BezierCurve + Effector +        │
-              │  Lafufu DXL-bus callbacks        │
-              └──────────────────────────────────┘
-```
-
-The DB stays small and operator-friendly (Frame, Expression) — but is just
-*one* author for the canonical runtime model. Bottango exports compile to
-the same canonical model. The player only ever consumes the canonical model,
-which is the bottango wire shape.
+- **No bottango import or player integration** in this build. The forward-
+  compat bridge is sketched below as a follow-up plan.
+- We do **not** lift or vendor any bottango source. We don't know that code
+  yet and aren't committing to it.
 
 ## Data model
 
-### Authoring schema (control's SQLite)
+Two new DB tables in control's SQLite, replacing the two unused scaffold
+models `Expression` and `Behavior` that were never wired up.
 
-Two new tables, replacing the two unused scaffold models `Expression` and
-`Behavior` that were never wired up.
-
-#### `Frame`
+### `Frame`
 | field | type | notes |
 |---|---|---|
 | `name` | str, PK, max 100 | unique; URL-safe filename rules |
@@ -107,7 +81,7 @@ Two new tables, replacing the two unused scaffold models `Expression` and
 | `image` | str ⏵ nullable, max 160 | image library ref `{kind}/{name}`; usually a sprite |
 | `description` | str ⏵ nullable, max 500 | |
 
-#### `Expression`
+### `Expression`
 | field | type | notes |
 |---|---|---|
 | `name` | str, PK, max 100 | unique |
@@ -125,104 +99,6 @@ hold their previous image.
 
 `steps_json` rather than a separate `ExpressionStep` table — fewer joins,
 mirrors the existing `Behavior.actions_json` pattern.
-
-#### Imported bottango animations
-
-A third table holds animations brought in from bottango exports as-is
-(no re-authoring through Frame/Expression — they go straight to canonical):
-
-| field | type | notes |
-|---|---|---|
-| `name` | str, PK, max 100 | |
-| `source` | str | `bottango` initially |
-| `canonical_json` | str | the compiled `ServoAnimation` JSON |
-| `original_payload` | str ⏵ nullable | the raw bottango export, kept so we can re-parse if the parser improves |
-| `playback` | str | `once` / `loop` / `shuffle` (extracted/defaulted at import time) |
-| `emotion` | str ⏵ nullable | optional emotion binding, same rules as Expression |
-
-Imported animations show up alongside Expressions in the gallery but are
-read-only in the UI (edit them in bottango, re-import).
-
-### Canonical runtime (in-memory + NATS wire shape)
-
-This mirrors the dataclass set from bottango's OSS reference exactly —
-matches what bottango's `Effector` expects:
-
-```python
-@dataclass
-class ServoChannel:
-    id: str
-    kind: str                   # "dxl_servo" for Lafufu; other kinds tolerated, ignored
-    min_signal: float           # for dxl_servo: DXL ticks at min
-    max_signal: float           # for dxl_servo: DXL ticks at max
-    max_rate: float             # signal change per second; clamps how fast we slew
-    start_signal: float
-
-@dataclass
-class ServoKeyframe:
-    channel_id: str
-    start_ms: int
-    duration_ms: int            # 0 for instant
-    kind: str                   # "bezier" | "instant" | "on_off" | "trigger" | "color"
-    # bezier — already normalized to 0..1; the player lerps to channel min/max:
-    start_movement: float | None = None
-    end_movement: float | None = None
-    start_control: tuple[int, float] | None = None    # (ms_offset, mv_offset)
-    end_control: tuple[int, float] | None = None
-    on: bool | None = None
-    start_color: tuple[int, int, int] | None = None
-    end_color: tuple[int, int, int] | None = None
-
-@dataclass
-class ServoAnimation:
-    name: str
-    duration_ms: int
-    channels: list[ServoChannel]
-    keyframes: list[ServoKeyframe]
-    # Lafufu additions on top of the bottango shape:
-    playback: str = "once"      # once / loop / shuffle
-    image_per_frame: list[str | None] = field(default_factory=list)  # parallel to step boundaries, for sprite broadcast
-```
-
-**Lafufu's 5 servos as bottango channels** — seeded at startup, never
-user-editable:
-
-| id | kind | min_signal | max_signal | max_rate | start_signal |
-|---|---|---|---|---|---|
-| `head_lr` | dxl_servo | 1828 | 2298 | from `taus` | from idle pose |
-| `head_ud` | dxl_servo | 2885 | 3278 | from `taus` | from idle pose |
-| `eye`     | dxl_servo | 1960 | 2130 | from `taus` | from idle pose |
-| `jaw`     | dxl_servo | 1534 | 1728 | from `taus` | from idle pose |
-| `brow`    | dxl_servo | 2051 | 2099 | from `taus` | from idle pose |
-
-`max_rate` is derived from the existing per-servo time constants in
-`AnimatorService.DEFAULT_TAUS` so we don't lose the jaw's fast/head's
-smooth-slewing tuning.
-
-## Compilation (Expression → ServoAnimation)
-
-For each Expression step:
-
-1. Cursor `t = 0` at expression start.
-2. For each step `(frame, duration_ms, delay_ms, easing)`:
-   - For each of the 5 channels, emit a `ServoKeyframe`:
-     - `kind = "bezier"`
-     - `start_ms = t`
-     - `duration_ms = step.duration_ms`
-     - `start_movement = (prev_frame.channel - min) / (max - min)`
-     - `end_movement = (frame.channel - min) / (max - min)`
-     - Control points derived from `easing` (lookup table — linear/ease-in/ease-out/ease-in-out → bezier control offsets).
-   - `image_per_frame.append(frame.image)`
-   - `t += duration_ms + delay_ms`
-3. `ServoAnimation.duration_ms = t`
-4. Playback mode (`once` / `loop` / `shuffle`) propagates.
-
-The first step's `prev_frame` is whatever pose Lafufu is currently in (read
-from `_current_pose`) — so transitions in/out of an expression look smooth.
-
-`shuffle` is handled at *playback* time, not compilation: the player picks
-the next step at random with jittered timing, using the per-step keyframes
-authored in order as the pool.
 
 ## Image library
 
@@ -270,13 +146,12 @@ Shared upload helpers (`_atomic_write`, `_sanitize_upload_name`, `_safe_name`,
 | `PUT /animator/frames/{name}` | update pose / image / description |
 | `DELETE /animator/frames/{name}` | delete (fails if referenced by an expression) |
 | `POST /animator/frames/{name}/snapshot` | overwrite the frame with the current live pose |
-| `GET /animator/expressions` | list (authoring + imported), with active/built-in flags |
+| `GET /animator/expressions` | list with active/built-in flags |
 | `POST /animator/expressions` | create |
 | `PUT /animator/expressions/{name}` | update (steps, defaults, playback, emotion) |
 | `DELETE /animator/expressions/{name}` | delete |
-| `POST /animator/expressions/{name}/play` | compile to ServoAnimation + publish `animator.intent.play_animation` |
+| `POST /animator/expressions/{name}/play` | resolve + publish `animator.intent.play_expression` |
 | `POST /animator/expressions/{name}/activate` | bind it to its `emotion` (clears any other binding for that emotion) |
-| `POST /animator/expressions/import` | accept a bottango export (or other source), parse, store as an *imported animation*, optionally bind to an emotion |
 | `GET /printer/sprites` | list sprites (`builtin-sprite` defaults + `sprite` uploads), same shape as `/printer/letterheads` |
 | `POST /printer/sprite` | multipart upload to `data/printer/sprites/` |
 | `GET /printer/sprites/{kind}/{name}` | serve a sprite file |
@@ -289,130 +164,70 @@ The current `POST /animator/expression` (proxies the play_expression intent
 by name) is kept for backward compatibility — internally it resolves to the
 new flow.
 
-### Animator — lifted bottango player
-
-The animator service replaces both `_idle_animation_loop` and
-`_expression_animation_loop` with a player built on top of the bottango OSS
-reference. The plan:
-
-1. Vendor the OSS bottango Python driver into
-   `packages/animator/src/lafufu_animator/bottango_player/` (or a sibling
-   package, decision at implementation time). Keep upstream's file boundaries
-   intact for diff-ability against future bottango updates.
-2. Lift unchanged:
-   - `BezierCurve.py` — cubic bezier evaluation.
-   - `OnOffCurve.py` / `ColorCurve.py` / `TriggerCurve.py` — other curve
-     types (kept for parser tolerance even though we don't drive that hardware).
-   - `Effector.py` — per-channel state machine (`update()`, `speedLimitSignal()`).
-3. Replace `CallbacksAndConfiguration.py` with a Lafufu adapter that:
-   - Maps each channel's `signal` (DXL ticks) into our `_target_pose` slot
-     for that servo on every `handleEffectorSetSignal`.
-   - Bridges `max_rate` / `speedLimitSignal()` from the bottango model into
-     our existing per-servo `tau` so the hardware response stays as smooth
-     as today.
-4. **Skip** `MainLoop.py`, `CommandParse.py`, `SocketDriverLerp.py` — those
-   parse live wire commands; we feed the player ready-made
-   `ServoChannel`/`ServoKeyframe` objects from our DB or import.
-
-A 50 Hz tick around `for effector in effectors: effector.update(now_ms)`
-drives playback. `playback` is layered on top:
-- `once` — stop after `duration_ms`, emit `gesture_done`.
-- `loop` — reset cursor to 0.
-- `shuffle` — when the current step's window expires, splice the next step's
-  keyframes from a randomly picked source step into the active set with
-  ±20% jittered timing. (Implementation: the shuffle layer rewrites the
-  effector's next-keyframe pointer; the bottango Effector itself is unchanged.)
-
-Idle is just an Expression tagged `emotion="idle"` with `playback="shuffle"`;
-the animator falls back to it when nothing else is active. The agent's
-`[agree]` reply path resolves "agree" → the expression tagged
-`emotion="agree"` → publishes the play_animation intent. Same shape as today
-externally, data-driven internally.
-
-The jaw stays under TTS RMS control while lipsync is active (same guard the
-current expression loop already uses) — the player adapter respects a
-"channel locked" flag for the jaw and skips writes there during lipsync.
-
 ### NATS
 
-- **`animator.intent.play_animation`** (replaces `animator.intent.play_expression`)
-  carries a fully-compiled `ServoAnimation`:
-  ```python
-  class AnimatorIntentPlayAnimation(BaseModel):
-      animation: ServoAnimationPayload   # full canonical shape
-  ```
-  Control compiles Expression → ServoAnimation (or pulls cached canonical
-  for imported animations) before publishing — the animator never reaches
-  into control's DB.
-
-- **`animator.event.frame`** — new event published as the animation crosses
-  each step boundary: `{ animation_name, step_index, image, started_at }`.
-  Drives any future `/pet` sprite sync; harmless to ignore otherwise.
-
-- **Backward compat:** the existing `animator.intent.play_expression`
-  shape is kept on the wire for one release. The animator routes it
-  through control's compile path when received, then logs a deprecation
-  warning. Removed in a follow-up.
-
-## External import — bottango
-
-`POST /animator/expressions/import` accepts a bottango export, parses it,
-and stores it as a row in the *imported animations* table (separate from
-Expression). UI shows imported animations in the gallery, badged as
-"imported · bottango", read-only edit-wise (re-author in bottango → re-import).
-
-### Parser
-
-A pure-Python parser handles the bottango command-string array. Concrete
-opcode handling (per the bottango spec):
-
-| opcode | meaning | how we handle |
-|---|---|---|
-| `tSYN` | time-zero anchor | accumulate into `time_anchor`, add to subsequent `start_ms` |
-| `rSVPin` / `rSVI2C` | declare servo | `ServoChannel(kind="pin_servo"|"i2c_servo")` — kept around even though we don't drive PWM/I2C directly; the player just doesn't move a hardware leg we don't have |
-| `rSTDir` | stepper | parsed, ignored at playback (no hardware match) |
-| `rECC` / `rECOnOff` / `rECColor` | generic / binary / RGB | parsed, ignored unless we add hardware |
-| `sC` | bezier keyframe | `ServoKeyframe(kind="bezier")` — `start_movement = int(p[3])/8192`, etc. Control points decoded per spec. |
-| `sCI` | instant move | `ServoKeyframe(kind="instant", duration_ms=0)` |
-| `sCO` / `sCT` / `sCC` / `sCCI` | on/off / trigger / color tweens | parsed into corresponding kinds; the player evaluates only those it has effectors for |
-| `xE` / `xC` / `STOP` | lifecycle resets | tolerated, no-op |
-
-The `/8192` integer encoding is normalized at the parser boundary — the
-canonical model only carries `float ∈ [0, 1]`. Never propagate `/8192` past
-the parser.
-
-### Channel mapping for imports
-
-A bottango export's channel ids (e.g. `jaw`, `leftBrow`) need to map onto
-Lafufu's 5 fixed channels. The importer applies a small mapping table:
+**`animator.intent.play_expression`** — schema changes from
+`{name, intensity}` to a fully-resolved payload (control resolves frames →
+poses before publishing, so the animator never reaches into control's DB):
 
 ```python
-BOTTANGO_TO_LAFUFU = {
-    "jaw": "jaw",
-    "brow": "brow", "leftBrow": "brow", "rightBrow": "brow",
-    "headLR": "head_lr", "headRotation": "head_lr",
-    "headUD": "head_ud", "headTilt": "head_ud",
-    "eye": "eye", "eyes": "eye",
-}
+class AnimatorIntentPlayExpression(BaseModel):
+    name: str
+    playback: Literal["once", "loop", "shuffle"]
+    steps: list[AnimatorPlayStep]
+    default_duration_ms: int
+    default_delay_ms: int
+    default_easing: str   # linear / ease-in-out / ease-in / ease-out
+
+class AnimatorPlayStep(BaseModel):
+    pose: AnimatorPose                # resolved from frame
+    image: str | None = None          # sprite ref for the broadcast event
+    duration_ms: int | None = None    # null → use expression default
+    delay_ms: int | None = None
+    easing: str | None = None
 ```
 
-Unmapped channels are *kept in the canonical model* (the player ignores them)
-so a re-import after expanding the table picks them up. The import response
-reports which channels were mapped vs left orphaned, so the operator knows
-to either rename in bottango or extend the table.
+The old `intensity` field is dropped. Backward compat for callers that still
+publish `{name, intensity}` is handled by control: it resolves and re-emits
+in the new shape before the animator sees it.
 
-### Sample-export verification
+**`animator.event.frame`** — new event published once per step as the
+animation plays: `{ expression, step_index, frame, image, started_at }`.
+Drives any future `/pet` sprite sync; harmless to ignore otherwise.
 
-The spec was written without a verified sample bottango export against this
-machine. Before shipping the importer:
+### Animator — our keyframe player
 
-1. Get a real bottango export (one channel, two keyframes is enough).
-2. Run it through the parser; assert the round-tripped `ServoAnimation`
-   matches by-hand math.
-3. Pin that export as a fixture in `packages/animator/tests/fixtures/`.
+A new background loop in `AnimatorService` replaces both
+`_idle_animation_loop` and `_expression_animation_loop`:
 
-If the actual export contradicts this spec, the export is the source of
-truth — update the spec and the parser.
+- Tracks a `_current_expression: PlayingExpression | None`. A
+  `play_expression` intent sets it.
+- Per tick (20 Hz, matching the retired loops), computes the interpolated pose between the previous
+  step's pose and the current step's pose using `t / duration_ms` shaped by
+  the easing curve. Easing curves are a small enum (linear / ease-in /
+  ease-out / ease-in-out) implemented as a 4-entry lookup table on the unit
+  interval — easy to extend later.
+- When a step's duration completes, holds for `delay_ms`, then advances:
+  - `once` — stops at the end and emits `gesture_done`.
+  - `loop` — wraps to step 0.
+  - `shuffle` — picks a random step from the same expression with jittered
+    timing (±20% on duration/delay). Idle uses this.
+- Idle is a *normal expression* tagged `emotion="idle"`; the animator falls
+  back to it when no other expression is active (replacing the current
+  procedural idle loop).
+- The agent's `[agree]` reply path resolves "agree" → the expression tagged
+  `emotion="agree"` → publishes the play_expression intent. Same shape as
+  today externally, data-driven internally.
+- The jaw stays under TTS RMS control while lipsync is active (same guard
+  the current expression loop already uses).
+
+### Seed migration
+
+A one-shot seed in `control/bootstrap.py` inserts the eight built-in
+expressions from the values currently in `expressions.py`. Each is authored
+as 2–6 frames per expression (e.g. agree = `agree_a` → `agree_b` looping
+for ~3 cycles). The seed only runs when the `Frame`/`Expression` tables are
+empty so it never overwrites user edits.
 
 ## Frontend — Body page layout
 
@@ -446,7 +261,7 @@ two stacked sections.
 ### Expressions section
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  Expressions    [+ new] [↥ import bottango]                      │
+│  Expressions    [+ new]                                          │
 ├──────────────────┬───────────────────────────────────────────────┤
 │ expressions      │  selected:  agree                              │
 │ gallery          │  [▶ play] [⏸] · playback: once/loop/shuffle    │
@@ -456,76 +271,91 @@ two stacked sections.
 │ └────┘ └────┘ …  │  per-step ease/hold/easing on click            │
 └──────────────────┴───────────────────────────────────────────────┘
 ```
-Click an expression to load it. Duplicate-to-customize. Imported animations
-show in the same gallery with a small "bottango" badge; clicking shows a
-read-only summary (channel count, duration) plus play/activate controls —
-the step editor is hidden for those (edit in bottango, re-import).
+Click an expression to load it. Duplicate-to-customize (the user can take
+the built-in `agree` and make their own variation without losing the
+original).
 
 ## Build order — phased so each commit is reviewable
 
 1. **Image library + backend foundation** — extract shared upload helpers
    into `upload_utils`; add `/printer/sprites` endpoints; add `Frame` +
    `Expression` DB tables and `/animator/frames` + `/animator/expressions`
-   CRUD; pose-snapshot endpoint. *No animator changes yet.*
-2. **Bottango player lift** — vendor the OSS bottango Python driver
-   (`BezierCurve.py`, `Effector.py`, friends); write the Lafufu
-   `CallbacksAndConfiguration` adapter wiring `Effector` writes to
-   `_target_pose`; replace `_idle_animation_loop` and
-   `_expression_animation_loop` with the 50 Hz tick over effectors.
-3. **Compilation + new NATS intent** — Expression → ServoAnimation
-   compiler; new `animator.intent.play_animation` schema and handler;
-   `animator.event.frame` event; seed the eight built-in expressions and
-   move idle/emotions onto the player. Old `play_expression` intent kept
-   as a deprecation-routed alias.
-4. **Frontend — Frames section** — slider redesign, snapshot, save, gallery,
+   CRUD; pose-snapshot endpoint.
+2. **Animator keyframe player** — new `_keyframe_player_loop`, updated
+   `play_expression` schema, seed built-ins, retire the procedural loops.
+   Existing emotion → expression name routing keeps working.
+3. **Frontend — Frames section** — slider redesign, snapshot, save, gallery,
    sprite picker.
-5. **Frontend — Expressions section** — gallery, step builder, drag-reorder,
+4. **Frontend — Expressions section** — gallery, step builder, drag-reorder,
    playback controls.
-6. **Sprite uploads wired up** — upload UI in the sprite picker.
-7. **Bottango importer** — `POST /animator/expressions/import` endpoint,
-   pure-Python parser for all opcodes, channel mapping table, *imported
-   animations* DB table + read-only gallery card, fixture test against a
-   real sample export.
+5. **Sprite uploads wired up** — upload UI in the sprite picker.
+
+## Bottango forward-compat bridge (out of scope — sketch)
+
+A future plan can add bottango imports without re-architecting. The shape of
+the bridge:
+
+- **Endpoint:** `POST /animator/expressions/import` accepts a bottango
+  export (array of comma-separated command strings) plus an optional
+  channel-mapping override. Parses, converts, inserts as a new Expression
+  + Frames (or as a row in a separate `imported_animations` table — TBD
+  when the bridge is built).
+- **Channel mapping** — Lafufu has 5 fixed DXL servos; a bottango export
+  has its own channel ids. A default lookup table handles common spellings
+  (`jaw`, `leftBrow`/`rightBrow` → `brow`, `headLR`/`headRotation` →
+  `head_lr`, etc.); unmapped channels are reported back to the operator so
+  they know to rename in bottango or extend the table.
+- **Curve mapping** — bottango's bezier-per-keyframe carries more shape than
+  our small easing-curve enum. The importer samples each bezier to the
+  nearest matching curve (or to `linear` as a fallback). Lossy but
+  workable; documented as "import-time approximation."
+- **Effector kinds Lafufu doesn't have** (stepper, RGB, on/off) are
+  parsed and ignored, not rejected — so re-importing the same file after
+  Lafufu sprouts new hardware would just work.
+- **Player integration** — the imported animation compiles down to our
+  internal step+pose model (sampling the bezier at the step boundaries +
+  inferring easing from the segment shape). Same player downstream; no
+  bottango runtime code lifted.
+- **Verification gate** — never ship the importer without round-tripping
+  a real bottango export against the fixture, since the format details in
+  the user-supplied reference doc were reverse-engineered. The export is
+  the source of truth.
+
+This is **not** built in this build, but the data model and player are
+designed so adding the bridge later is a single phase with no rework.
 
 ## Testing
 
-- Backend control routers — unit tests per CRUD endpoint; `/import` round-
-  trips a fixture bottango export.
-- Animator player — fixture-based test that a known `ServoAnimation`
-  produces the expected per-tick poses (bezier eval + speed limit). Goldens
-  for the built-in expressions verify the seed didn't drift.
-- Compilation — table-driven tests of `Expression → ServoAnimation` covering
-  all four easing curves and each playback mode.
-- Frontend — vitest for the existing surfaces is unaffected; the new builder
+- Backend control routers — unit tests per CRUD endpoint.
+- Animator player — fixture test that a known Expression produces the
+  expected per-tick poses (interpolation + easing eval). Goldens for the
+  built-in expressions verify the seed didn't drift.
+- Compilation — table-driven tests covering each easing curve and each
+  playback mode.
+- Frontend — vitest for existing surfaces is unaffected; the new builder
   has tested helpers (step reorder, default-fallback resolver).
 - Manual — built-in expressions visually match the current behaviour on the
   robot; idle still feels alive thanks to shuffle.
 
 ## Risks / open items
 
-- **Bottango source needs to land on the dev box.** The OSS driver lives
-  off this machine right now. Phase 2 starts by cloning the upstream repo
-  locally, picking a pinned commit, and vendoring the relevant files —
-  with the upstream LICENSE preserved and attributed. Until then phase 2
-  can't start.
-- **Bottango licensing.** Permissive per the user's note, but I haven't
-  read the actual LICENSE on this machine. Verifying license terms and
-  attribution requirements is the first task of phase 2.
-- **Channel mapping for imports.** Operators authoring in bottango will
-  use whatever channel names they pick; our default `BOTTANGO_TO_LAFUFU`
-  table handles common spellings, but exotic naming requires extending
-  the table (or renaming in bottango). The importer reports unmapped
-  channels so failure mode is obvious, not silent.
-- **Shuffle layer on top of Effector.** Bottango's Effector expects a
-  monotonic timeline; our shuffle splices keyframes onto it dynamically.
-  Risk: re-entry timing seams between shuffled steps. Mitigation: each
-  shuffle "splice" starts from the current pose (we have it) so seams
-  are eased, not jumped.
-- **Schema migration.** `play_expression` → `play_animation` is a wire
-  schema change. Backward compat is via the routed-deprecation alias;
-  external publishers get a transition release.
 - **Idle "alive" tuning.** Shuffle + jittered timing is the bet. If it
-  feels repetitive in practice, the fix is more idle frames (8-12 instead
+  feels repetitive in practice, the fix is more idle frames (8–12 instead
   of 4) and wider jitter, not reverting to procedural.
-- **Sample-export verification.** The parser in this spec is written from
-  the docs alone. Phase 7 must round-trip a real export before merging.
+- **Easing math.** First-order exponential easing in the current stepper
+  is preserved on the bus level; the player adds per-step interpolation on
+  top. We pick the easing curve once per step from a small enum (no bezier
+  UI in this build).
+- **Seed authoring.** Mapping today's sinusoidal `agree` (amp 40, freq
+  1.2, ~3 cycles) to 4-6 keyframes is a judgement call. The seeded values
+  are user-editable, so "close enough" is fine — the operator tunes from
+  there.
+- **Schema migration.** `play_expression`'s NATS schema changes shape
+  (resolved payload, no `intensity`). Backward compat is via control: it
+  resolves the old `{name, intensity}` from the existing
+  `/animator/expression` endpoint into the new shape, so external callers
+  don't break.
+- **Bottango bridge approximation.** Sampling bezier curves to our
+  easing-curve enum is necessarily lossy. The bridge is a follow-up; the
+  primary system is the handmade one, and we'll judge bridge fidelity
+  against real exports when (if) we build it.
