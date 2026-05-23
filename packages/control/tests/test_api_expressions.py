@@ -1,0 +1,84 @@
+"""Tests for the animator expression CRUD endpoints."""
+
+import pytest
+from fastapi.testclient import TestClient
+from lafufu_control.api.app import create_app
+from lafufu_control.db import create_engine_for_path, init_db
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    monkeypatch.setenv("LAFUFU_PRINTER_DATA_DIR", str(tmp_path / "printer"))
+    published: list[tuple[str, dict]] = []
+    engine = create_engine_for_path(str(tmp_path / "t.sqlite"))
+    init_db(engine)
+    app = create_app(engine=engine, nats_publish=lambda s, p: published.append((s, p)))
+    c = TestClient(app)
+    c.published = published  # type: ignore[attr-defined]
+    return c
+
+
+def test_create_expression(client):
+    """POST a 2-step expression, GET /expressions returns it parsed."""
+    body = {
+        "name": "agree",
+        "playback": "once",
+        "default_duration_ms": 220,
+        "default_delay_ms": 60,
+        "default_easing": "ease-in-out",
+        "steps": [{"frame": "agree_low"}, {"frame": "agree_high"}],
+        "emotion": "agree",
+    }
+    r = client.post("/api/animator/expressions", json=body)
+    assert r.status_code == 200, r.text
+    payload = r.json()
+    assert payload["name"] == "agree"
+    assert payload["playback"] == "once"
+    assert len(payload["steps"]) == 2
+    assert payload["steps"][0]["frame"] == "agree_low"
+    assert payload["emotion"] == "agree"
+
+    r2 = client.get("/api/animator/expressions")
+    assert r2.status_code == 200
+    items = r2.json()["items"]
+    assert len(items) == 1
+    assert items[0]["name"] == "agree"
+
+
+def test_update_expression_steps(client):
+    body = {
+        "name": "happy",
+        "playback": "loop",
+        "default_duration_ms": 800,
+        "steps": [{"frame": "happy_a"}, {"frame": "happy_b"}],
+        "emotion": "happy",
+    }
+    client.post("/api/animator/expressions", json=body)
+
+    new_body = {
+        **body,
+        "playback": "shuffle",
+        "steps": [
+            {"frame": "happy_a", "duration_ms": 400},
+            {"frame": "happy_b"},
+            {"frame": "happy_a"},
+        ],
+    }
+    r = client.put("/api/animator/expressions/happy", json=new_body)
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["playback"] == "shuffle"
+    assert len(payload["steps"]) == 3
+    assert payload["steps"][0]["duration_ms"] == 400
+
+
+def test_delete_expression(client):
+    body = {"name": "gone", "steps": [{"frame": "x"}]}
+    client.post("/api/animator/expressions", json=body)
+    r = client.delete("/api/animator/expressions/gone")
+    assert r.status_code == 204
+    # Idempotent.
+    r2 = client.delete("/api/animator/expressions/gone")
+    assert r2.status_code == 204
+    r3 = client.get("/api/animator/expressions")
+    assert r3.json()["items"] == []

@@ -1,12 +1,13 @@
 """Admin → animator intent proxy."""
 
+import json
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
-from ...models import Frame
+from ...models import Expression, Frame
 
 router = APIRouter()
 
@@ -16,7 +17,7 @@ class PreviewBody(BaseModel):
     position: int
 
 
-class ExpressionBody(BaseModel):
+class LegacyExpressionBody(BaseModel):
     name: str
     intensity: float = 1.0
 
@@ -43,7 +44,7 @@ def preview(body: PreviewBody, req: Request):
 
 
 @router.post("/expression", status_code=202)
-def expression(body: ExpressionBody, req: Request):
+def expression(body: LegacyExpressionBody, req: Request):
     req.app.state.nats_publish("animator.intent.play_expression", body.model_dump())
     return {"ok": True}
 
@@ -151,3 +152,106 @@ def snapshot_frame(name: str, req: Request):
             s.add(f)
         s.commit()
     return {"ok": True, "name": name}
+
+
+class ExpressionStep(BaseModel):
+    frame: str
+    duration_ms: int | None = None
+    delay_ms: int | None = None
+    easing: str | None = None
+
+
+class ExpressionBody(BaseModel):
+    name: str | None = None  # required in body for POST; URL provides it for PUT
+    playback: str = "once"
+    default_duration_ms: int = 250
+    default_delay_ms: int = 80
+    default_easing: str = "ease-in-out"
+    steps: list[ExpressionStep] = []
+    emotion: str | None = None
+    description: str | None = None
+
+
+def _e2d(e: Expression) -> dict:
+    return {
+        "name": e.name,
+        "playback": e.playback,
+        "default_duration_ms": e.default_duration_ms,
+        "default_delay_ms": e.default_delay_ms,
+        "default_easing": e.default_easing,
+        "steps": json.loads(e.steps_json or "[]"),
+        "emotion": e.emotion,
+        "description": e.description,
+    }
+
+
+def _steps_to_json(steps: list[ExpressionStep]) -> str:
+    return json.dumps([st.model_dump(exclude_none=True) for st in steps])
+
+
+@router.get("/expressions")
+def list_expressions(req: Request):
+    with Session(req.app.state.engine) as s:
+        rows = s.exec(select(Expression).order_by(Expression.name)).all()
+        return {"items": [_e2d(e) for e in rows]}
+
+
+@router.post("/expressions")
+def create_expression(body: ExpressionBody, req: Request):
+    if not body.name:
+        raise HTTPException(
+            400,
+            detail={"error_code": "missing_name", "message": "expression name is required"},
+        )
+    with Session(req.app.state.engine) as s:
+        if s.get(Expression, body.name) is not None:
+            raise HTTPException(
+                409,
+                detail={"error_code": "exists", "message": f"expression {body.name!r} exists"},
+            )
+        e = Expression(
+            name=body.name,
+            playback=body.playback,
+            default_duration_ms=body.default_duration_ms,
+            default_delay_ms=body.default_delay_ms,
+            default_easing=body.default_easing,
+            steps_json=_steps_to_json(body.steps),
+            emotion=body.emotion,
+            description=body.description,
+        )
+        s.add(e)
+        s.commit()
+        s.refresh(e)
+        return _e2d(e)
+
+
+@router.put("/expressions/{name}")
+def update_expression(name: str, body: ExpressionBody, req: Request):
+    with Session(req.app.state.engine) as s:
+        e = s.get(Expression, name)
+        if e is None:
+            raise HTTPException(
+                404,
+                detail={"error_code": "not_found", "message": f"no expression {name!r}"},
+            )
+        e.playback = body.playback
+        e.default_duration_ms = body.default_duration_ms
+        e.default_delay_ms = body.default_delay_ms
+        e.default_easing = body.default_easing
+        e.steps_json = _steps_to_json(body.steps)
+        e.emotion = body.emotion
+        e.description = body.description
+        s.add(e)
+        s.commit()
+        s.refresh(e)
+        return _e2d(e)
+
+
+@router.delete("/expressions/{name}", status_code=204)
+def delete_expression(name: str, req: Request):
+    with Session(req.app.state.engine) as s:
+        e = s.get(Expression, name)
+        if e is not None:
+            s.delete(e)
+            s.commit()
+    return None
