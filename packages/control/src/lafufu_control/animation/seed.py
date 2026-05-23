@@ -65,16 +65,22 @@ SEED_EXPRESSIONS: list[tuple[str, str, int, int, str, list[str], str]] = [
     ("angry", "loop", 180, 50, "linear", ["angry_a", "angry_b"], "angry"),
     ("surprised", "once", 250, 1500, "ease-out", ["surprised_held"], "surprised"),
     ("neutral", "once", 300, 100, "ease-in-out", ["idle_calm"], "neutral"),
+    # idle uses random_walk — continuous sinusoidal motion around the idle
+    # pose. steps_json holds the {intensity, speed, pause_chance} config
+    # instead of a frame list. See KeyframePlayer._random_walk_pose.
     (
         "idle",
-        "shuffle",
-        1200,
+        "random_walk",
+        1200,  # duration/delay unused by random_walk; kept for schema parity
         400,
         "ease-in-out",
-        ["idle_calm", "idle_glance_l", "idle_glance_r", "idle_look_up", "idle_calm"],
+        [],  # no frames
         "idle",
     ),
 ]
+
+# Default config for the seeded idle random_walk row.
+IDLE_RANDOM_WALK_CONFIG = {"intensity": 1.0, "speed": 1.0, "pause_chance": 0.30}
 
 
 def seed_animations(engine) -> None:
@@ -96,6 +102,10 @@ def seed_animations(engine) -> None:
             frame_names,
             emotion,
         ) in SEED_EXPRESSIONS:
+            if playback == "random_walk":
+                steps_json = json.dumps(IDLE_RANDOM_WALK_CONFIG)
+            else:
+                steps_json = json.dumps([{"frame": n} for n in frame_names])
             s.add(
                 Expression(
                     name=name,
@@ -103,7 +113,7 @@ def seed_animations(engine) -> None:
                     default_duration_ms=dur_ms,
                     default_delay_ms=delay_ms,
                     default_easing=easing,
-                    steps_json=json.dumps([{"frame": n} for n in frame_names]),
+                    steps_json=steps_json,
                     emotion=emotion,
                 )
             )

@@ -109,13 +109,28 @@ class AnimatorPlayStep(BaseModel):
     easing: str | None = None
 
 
+class RandomWalkConfig(BaseModel):
+    """Sinusoidal living-presence motion config — for playback='random_walk'.
+
+    Three knobs total; each is normalised so 1.0 = "natural default".
+    """
+
+    intensity: float = Field(default=1.0, ge=0.0, le=2.0)
+    """Scales per-servo amplitude. 0 = no motion; 1 = pre-rewrite defaults."""
+    speed: float = Field(default=1.0, ge=0.1, le=4.0)
+    """Inversely scales segment duration. 2 = twice as fast; 0.5 = half speed."""
+    pause_chance: float = Field(default=0.30, ge=0.0, le=1.0)
+    """Fraction of segments that hold idle instead of moving."""
+
+
 class AnimatorIntentPlayExpression(BaseModel):
     name: str
-    playback: Literal["once", "loop", "shuffle"] = "once"
+    playback: Literal["once", "loop", "shuffle", "random_walk"] = "once"
     steps: list[AnimatorPlayStep] = []
     default_duration_ms: int = 250
     default_delay_ms: int = 80
     default_easing: str = "ease-in-out"
+    random_walk_config: RandomWalkConfig | None = None
 
 
 class AnimatorEventFrame(BaseModel):

@@ -228,6 +228,12 @@ class ExpressionStep(BaseModel):
     easing: str | None = None
 
 
+class RandomWalkConfigBody(BaseModel):
+    intensity: float = 1.0
+    speed: float = 1.0
+    pause_chance: float = 0.30
+
+
 class ExpressionBody(BaseModel):
     name: str | None = None  # required in body for POST; URL provides it for PUT
     playback: str = "once"
@@ -235,25 +241,44 @@ class ExpressionBody(BaseModel):
     default_delay_ms: int = 80
     default_easing: str = "ease-in-out"
     steps: list[ExpressionStep] = []
+    random_walk_config: RandomWalkConfigBody | None = None
     emotion: str | None = None
     description: str | None = None
 
 
+_DEFAULT_RW_CONFIG = {"intensity": 1.0, "speed": 1.0, "pause_chance": 0.30}
+
+
 def _e2d(e: Expression) -> dict:
+    # steps_json is polymorphic by playback: a list of step dicts for the
+    # step-based modes, a config dict for random_walk. Expose them as
+    # separate top-level fields so the frontend has a uniform shape.
+    raw = json.loads(e.steps_json or ("{}" if e.playback == "random_walk" else "[]"))
+    if e.playback == "random_walk":
+        steps: list[dict] = []
+        rwc = raw if isinstance(raw, dict) else dict(_DEFAULT_RW_CONFIG)
+    else:
+        steps = raw if isinstance(raw, list) else []
+        rwc = None
     return {
         "name": e.name,
         "playback": e.playback,
         "default_duration_ms": e.default_duration_ms,
         "default_delay_ms": e.default_delay_ms,
         "default_easing": e.default_easing,
-        "steps": json.loads(e.steps_json or "[]"),
+        "steps": steps,
+        "random_walk_config": rwc,
         "emotion": e.emotion,
         "description": e.description,
     }
 
 
-def _steps_to_json(steps: list[ExpressionStep]) -> str:
-    return json.dumps([st.model_dump(exclude_none=True) for st in steps])
+def _expression_steps_json(body: ExpressionBody) -> str:
+    """Serialize the playback-mode-specific payload into steps_json."""
+    if body.playback == "random_walk":
+        cfg = body.random_walk_config or RandomWalkConfigBody()
+        return json.dumps(cfg.model_dump())
+    return json.dumps([st.model_dump(exclude_none=True) for st in body.steps])
 
 
 @router.get("/expressions")
@@ -282,7 +307,7 @@ def create_expression(body: ExpressionBody, req: Request):
             default_duration_ms=body.default_duration_ms,
             default_delay_ms=body.default_delay_ms,
             default_easing=body.default_easing,
-            steps_json=_steps_to_json(body.steps),
+            steps_json=_expression_steps_json(body),
             emotion=body.emotion,
             description=body.description,
         )
@@ -305,7 +330,7 @@ def update_expression(name: str, body: ExpressionBody, req: Request):
         e.default_duration_ms = body.default_duration_ms
         e.default_delay_ms = body.default_delay_ms
         e.default_easing = body.default_easing
-        e.steps_json = _steps_to_json(body.steps)
+        e.steps_json = _expression_steps_json(body)
         e.emotion = body.emotion
         e.description = body.description
         s.add(e)

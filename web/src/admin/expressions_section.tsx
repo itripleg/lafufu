@@ -49,7 +49,8 @@ const SortableStep: Component<{
   );
 };
 
-const PLAYBACK: ExpressionDTO["playback"][] = ["once", "loop", "shuffle"];
+const PLAYBACK: ExpressionDTO["playback"][] = ["once", "loop", "shuffle", "random_walk"];
+const DEFAULT_RW = { intensity: 1.0, speed: 1.0, pause_chance: 0.30 };
 const EMOTIONS = [
   "idle",
   "agree",
@@ -114,6 +115,7 @@ export const ExpressionsSection: Component = () => {
         default_delay_ms: e.default_delay_ms,
         default_easing: e.default_easing,
         steps: e.steps,
+        random_walk_config: e.random_walk_config,
         emotion: e.emotion,
         description: e.description,
       });
@@ -268,6 +270,58 @@ export const ExpressionsSection: Component = () => {
                   </label>
                 </div>
 
+                <Show when={e().playback === "random_walk"}>
+                  {(() => {
+                    const cfg = () => e().random_walk_config ?? DEFAULT_RW;
+                    const set = (patch: Partial<typeof DEFAULT_RW>) =>
+                      mutateSelected({ random_walk_config: { ...cfg(), ...patch } });
+                    return (
+                      <div class="border border-stone-700 rounded p-3 flex flex-col gap-2">
+                        <div class="text-xs uppercase tracking-wide text-stone-400">
+                          Random walk
+                        </div>
+                        <label class="flex items-center gap-2 text-sm">
+                          <span class="w-28 text-stone-400">intensity</span>
+                          <input
+                            type="range"
+                            min={0} max={2} step={0.05}
+                            value={cfg().intensity}
+                            onInput={(ev) => set({ intensity: Number(ev.currentTarget.value) })}
+                            class="flex-1"
+                          />
+                          <span class="font-mono w-12 text-right">{cfg().intensity.toFixed(2)}</span>
+                        </label>
+                        <label class="flex items-center gap-2 text-sm">
+                          <span class="w-28 text-stone-400">speed</span>
+                          <input
+                            type="range"
+                            min={0.1} max={4} step={0.05}
+                            value={cfg().speed}
+                            onInput={(ev) => set({ speed: Number(ev.currentTarget.value) })}
+                            class="flex-1"
+                          />
+                          <span class="font-mono w-12 text-right">{cfg().speed.toFixed(2)}</span>
+                        </label>
+                        <label class="flex items-center gap-2 text-sm">
+                          <span class="w-28 text-stone-400">pause chance</span>
+                          <input
+                            type="range"
+                            min={0} max={1} step={0.05}
+                            value={cfg().pause_chance}
+                            onInput={(ev) => set({ pause_chance: Number(ev.currentTarget.value) })}
+                            class="flex-1"
+                          />
+                          <span class="font-mono w-12 text-right">{cfg().pause_chance.toFixed(2)}</span>
+                        </label>
+                        <div class="text-xs text-stone-500">
+                          intensity scales amplitude · speed shortens segments · pause-chance is fraction of held segments
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </Show>
+
+                <Show when={e().playback !== "random_walk"}>
                 <div>
                   <div class="text-xs uppercase tracking-wide text-stone-400 mb-1">
                     Steps
@@ -341,6 +395,7 @@ export const ExpressionsSection: Component = () => {
                     </For>
                   </div>
                 </div>
+                </Show>
               </div>
           )}
         </Show>

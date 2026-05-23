@@ -2,9 +2,13 @@
 start pose, return interpolated poses for each tick of monotonic time.
 
 Playback modes:
-- "once":    play steps from start_pose → step1 → step2 → ... → last; freeze on last.
-- "loop":    same, but wrap modulo cycle length forever.
-- "shuffle": play random-order steps with jittered durations forever.
+- "once":        play steps start_pose → step1 → ... → last; freeze on last.
+- "loop":        same, but wrap modulo cycle length forever.
+- "shuffle":     play random-order steps with jittered durations forever.
+- "random_walk": ignore steps; emit continuous sinusoidal motion around
+                 start_pose using per-segment random amplitudes/frequencies.
+                 Three knobs (intensity, speed, pause_chance) live on
+                 payload.random_walk_config.
 
 Per-step overrides for duration_ms, delay_ms, easing fall back to the
 expression-level defaults. Each step is duration_ms of ease(curve)
@@ -15,6 +19,7 @@ becomes step_i.pose after step_i completes.
 
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass, field
 
@@ -22,10 +27,49 @@ from lafufu_shared.schemas import (
     AnimatorIntentPlayExpression,
     AnimatorPlayStep,
     AnimatorPose,
+    RandomWalkConfig,
 )
 
 from .easing import ease
-from .pose import clamp_dxl
+from .pose import (
+    DXL_BROW_DOWN_POS,
+    DXL_BROW_UP_POS,
+    DXL_EYE_LEFT_POS,
+    DXL_EYE_RIGHT_POS,
+    DXL_HEAD_LR_LEFT_POS,
+    DXL_HEAD_LR_RIGHT_POS,
+    DXL_HEAD_UD_DOWN_POS,
+    DXL_HEAD_UD_UP_POS,
+    clamp_dxl,
+)
+
+# Per-servo amplitude at intensity=1.0, expressed as a fraction of the servo's
+# full DXL range. Lifted from the pre-rewrite procedural idle loop — calibrated
+# by feel on the real robot.
+_RW_AMP_PCT = {
+    "head_lr": 0.06,
+    "head_ud": 0.05,
+    "eye": 0.45,
+    "brow": 0.16,
+}
+_RW_FREQ_HZ = {
+    "head_lr": (0.08, 0.22),
+    "head_ud": (0.08, 0.22),
+    "eye": (0.15, 0.45),
+    "brow": (0.15, 0.45),
+}
+_RW_SEG_S = (2.0, 5.0)
+_RW_PAUSE_S = (1.0, 3.5)
+
+
+def _servo_range(name: str) -> int:
+    rng = {
+        "head_lr": abs(DXL_HEAD_LR_LEFT_POS - DXL_HEAD_LR_RIGHT_POS),
+        "head_ud": abs(DXL_HEAD_UD_DOWN_POS - DXL_HEAD_UD_UP_POS),
+        "eye": abs(DXL_EYE_RIGHT_POS - DXL_EYE_LEFT_POS),
+        "brow": abs(DXL_BROW_UP_POS - DXL_BROW_DOWN_POS),
+    }
+    return rng[name]
 
 
 def _lerp(a: int, b: int, t: float) -> int:
@@ -55,12 +99,28 @@ def _curve(step: AnimatorPlayStep, p: AnimatorIntentPlayExpression) -> str:
 
 
 @dataclass
+class _RwSegment:
+    """One random-walk segment: either 'pause' (hold start_pose) or 'move'
+    (sinusoidal per servo). Pre-rolled with rng so pose_at is deterministic
+    within a segment and free of allocations."""
+
+    start_ms: int
+    dur_ms: int
+    kind: str  # "pause" | "move"
+    # Move-only params, per servo.
+    amps: dict[str, float] = field(default_factory=dict)
+    freqs: dict[str, float] = field(default_factory=dict)
+    phases: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass
 class KeyframePlayer:
     payload: AnimatorIntentPlayExpression
     start_pose: AnimatorPose
     now_ms: int  # the monotonic timestamp at construction time (ms)
     rng_seed: int | None = None
     _shuffle_plan: list[tuple[int, int, int]] = field(default_factory=list)
+    _rw_segments: list[_RwSegment] = field(default_factory=list)
     _rng: random.Random = field(default_factory=random.Random)
     _cycle_len: int = 0
 
@@ -75,6 +135,8 @@ class KeyframePlayer:
 
     def pose_at(self, now_ms: int) -> AnimatorPose:
         elapsed = now_ms - self.now_ms
+        if self.payload.playback == "random_walk":
+            return self._random_walk_pose(elapsed)
         if not self.payload.steps:
             return self.start_pose
         if self.payload.playback == "shuffle":
@@ -109,6 +171,85 @@ class KeyframePlayer:
                 return step.pose
             cursor += dur + hold
         return self.payload.steps[-1].pose
+
+    def _random_walk_pose(self, elapsed: int) -> AnimatorPose:
+        """Continuous sinusoidal motion around start_pose. Re-rolls per
+        segment (~2-5s, scaled by speed). Some segments are pauses that just
+        hold start_pose. Three knobs only: intensity, speed, pause_chance."""
+        cfg: RandomWalkConfig = self.payload.random_walk_config or RandomWalkConfig()
+        # Lazily extend the segment list until it covers `elapsed`.
+        while (
+            not self._rw_segments
+            or self._rw_segments[-1].start_ms + self._rw_segments[-1].dur_ms <= elapsed
+        ):
+            self._rw_segments.append(self._roll_rw_segment(cfg))
+
+        # Find the active segment (linear scan; the list grows ~once per 3s
+        # of uptime — acceptable for the lifetime of a single play).
+        seg = next(
+            s for s in reversed(self._rw_segments) if s.start_ms <= elapsed < s.start_ms + s.dur_ms
+        )
+        if seg.kind == "pause":
+            return self.start_pose
+
+        t_s = (elapsed - seg.start_ms) / 1000.0
+        return AnimatorPose(
+            head_lr=clamp_dxl(
+                "head_lr",
+                self.start_pose.head_lr
+                + seg.amps["head_lr"]
+                * math.sin(math.tau * seg.freqs["head_lr"] * t_s + seg.phases["head_lr"]),
+            ),
+            head_ud=clamp_dxl(
+                "head_ud",
+                self.start_pose.head_ud
+                + seg.amps["head_ud"]
+                * math.sin(math.tau * seg.freqs["head_ud"] * t_s + seg.phases["head_ud"]),
+            ),
+            eye=clamp_dxl(
+                "eye",
+                self.start_pose.eye
+                + seg.amps["eye"] * math.sin(math.tau * seg.freqs["eye"] * t_s + seg.phases["eye"]),
+            ),
+            # Jaw is owned by lipsync — never wiggle it here. The service
+            # preserves it anyway, but emitting start_pose.jaw keeps the
+            # contract clean.
+            jaw=self.start_pose.jaw,
+            brow=clamp_dxl(
+                "brow",
+                self.start_pose.brow
+                + seg.amps["brow"]
+                * math.sin(math.tau * seg.freqs["brow"] * t_s + seg.phases["brow"]),
+            ),
+        )
+
+    def _roll_rw_segment(self, cfg: RandomWalkConfig) -> _RwSegment:
+        start_ms = (
+            self._rw_segments[-1].start_ms + self._rw_segments[-1].dur_ms
+            if self._rw_segments
+            else 0
+        )
+        speed = max(0.01, cfg.speed)
+        if self._rng.random() < cfg.pause_chance:
+            dur_s = self._rng.uniform(*_RW_PAUSE_S) / speed
+            return _RwSegment(start_ms=start_ms, dur_ms=int(dur_s * 1000), kind="pause")
+
+        dur_s = self._rng.uniform(*_RW_SEG_S) / speed
+        amps: dict[str, float] = {}
+        freqs: dict[str, float] = {}
+        phases: dict[str, float] = {}
+        for servo, pct in _RW_AMP_PCT.items():
+            amps[servo] = _servo_range(servo) * pct * cfg.intensity * self._rng.uniform(0.5, 1.0)
+            freqs[servo] = self._rng.uniform(*_RW_FREQ_HZ[servo])
+            phases[servo] = self._rng.uniform(0.0, math.tau)
+        return _RwSegment(
+            start_ms=start_ms,
+            dur_ms=int(dur_s * 1000),
+            kind="move",
+            amps=amps,
+            freqs=freqs,
+            phases=phases,
+        )
 
     def _shuffle_pose(self, elapsed: int) -> AnimatorPose:
         """Lazily extend a randomised step plan until it covers `elapsed`."""

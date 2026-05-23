@@ -78,13 +78,20 @@ export type ExpressionStepDTO = {
   easing?: string;
 };
 
+export type RandomWalkConfig = {
+  intensity: number;
+  speed: number;
+  pause_chance: number;
+};
+
 export type ExpressionDTO = {
   name: string;
-  playback: "once" | "loop" | "shuffle";
+  playback: "once" | "loop" | "shuffle" | "random_walk";
   default_duration_ms: number;
   default_delay_ms: number;
   default_easing: string;
   steps: ExpressionStepDTO[];
+  random_walk_config: RandomWalkConfig | null;
   emotion: string | null;
   description: string | null;
 };
