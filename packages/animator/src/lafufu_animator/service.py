@@ -231,6 +231,12 @@ class AnimatorService(BaseService):
         if isinstance(v, str):
             v = v.lower() in ("true", "1", "yes", "on")
         self.idle_animation_enabled = bool(v)
+        # If idle is currently the active player and we just turned it off,
+        # stop it so Lafufu freezes at the current pose instead of finishing
+        # the loop. Non-idle expressions are unaffected.
+        if not self.idle_animation_enabled and self._active_expression_name == "idle":
+            self._active_player = None
+            self._active_expression_name = None
         self.log.info("idle_animation.set enabled=%s", self.idle_animation_enabled)
 
     async def _publish_state(self, state_name: str, detail: str | None = None) -> None:
@@ -404,12 +410,14 @@ class AnimatorService(BaseService):
                     now_ms = int(now_mono * 1000)
                     operator_active = (now_mono - self._last_intent_mono) <= INTENT_QUIET_S
 
-                    # Idle fallback: only when nothing is playing AND no recent
-                    # operator activity. Otherwise the slider-driven target
-                    # would be overridden on the next tick.
+                    # Idle fallback: only when nothing is playing, idle anim
+                    # is enabled, AND no recent operator activity. Otherwise
+                    # the slider-driven target would be overridden on the
+                    # next tick.
                     if (
                         self._active_player is None
                         and self._idle_payload is not None
+                        and self.idle_animation_enabled
                         and not operator_active
                     ):
                         self._active_player = KeyframePlayer(

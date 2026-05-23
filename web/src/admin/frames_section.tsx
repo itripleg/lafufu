@@ -36,6 +36,33 @@ export const FramesSection: Component<{ nats: NatsWs }> = (_props) => {
   // Tracks a not-yet-saved image choice made via the picker.
   const [pendingImage, setPendingImage] = createSignal<string | null | undefined>(undefined);
 
+  // Idle-animation toggle. Reads/writes the animator.idle_animation.enabled
+  // setting so the operator can pin Lafufu in a pose without the idle loop
+  // taking over after the 1.5s intent-quiet window.
+  const [idleEnabled, setIdleEnabled] = createSignal(true);
+  (async () => {
+    try {
+      const items = (await api.listSettings()) as Array<{ key: string; value: string }>;
+      const row = items.find((r) => r.key === "animator.idle_animation.enabled");
+      if (row) setIdleEnabled(row.value === "true");
+    } catch {
+      /* settings load failure — leave default */
+    }
+  })();
+  const toggleIdle = async () => {
+    const next = !idleEnabled();
+    setIdleEnabled(next);
+    try {
+      await api.patchSetting("animator.idle_animation.enabled", {
+        value: next,
+        value_type: "bool",
+      });
+    } catch (e: unknown) {
+      setIdleEnabled(!next);  // revert on failure
+      toast.err("toggle failed", (e as Error)?.message ?? String(e));
+    }
+  };
+
   const selected = createMemo<FrameDTO | null>(
     () => frames()?.find((f) => f.name === selectedName()) ?? null,
   );
@@ -155,8 +182,19 @@ export const FramesSection: Component<{ nats: NatsWs }> = (_props) => {
 
   return (
     <div class="border border-stone-700 rounded-lg p-4 bg-stone-900/40">
-      <div class="flex items-baseline justify-between mb-3">
+      <div class="flex items-baseline justify-between mb-3 gap-3">
         <h2 class="text-lg font-semibold">Frames</h2>
+        <label class="flex items-center gap-2 text-sm cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={idleEnabled()}
+            onChange={toggleIdle}
+            class="accent-amber-500"
+          />
+          <span class={idleEnabled() ? "text-stone-300" : "text-stone-500"}>
+            idle animation
+          </span>
+        </label>
         <button
           type="button"
           onClick={onSnapshot}
