@@ -130,3 +130,24 @@ def delete_frame(name: str, req: Request):
             s.delete(f)
             s.commit()
     return None
+
+
+@router.post("/frames/{name}/snapshot")
+def snapshot_frame(name: str, req: Request):
+    pose = getattr(req.app.state, "last_pose", None)
+    if not pose:
+        raise HTTPException(
+            409,
+            detail={"error_code": "no_live_pose", "message": "no live pose available yet"},
+        )
+    with Session(req.app.state.engine) as s:
+        f = s.get(Frame, name)
+        if f is None:
+            f = Frame(name=name, **pose)
+            s.add(f)
+        else:
+            for k in ("head_lr", "head_ud", "eye", "jaw", "brow"):
+                setattr(f, k, pose[k])
+            s.add(f)
+        s.commit()
+    return {"ok": True, "name": name}

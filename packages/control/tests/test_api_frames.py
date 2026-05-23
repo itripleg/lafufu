@@ -63,3 +63,28 @@ def test_delete_frame(client):
     # And list is empty.
     r3 = client.get("/api/animator/frames")
     assert r3.json()["items"] == []
+
+
+def test_snapshot_current_pose(client):
+    """POST /frames/{name}/snapshot upserts using app.state.last_pose."""
+    # Tests can poke app.state directly via the underlying app.
+    client.app.state.last_pose = _pose(head_lr=2150)
+
+    r = client.post("/api/animator/frames/from_snap/snapshot")
+    assert r.status_code == 200
+    assert r.json()["name"] == "from_snap"
+
+    # The frame now exists with the snapshot pose.
+    r2 = client.get("/api/animator/frames")
+    items = {f["name"]: f for f in r2.json()["items"]}
+    assert "from_snap" in items
+    assert items["from_snap"]["head_lr"] == 2150
+
+
+def test_snapshot_409_when_no_pose(client):
+    """Without a live pose set, snapshot 409s instead of writing garbage."""
+    # ensure attribute is unset
+    if hasattr(client.app.state, "last_pose"):
+        delattr(client.app.state, "last_pose")
+    r = client.post("/api/animator/frames/empty/snapshot")
+    assert r.status_code == 409
