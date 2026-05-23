@@ -80,14 +80,11 @@ export const FramesSection: Component<{ nats: NatsWs }> = (_props) => {
       setPose(p);
       setPickerOpen(false);
       setPendingImage(undefined);
-      // Fire preview for all 5 servos in parallel — the animator's _on_preview
-      // handler clears the active player and applies each servo's target. The
-      // 1.5s intent-quiet window then keeps idle from immediately overriding.
-      Promise.all(
-        (Object.keys(p) as Array<keyof Pose>).map((k) =>
-          api.animatorPreview(k, p[k]).catch(() => undefined),
-        ),
-      );
+      // Atomic full-pose set — uses /animator/set_pose so all 5 servos move
+      // in one shot. (5 parallel /preview calls race; only the last servo
+      // would stick because each /preview only updates one channel from the
+      // bus's current pose at the moment it's processed.)
+      api.animatorSetPose(p).catch(() => undefined);
     }
   });
 

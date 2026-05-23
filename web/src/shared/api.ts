@@ -113,6 +113,8 @@ export const api = {
   putSetting: (key: string, body: { value: unknown; value_type: string }) => req("PUT", `/settings/${key}`, body),
   restartService: (name: string) => req("POST", `/system/services/${name}/restart`),
   animatorPreview: (name: string, position: number) => req("POST", "/animator/preview", { name, position }),
+  animatorSetPose: (pose: { head_lr: number; head_ud: number; eye: number; jaw: number; brow: number }) =>
+    req("POST", "/animator/set_pose", pose),
   animatorExpression: (name: string, intensity = 1.0) => req("POST", "/animator/expression", { name, intensity }),
   animatorGesture: (name: "nod_yes" | "nod_no" | "look_around") =>
     req("POST", "/animator/gesture", { name }),

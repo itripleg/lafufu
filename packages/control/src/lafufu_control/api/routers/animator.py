@@ -44,6 +44,28 @@ def preview(body: PreviewBody, req: Request):
     return {"ok": True}
 
 
+class SetPoseBody(BaseModel):
+    """Atomic full-pose set — replaces a fan-out of 5 preview calls. Each
+    /preview only updates one servo from the bus's current pose, so 5 parallel
+    previews race: only the last servo to land sticks. Use this when the
+    caller already has a complete pose (e.g. clicking a frame in the gallery)."""
+
+    head_lr: int
+    head_ud: int
+    eye: int
+    jaw: int
+    brow: int
+
+
+@router.post("/set_pose", status_code=202)
+def set_pose(body: SetPoseBody, req: Request):
+    req.app.state.nats_publish(
+        "animator.intent.set_pose",
+        {"pose": body.model_dump()},
+    )
+    return {"ok": True}
+
+
 @router.post("/expression", status_code=202)
 def expression(body: LegacyExpressionBody, req: Request):
     """Back-compat: legacy callers (the /pet page) POST {name, intensity}.
