@@ -102,38 +102,47 @@ mirrors the existing `Behavior.actions_json` pattern.
 
 ## Image library
 
-The printer's image directory hosts *two* buckets, both backed by the same
-upload code:
+A neutral top-level image library — neither feature owns the directory:
 
 ```
-data/printer/
-  uploads/      ← letterhead uploads (existing, unchanged on disk)
-  sprites/      ← new: animation frame images
-assets/printer/
-  letterheads/  ← built-in letterheads (existing)
-  sprites/      ← optional: built-in starter sprites
+data/images/
+  letterheads/  ← letterhead uploads
+  sprites/      ← animation frame images
+assets/images/
+  letterheads/  ← built-in letterheads
+  sprites/      ← optional built-in starter sprites
 ```
 
-Both buckets share the upload backend (atomic write, name sanitisation, type
-validation) but each is browsed through its own gallery in the UI. An image
-is referenced library-wide as `{kind}/{name}`:
-
-| `kind` | meaning |
-|---|---|
-| `letterhead` | uploaded letterhead under `data/printer/uploads/` |
-| `sprite`     | uploaded sprite under `data/printer/sprites/` |
-| `builtin-letterhead` | shipped under `assets/printer/letterheads/` |
-| `builtin-sprite`     | shipped under `assets/printer/sprites/` (if any) |
+Both buckets share the upload backend (atomic write, name sanitisation,
+type validation) but each is browsed through its own gallery in the UI.
+Images are referenced as `{bucket}/{kind}/{name}` — for example
+`sprites/upload/wink.png` or `letterheads/default/card.png` — with
+`bucket` ∈ {`letterheads`, `sprites`} and `kind` ∈ {`default`, `upload`}.
 
 Cross-feature reuse:
-- **Printer compose** still resolves only `letterhead` / `builtin-letterhead`.
-- **Printer print-file** can target any `kind` — a sprite is printable.
-- **Animation frames** typically reference a `sprite`, but can pick a
-  `letterhead` if the operator wants.
+- **Printer compose** still resolves only `letterheads/*` (sprites aren't
+  card-shaped).
+- **Printer print-file** can target any `bucket` — a sprite is printable.
+- **Animation frames** typically reference `sprites/*`, but can pick a
+  `letterheads/*` if the operator wants.
 
 Shared upload helpers (`_atomic_write`, `_sanitize_upload_name`, `_safe_name`,
 `_media_type`) lift out of the printer router into
-`lafufu_control.api.upload_utils` and serve both endpoints.
+`lafufu_control.api.image_library` and back both feature endpoints.
+
+### Migration
+
+The existing letterhead data needs to relocate as part of phase 1:
+
+- **Repo (one-time):** `git mv assets/printer/letterheads/* assets/images/letterheads/`.
+- **Pi (idempotent runtime migration):** on first start with the new code,
+  the control service moves `data/printer/uploads/*` → `data/images/letterheads/*`
+  and `data/printer/letterhead.png` → `data/images/active_letterhead.png` if
+  the new paths don't exist. The migration is logged once and skipped on
+  subsequent starts.
+- **Active-letterhead pointer file** (`data/printer/active_letterhead`)
+  migrates the same way and the pointer's `{kind}/{name}` value updates to
+  the new bucket-qualified form (`letterheads/default/x.png` etc.).
 
 ## Backend
 
@@ -152,13 +161,17 @@ Shared upload helpers (`_atomic_write`, `_sanitize_upload_name`, `_safe_name`,
 | `DELETE /animator/expressions/{name}` | delete |
 | `POST /animator/expressions/{name}/play` | resolve + publish `animator.intent.play_expression` |
 | `POST /animator/expressions/{name}/activate` | bind it to its `emotion` (clears any other binding for that emotion) |
-| `GET /printer/sprites` | list sprites (`builtin-sprite` defaults + `sprite` uploads), same shape as `/printer/letterheads` |
-| `POST /printer/sprite` | multipart upload to `data/printer/sprites/` |
-| `GET /printer/sprites/{kind}/{name}` | serve a sprite file |
-| `DELETE /printer/sprites/upload/{name}` | delete an uploaded sprite |
+| `GET /images/{bucket}` | list items in a bucket (`letterheads` or `sprites`); both `default` and `upload` kinds returned |
+| `POST /images/{bucket}/upload` | multipart upload into that bucket |
+| `GET /images/{bucket}/{kind}/{name}` | serve a specific file |
+| `DELETE /images/{bucket}/upload/{name}` | delete an upload (defaults can't be deleted) |
 
-Sprite endpoints live under `/printer/` — they share the printer's image
-backend and let a sprite be printed by the same `print_file` intent.
+The image library endpoints are bucket-agnostic — sprites and letterheads
+use the same shape, just a different `bucket`. The existing
+`/printer/letterheads/...` endpoints keep working as back-compat shims
+(they read from the new `data/images/letterheads/` on disk), so the
+printer card UI doesn't have to change in this build. Migrating the
+printer card to `/images/letterheads/...` is a small follow-up cleanup.
 
 The current `POST /animator/expression` (proxies the play_expression intent
 by name) is kept for backward compatibility — internally it resolves to the
@@ -255,8 +268,8 @@ two stacked sections.
   transitions is an *expression playback* concern, not a slider concern.
   Implementation uses Tailwind utilities (now in the project) rather than
   inline styles.
-- Sprite picker opens a small inline picker drawn from `/printer/sprites`
-  (the shared image-library backend), with a tab to also pick a letterhead.
+- Sprite picker opens a small inline picker drawn from `/images/sprites`,
+  with a tab to also pick a letterhead from `/images/letterheads`.
 
 ### Expressions section
 ```
@@ -277,8 +290,11 @@ original).
 
 ## Build order — phased so each commit is reviewable
 
-1. **Image library + backend foundation** — extract shared upload helpers
-   into `upload_utils`; add `/printer/sprites` endpoints; add `Frame` +
+1. **Image library + backend foundation** — extract upload helpers into
+   `image_library`; add the generic `/images/{bucket}/…` endpoints; run the
+   one-time repo move (`assets/printer/letterheads/* → assets/images/…`) and
+   wire the Pi-runtime migration that relocates existing letterhead data;
+   keep `/printer/letterheads/…` as a back-compat shim. Then add `Frame` +
    `Expression` DB tables and `/animator/frames` + `/animator/expressions`
    CRUD; pose-snapshot endpoint.
 2. **Animator keyframe player** — new `_keyframe_player_loop`, updated
