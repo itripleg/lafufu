@@ -300,12 +300,13 @@ class AgentService(BaseService):
         self._rebuild_tts(reason="voice_model")
 
     def _rebuild_tts(self, reason: str) -> None:
-        """Swap the Piper voice. In-flight pipelines keep the old voice for the
-        current utterance (they hold a closure over self._piper); the next
-        VoicePipeline construction picks up the new instance.
-
-        If the new voice has a different sample rate, also rebuild the speaker
-        player via player_factory so PCM playback stays in sync.
+        """Swap the Piper voice. Updates self._piper, optionally rebuilds the
+        speaker player when the sample rate changes, and propagates both into
+        the persistent self._pipeline so the mic loop picks up the new voice
+        on its next cycle. Per-call pipelines (constructed inside
+        _on_text_message / _on_speak_text) capture the live self._piper at
+        build time and don't need extra wiring. Mid-utterance audio finishes
+        on whichever Piper iterator is already in flight.
         """
         if self._piper_factory is None:
             self.log.warning("tts.rebuild.skipped reason=%s factory_missing", reason)
@@ -328,6 +329,13 @@ class AgentService(BaseService):
         if self._player_factory is not None and new_rate is not None and new_rate != old_rate:
             self._speaker_play = self._player_factory(new_rate)
             self.log.info("tts.player.rebuilt sample_rate=%s prev_rate=%s", new_rate, old_rate)
+        # Propagate the swap to the persistent pipeline so the mic loop picks up
+        # the new voice. Per-call pipelines (built inside _on_text_message /
+        # _on_speak_text) already capture self._piper at construction time and
+        # don't need this. Mirrors _rebuild_stt's self._mic.set_stt(self.stt).
+        if self._pipeline is not None:
+            self._pipeline.piper = self._piper
+            self._pipeline.speaker_play = self._speaker_play
         self.log.info(
             "tts.rebuilt reason=%s voice=%s prev=%s sample_rate=%s",
             reason,

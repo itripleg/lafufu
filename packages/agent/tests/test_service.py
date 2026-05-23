@@ -127,6 +127,11 @@ async def test_voice_model_change_swaps_piper_instance(nats_server):
     assert svc._piper is not initial
     assert svc._piper.voice_name == "lafufu_voice_kristian"
     assert svc._voice_model == "lafufu_voice_kristian"
+    # The persistent pipeline must also pick up the new voice — otherwise the
+    # mic loop (which uses self._pipeline.run_one_cycle) keeps speaking with
+    # the old Piper instance even though self._piper has been swapped.
+    assert svc._pipeline is not None
+    assert svc._pipeline.piper is svc._piper
 
     svc._shutdown.set()
     await asyncio.wait_for(task, timeout=3)
