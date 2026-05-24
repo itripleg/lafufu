@@ -338,8 +338,10 @@ class AnimatorService(BaseService):
         # plays whenever no other expression is active.
         if msg.name == "idle":
             self._idle_payload = msg
-        # Instantiate a fresh player from the resolved payload.
-        start = self._current_pose
+        # Idle wandering should orbit the canonical idle pose, not wherever
+        # Lafufu happens to be right now. Other expressions still interpolate
+        # from current_pose so the transition stays smooth.
+        start = self._effective_idle_pose() if msg.playback == "random_walk" else self._current_pose
         self._active_player = KeyframePlayer(
             payload=msg,
             start_pose=start,
@@ -414,6 +416,11 @@ class AnimatorService(BaseService):
                     # is enabled, AND no recent operator activity. Otherwise
                     # the slider-driven target would be overridden on the
                     # next tick.
+                    #
+                    # Center idle wandering on the canonical idle pose, NOT
+                    # _current_pose — otherwise idle drifts around wherever
+                    # the operator last clicked (a snapshot frame, a slider
+                    # tweak, etc.), which looks broken.
                     if (
                         self._active_player is None
                         and self._idle_payload is not None
@@ -422,7 +429,7 @@ class AnimatorService(BaseService):
                     ):
                         self._active_player = KeyframePlayer(
                             payload=self._idle_payload,
-                            start_pose=self._current_pose,
+                            start_pose=self._effective_idle_pose(),
                             now_ms=now_ms,
                         )
                         self._active_expression_name = "idle"
