@@ -284,6 +284,14 @@ class AgentService(BaseService):
             self._on_config_wakeword_model,
         )
 
+        # Wake-word threshold — live-tune detection sensitivity without restart.
+        await nats_helper.subscribe_model(
+            self.nats,
+            f"{topics.CONFIG_CHANGED}.agent.wakeword.threshold",
+            schemas.ConfigChanged,
+            self._on_config_wakeword_threshold,
+        )
+
         # Trigger-mode loop config — every field is live-tunable so the
         # admin UI can change wording/rounds/print behavior without restart.
         for field, handler in (
@@ -530,6 +538,22 @@ class AgentService(BaseService):
         if currently_attached and hasattr(self._mic, "wake_detector"):
             self._mic.wake_detector = new_detector
         self.log.info("agent.wakeword.model.set value=%s", new_name)
+
+    async def _on_config_wakeword_threshold(self, subject: str, msg: schemas.ConfigChanged) -> None:
+        try:
+            v = float(msg.value)
+        except (TypeError, ValueError):
+            self.log.warning("agent.wakeword.threshold.bad_value value=%r", msg.value)
+            return
+        clamped = max(0.0, min(1.0, v))
+        if self._wake_detector is None:
+            self.log.info(
+                "agent.wakeword.threshold.set value=%.3f (deferred — no detector)",
+                clamped,
+            )
+            return
+        self._wake_detector.threshold = clamped
+        self.log.info("agent.wakeword.threshold.set value=%.3f", clamped)
 
     async def _on_config_wakeword_enabled(self, subject: str, msg: schemas.ConfigChanged) -> None:
         v = msg.value

@@ -898,3 +898,57 @@ async def test_wakeword_model_swap_replaces_detector(nats_server):
     await nc.drain()
     svc._shutdown.set()
     await asyncio.wait_for(task, timeout=3)
+
+
+async def test_wakeword_threshold_setting_mutates_detector(nats_server):
+    class _Detector:
+        threshold = 0.5
+
+    class _Mic:
+        wake_detector = None
+
+        def listen_once(self):
+            return ""
+
+    det = _Detector()
+    mic = _Mic()
+    mic.wake_detector = det
+
+    svc = AgentService(
+        mic=mic,
+        ollama=FakeOllama(),
+        piper=FakePiper(),
+        nats_url=nats_server,
+        wake_detector=det,
+    )
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.5)
+
+    nc = await nats.connect(nats_server)
+    await publish_model(
+        nc,
+        f"{topics.CONFIG_CHANGED}.agent.wakeword.threshold",
+        schemas.ConfigChanged(key="agent.wakeword.threshold", value="0.3", source="test"),
+    )
+    await asyncio.sleep(0.2)
+    assert det.threshold == 0.3
+
+    # Out-of-range clamps
+    await publish_model(
+        nc,
+        f"{topics.CONFIG_CHANGED}.agent.wakeword.threshold",
+        schemas.ConfigChanged(key="agent.wakeword.threshold", value="1.5", source="test"),
+    )
+    await asyncio.sleep(0.2)
+    assert det.threshold == 1.0
+    await publish_model(
+        nc,
+        f"{topics.CONFIG_CHANGED}.agent.wakeword.threshold",
+        schemas.ConfigChanged(key="agent.wakeword.threshold", value="-0.5", source="test"),
+    )
+    await asyncio.sleep(0.2)
+    assert det.threshold == 0.0
+
+    await nc.drain()
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)
