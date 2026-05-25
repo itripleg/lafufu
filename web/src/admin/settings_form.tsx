@@ -505,15 +505,14 @@ export const SettingsForm: Component<Props> = (props) => {
       }
     >
       {/* Sticky header — tab bar + search input stay visible while scrolling
-          through the settings list. The solid background covers content that
-          would otherwise bleed through behind the stuck element. */}
+          through the settings list. The individual chrome on the tab bar and
+          search input already provides a solid surface, so no outer background
+          is needed — that would just produce a floating bar effect mid-panel. */}
       <div
         style={{
           position: "sticky",
           top: 0,
           "z-index": 1,
-          background: "var(--c-shell, #1a1410)",
-          "padding-bottom": "10px",
           "margin-bottom": "8px",
         }}
       >
@@ -756,7 +755,9 @@ export const SettingsForm: Component<Props> = (props) => {
               "font-style": "italic",
             }}
           >
-            no settings matching "{filter()}"
+            {filter().trim()
+              ? `no settings matching "${filter()}"`
+              : "no settings in this tab"}
           </div>
         </Show>
       </div>
