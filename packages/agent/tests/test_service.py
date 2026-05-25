@@ -740,3 +740,57 @@ async def test_interaction_mode_setting_swaps_field(nats_server):
 
     svc._shutdown.set()
     await asyncio.wait_for(task, timeout=3)
+
+
+async def test_trigger_subscribers_mutate_config(nats_server):
+    """Every agent.trigger.* setting should live-swap the corresponding field
+    of svc._trigger via dataclasses.replace. Bad values get rejected, not
+    crash the subscriber."""
+    from lafufu_agent.trigger import TriggerConfig
+
+    svc = AgentService(
+        mic=FakeMicForService([]),
+        ollama=FakeOllama(),
+        piper=FakePiper(),
+        nats_url=nats_server,
+        trigger_config=TriggerConfig.from_env({}),
+    )
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.5)
+
+    nc = await nats.connect(nats_server)
+
+    async def push(key: str, value: str) -> None:
+        await publish_model(
+            nc,
+            f"{topics.CONFIG_CHANGED}.{key}",
+            schemas.ConfigChanged(key=key, value=value, source="test"),
+        )
+        await asyncio.sleep(0.15)
+
+    await push("agent.trigger.phrase", "Speak your truth.")
+    assert svc._trigger.phrase == "Speak your truth."
+
+    await push("agent.trigger.emotion", "happy")
+    assert svc._trigger.emotion == "happy"
+
+    await push("agent.trigger.rounds", "3")
+    assert svc._trigger.rounds == 3
+
+    await push("agent.trigger.print_mode", "auto")
+    assert svc._trigger.print_mode == "auto"
+
+    await push("agent.trigger.print_prompt", "Want it on paper?")
+    assert svc._trigger.print_prompt == "Want it on paper?"
+
+    # Invalid values are rejected (logged + ignored) — config stays at last good value
+    await push("agent.trigger.rounds", "0")
+    assert svc._trigger.rounds == 3
+    await push("agent.trigger.emotion", "drunk")
+    assert svc._trigger.emotion == "happy"
+    await push("agent.trigger.print_mode", "always")
+    assert svc._trigger.print_mode == "auto"
+
+    await nc.drain()
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)

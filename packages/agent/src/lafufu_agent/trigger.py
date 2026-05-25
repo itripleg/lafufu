@@ -64,6 +64,30 @@ _NEGATIONS = frozenset(
     ]
 )
 
+
+def validate_emotion(value: str) -> str:
+    """Raise ValueError if value isn't a known emotion. Returns the normalised value."""
+    norm = value.strip().lower()
+    if norm not in _VALID_EMOTIONS:
+        raise ValueError(f"emotion={value!r} is not one of {sorted(_VALID_EMOTIONS)}")
+    return norm
+
+
+def validate_print_mode(value: str) -> PrintMode:
+    norm = value.strip().lower()
+    if norm not in _PRINT_MODES:
+        raise ValueError(f"print_mode={value!r} is not one of {list(_PRINT_MODES)}")
+    return norm  # type: ignore[return-value]
+
+
+def validate_rounds(value) -> int:
+    """Coerce + validate trigger rounds. Accepts int or any int-coercible str."""
+    n = int(value)
+    if n < 1:
+        raise ValueError(f"rounds={value!r} must be >= 1")
+    return n
+
+
 # Strip leading/trailing punctuation that's commonly hallucinated by Whisper.
 _TRIM_RE = re.compile(r"^[^\w]+|[^\w]+$")
 
@@ -114,28 +138,32 @@ class TriggerConfig:
     def from_env(cls, env: Mapping[str, str]) -> TriggerConfig:
         rounds_raw = env.get("LAFUFU_TRIGGER_ROUNDS", "1")
         try:
-            rounds = int(rounds_raw)
+            rounds = validate_rounds(rounds_raw)
         except ValueError as e:
+            if "must be >= 1" in str(e):
+                raise ValueError(f"LAFUFU_TRIGGER_ROUNDS={rounds_raw!r} must be >= 1") from e
             raise ValueError(f"LAFUFU_TRIGGER_ROUNDS={rounds_raw!r} is not an integer") from e
-        if rounds < 1:
-            raise ValueError(f"LAFUFU_TRIGGER_ROUNDS={rounds_raw!r} must be >= 1")
 
-        print_mode_raw = env.get("LAFUFU_TRIGGER_PRINT", "ask").strip().lower()
-        if print_mode_raw not in _PRINT_MODES:
+        print_mode_raw = env.get("LAFUFU_TRIGGER_PRINT", "ask")
+        try:
+            print_mode = validate_print_mode(print_mode_raw)
+        except ValueError as e:
             raise ValueError(
-                f"LAFUFU_TRIGGER_PRINT={print_mode_raw!r} is not one of {list(_PRINT_MODES)}"
-            )
+                f"LAFUFU_TRIGGER_PRINT={print_mode_raw.strip().lower()!r} is not one of {list(_PRINT_MODES)}"
+            ) from e
 
-        emotion_raw = env.get("LAFUFU_TRIGGER_EMOTION", "neutral").strip().lower()
-        if emotion_raw not in _VALID_EMOTIONS:
+        emotion_raw = env.get("LAFUFU_TRIGGER_EMOTION", "neutral")
+        try:
+            emotion = validate_emotion(emotion_raw)
+        except ValueError as e:
             raise ValueError(
-                f"LAFUFU_TRIGGER_EMOTION={emotion_raw!r} is not one of {sorted(_VALID_EMOTIONS)}"
-            )
+                f"LAFUFU_TRIGGER_EMOTION={emotion_raw.strip().lower()!r} is not one of {sorted(_VALID_EMOTIONS)}"
+            ) from e
 
         return cls(
             phrase=env.get("LAFUFU_TRIGGER_PHRASE", _DEFAULT_PHRASE),
-            emotion=emotion_raw,
+            emotion=emotion,
             rounds=rounds,
-            print_mode=print_mode_raw,  # type: ignore[arg-type]
+            print_mode=print_mode,
             print_prompt=env.get("LAFUFU_TRIGGER_PRINT_PROMPT", _DEFAULT_PRINT_PROMPT),
         )

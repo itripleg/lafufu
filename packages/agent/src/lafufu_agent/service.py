@@ -255,6 +255,22 @@ class AgentService(BaseService):
             self._on_config_interaction_mode,
         )
 
+        # Trigger-mode loop config — every field is live-tunable so the
+        # admin UI can change wording/rounds/print behavior without restart.
+        for field, handler in (
+            ("agent.trigger.phrase", self._on_config_trigger_phrase),
+            ("agent.trigger.emotion", self._on_config_trigger_emotion),
+            ("agent.trigger.rounds", self._on_config_trigger_rounds),
+            ("agent.trigger.print_mode", self._on_config_trigger_print_mode),
+            ("agent.trigger.print_prompt", self._on_config_trigger_print_prompt),
+        ):
+            await nats_helper.subscribe_model(
+                self.nats,
+                f"{topics.CONFIG_CHANGED}.{field}",
+                schemas.ConfigChanged,
+                handler,
+            )
+
         # Sync to DB on startup so all the *.changed.* subscribers above receive
         # the current admin-set values immediately, instead of waiting for the
         # operator to toggle each one.
@@ -454,6 +470,57 @@ class AgentService(BaseService):
                 self._interaction_mode.value,
             )
             self._interaction_mode = new_mode
+
+    async def _on_config_trigger_phrase(self, subject, msg: schemas.ConfigChanged) -> None:
+        import dataclasses
+
+        self._trigger = dataclasses.replace(self._trigger, phrase=str(msg.value))
+        self.log.info("agent.trigger.phrase.set len=%d", len(self._trigger.phrase))
+
+    async def _on_config_trigger_emotion(self, subject, msg: schemas.ConfigChanged) -> None:
+        import dataclasses
+
+        from .trigger import validate_emotion
+
+        try:
+            value = validate_emotion(str(msg.value))
+        except ValueError as e:
+            self.log.warning("agent.trigger.emotion.bad_value %s", e)
+            return
+        self._trigger = dataclasses.replace(self._trigger, emotion=value)
+        self.log.info("agent.trigger.emotion.set value=%s", value)
+
+    async def _on_config_trigger_rounds(self, subject, msg: schemas.ConfigChanged) -> None:
+        import dataclasses
+
+        from .trigger import validate_rounds
+
+        try:
+            value = validate_rounds(msg.value)
+        except (TypeError, ValueError) as e:
+            self.log.warning("agent.trigger.rounds.bad_value %s", e)
+            return
+        self._trigger = dataclasses.replace(self._trigger, rounds=value)
+        self.log.info("agent.trigger.rounds.set value=%d", value)
+
+    async def _on_config_trigger_print_mode(self, subject, msg: schemas.ConfigChanged) -> None:
+        import dataclasses
+
+        from .trigger import validate_print_mode
+
+        try:
+            value = validate_print_mode(str(msg.value))
+        except ValueError as e:
+            self.log.warning("agent.trigger.print_mode.bad_value %s", e)
+            return
+        self._trigger = dataclasses.replace(self._trigger, print_mode=value)
+        self.log.info("agent.trigger.print_mode.set value=%s", value)
+
+    async def _on_config_trigger_print_prompt(self, subject, msg: schemas.ConfigChanged) -> None:
+        import dataclasses
+
+        self._trigger = dataclasses.replace(self._trigger, print_prompt=str(msg.value))
+        self.log.info("agent.trigger.print_prompt.set len=%d", len(self._trigger.print_prompt))
 
     async def _on_config_auto_listen(self, subject: str, msg: schemas.ConfigChanged) -> None:
         v = msg.value
