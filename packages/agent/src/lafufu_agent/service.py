@@ -442,7 +442,16 @@ class AgentService(BaseService):
         if self._tts_length_scale is not None:
             self._piper.length_scale = self._tts_length_scale
         if self._player_factory is not None and new_rate is not None and new_rate != old_rate:
+            old_player = self._speaker_play
             self._speaker_play = self._player_factory(new_rate)
+            # _PyAudioPlayer (Windows/macOS dev path) holds an open output
+            # stream + pyaudio.PyAudio() instance. _AplayPlayer and
+            # _NoOpPlayer have no close() — hasattr guards both.
+            if hasattr(old_player, "close"):
+                try:
+                    old_player.close()
+                except Exception as e:
+                    self.log.warning("speaker_play.close.failed_during_swap error=%s", e)
             self.log.info("tts.player.rebuilt sample_rate=%s prev_rate=%s", new_rate, old_rate)
         # Propagate the swap to the persistent pipeline so the mic loop picks up
         # the new voice. Per-call pipelines (built inside _on_text_message /

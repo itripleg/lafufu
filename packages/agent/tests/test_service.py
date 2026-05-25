@@ -952,3 +952,64 @@ async def test_wakeword_threshold_setting_mutates_detector(nats_server):
     await nc.drain()
     svc._shutdown.set()
     await asyncio.wait_for(task, timeout=3)
+
+
+async def test_rebuild_tts_closes_old_player(nats_server):
+    """When voice swap produces a new player, the old one's close() must
+    be called so PyAudio output streams don't leak on Windows/macOS."""
+    close_calls = {"count": 0}
+
+    class _Player:
+        def __init__(self, sr):
+            self.sample_rate = sr
+
+        def play(self, chunk):
+            pass
+
+        def end(self):
+            pass
+
+        def close(self):
+            close_calls["count"] += 1
+
+    from pathlib import Path
+
+    def make_fake_piper(name: str) -> FakePiper:
+        p = FakePiper()
+        p.model_path = Path(f"/fake/{name}.onnx")
+        p.voice_name = name
+        # Different sample rate forces _rebuild_tts to construct a new player.
+        p.sample_rate = 16000 if name == "voice_b" else 22050
+        return p
+
+    initial_piper = make_fake_piper("voice_a")
+    initial_player = _Player(22050)
+
+    svc = AgentService(
+        mic=FakeMicForService([]),
+        ollama=FakeOllama(),
+        piper=initial_piper,
+        speaker_play=initial_player,
+        nats_url=nats_server,
+        piper_factory=make_fake_piper,
+        player_factory=lambda sr: _Player(sr),
+    )
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.5)
+
+    nc = await nats.connect(nats_server)
+    await publish_model(
+        nc,
+        f"{topics.CONFIG_CHANGED}.agent.voice_model",
+        schemas.ConfigChanged(key="agent.voice_model", value="voice_b", source="test"),
+    )
+    await asyncio.sleep(0.3)
+    await nc.drain()
+
+    assert close_calls["count"] == 1, (
+        f"old player should be closed exactly once on voice swap; got {close_calls['count']}"
+    )
+    assert svc._speaker_play is not initial_player
+
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)
