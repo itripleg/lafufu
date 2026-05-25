@@ -553,7 +553,9 @@ class AgentService(BaseService):
         loop = asyncio.get_running_loop()
 
         # Wake-listen: outside the lock — text intents can run during this.
-        await self._publish_state("listening")
+        # Distinct "wake_listening" state lets the admin UI label this slot as
+        # "waiting for trigger word" rather than the mid-session "listening".
+        await self._publish_state("wake_listening")
         started, _ = await loop.run_in_executor(None, self._mic.wait_for_onset)
         if not started:
             await self._publish_state("idle")

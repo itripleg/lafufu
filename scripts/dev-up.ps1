@@ -14,8 +14,14 @@ param(
     [string]$Model = "qwen2.5:1.5b"
 )
 
-$ErrorActionPreference = "Stop"
-$composeFile = Join-Path $PSScriptRoot ".." "docker-compose.dev.yml"
+# NOTE: deliberately NOT setting $ErrorActionPreference = "Stop". On Windows
+# PowerShell 5.1, native commands' stderr writes (e.g. docker pull progress)
+# are wrapped in NativeCommandError records and would terminate the script
+# under Stop. We check $LASTEXITCODE explicitly after each native call instead.
+#
+# Single-arg Join-Path so it works on Windows PowerShell 5.1 too (5.1 doesn't
+# support multiple ChildPath args; that's PS 6+).
+$composeFile = Join-Path $PSScriptRoot (Join-Path ".." "docker-compose.dev.yml")
 
 Write-Host "Bringing up dev stack (NATS + Ollama)..." -ForegroundColor Cyan
 docker compose -f $composeFile up -d
