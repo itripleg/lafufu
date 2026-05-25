@@ -480,6 +480,16 @@ export const SettingsForm: Component<Props> = (props) => {
     return out;
   });
 
+  // Hide tabs that have zero settings (currently 'other' — the bootstrap
+  // doesn't seed any rows that fall outside the agent/animator/audio/printer
+  // namespaces). If a future setting lands in 'other', the tab reappears
+  // automatically without any code change here.
+  const visibleTabs = createMemo(() => {
+    const present = new Set<Tab>();
+    for (const r of rows) present.add(categoryOf(r.key));
+    return TABS.filter((t) => present.has(t.id));
+  });
+
   const filtered = createMemo(() => {
     const q = filter().trim().toLowerCase();
     // Empty query → scope to the active tab. Non-empty → global search:
@@ -544,7 +554,7 @@ export const SettingsForm: Component<Props> = (props) => {
             "flex-wrap": "wrap",
           }}
         >
-          <For each={TABS}>
+          <For each={visibleTabs()}>
             {(t) => {
               const c = () => countsByTab()[t.id];
               const active = () => tab() === t.id;
