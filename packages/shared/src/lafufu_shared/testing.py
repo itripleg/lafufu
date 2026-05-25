@@ -121,9 +121,19 @@ class FakeOllama:
         # list of (prompt_substring, reply_text) — first match wins
         self.scripts = scripts or []
         self.calls: list[str] = []
+        # Per-call conversation history (matches order of `calls`). Empty list
+        # for calls that didn't pass any history.
+        self.history_calls: list[list[tuple[str, str]]] = []
 
-    async def chat(self, prompt: str) -> str:
+    async def chat(
+        self,
+        prompt: str,
+        history: list[tuple[str, str]] | None = None,
+    ) -> str:
         self.calls.append(prompt)
+        # Defensive copy so the caller can mutate its own list between calls
+        # without retroactively changing recorded history.
+        self.history_calls.append(list(history) if history else [])
         for needle, reply in self.scripts:
             if needle.lower() in prompt.lower():
                 return reply
