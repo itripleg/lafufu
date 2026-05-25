@@ -160,6 +160,16 @@ class VoicePipeline:
                         play_fn(audio_bytes)
                     # Adapt raw RMS → 0..1 mouth target against recent loudness.
                     mouth_target = self._lipsync_norm.update(raw_rms)
+                    # Sleep BEFORE publishing the RMS event so the jaw moves at
+                    # the wall-clock instant the audio for this chunk becomes
+                    # audible (one ALSA period ≈ chunk_dt after play_fn writes).
+                    # Publishing first would make the mouth lead the speaker by
+                    # ~chunk_dt + the ALSA period — what mirrors the monolith's
+                    # `sleep until target_t → write jaw` ordering.
+                    next_tick += chunk_dt
+                    sleep_for = next_tick - time.monotonic()
+                    if sleep_for > 0:
+                        await asyncio.sleep(sleep_for)
                     await nats_helper.publish_model(
                         self.nats,
                         topics.AGENT_TTS_RMS,
@@ -169,11 +179,6 @@ class VoicePipeline:
                             mouth_target=mouth_target,
                         ),
                     )
-                    # Sleep until the next chunk's wall-clock slot so we don't drift.
-                    next_tick += chunk_dt
-                    sleep_for = next_tick - time.monotonic()
-                    if sleep_for > 0:
-                        await asyncio.sleep(sleep_for)
             finally:
                 # Signal the producer to stop, then drain the queue so any
                 # pending put() coroutine can complete — without this, a

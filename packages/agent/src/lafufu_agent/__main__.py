@@ -344,9 +344,15 @@ class _AplayPlayer:
         self._subprocess = subprocess
         self._proc: subprocess.Popen | None = None
         self._sample_rate = int(sample_rate)
-        # Buffer ~2s, period ~0.2s, scaled to sample rate.
-        self._buffer_size = self._sample_rate * 2
-        self._period_size = self._sample_rate // 5
+        # ALSA starts playback once one PERIOD is buffered, so period_size sets
+        # first-audible-sample latency. 40 ms matches Piper's chunk cadence so
+        # the first chunk goes audible right when the pipeline ticks to the
+        # next jaw update — keeps mouth + audio in sync. (200 ms period made
+        # the mouth lead audio by ~200 ms.) Buffer stays at 1 s for underrun
+        # safety; the asyncio queue (8 chunks ≈ 320 ms) and aplay's stdin pipe
+        # (~1.4 s kernel buffer) add further margin.
+        self._buffer_size = self._sample_rate
+        self._period_size = self._sample_rate * 40 // 1000
 
     def play(self, chunk: bytes) -> None:
         if not chunk:
