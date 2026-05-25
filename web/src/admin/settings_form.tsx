@@ -375,8 +375,19 @@ export const SettingsForm: Component<Props> = (props) => {
       // virtual keyboard on mobile. Validation happens at commit (parseValue).
       const inputMode = row.value_type === "float" ? "decimal" : "numeric";
       if (hint) {
+        // Compact bound labels flanking the slider — operators can see
+        // the legal range at a glance (matches the hardware clamp for servo
+        // defaults, the API contract for thresholds, etc.).
+        const boundStyle = {
+          "font-size": "10px",
+          color: "var(--c-stone)",
+          "min-width": "32px",
+          "text-align": "center" as const,
+          "font-variant-numeric": "tabular-nums",
+        };
         return (
-          <div style={{ flex: 1, display: "flex", gap: "10px", "align-items": "center" }}>
+          <div style={{ flex: 1, display: "flex", gap: "8px", "align-items": "center" }}>
+            <span class="f-mono" style={boundStyle}>{hint.min}</span>
             <input
               type="range" class="slider"
               min={hint.min} max={hint.max} step={hint.step ?? step}
@@ -384,6 +395,7 @@ export const SettingsForm: Component<Props> = (props) => {
               style={{ flex: 1 }}
               onInput={(e) => update(row.key, e.currentTarget.value)}
             />
+            <span class="f-mono" style={boundStyle}>{hint.max}</span>
             <input
               type="text"
               inputMode={inputMode}
