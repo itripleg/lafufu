@@ -15,6 +15,19 @@ _DEFAULT_AVOID = ("soundbar", "monitor of", "output", "playback")
 _pa_singleton: "pyaudio.PyAudio | None" = None
 _selector_logged: bool = False
 
+# Operator-set mic device from the DB snapshot (agent.input_device). Updated
+# at runtime by AgentService when config.changed.agent.input_device fires.
+# The literal "auto" means "fall through to the existing PREFER -> PyAudio
+# default chain" — same behavior as not having set anything.
+_db_input_device: str = "auto"
+
+
+def set_db_input_device(value: str) -> None:
+    """Set the DB-snapshot mic device. Called by AgentService on
+    config.changed.agent.input_device."""
+    global _db_input_device
+    _db_input_device = (value or "auto").strip() or "auto"
+
 
 def get_pyaudio() -> pyaudio.PyAudio:
     """Return a process-wide PyAudio instance, suppressing ALSA stderr on first init."""
@@ -61,15 +74,16 @@ def select_input_device(p: pyaudio.PyAudio) -> int | None:
     """Pick a pyaudio input device index. None → system default.
 
     Selection order:
-      1. ``LAFUFU_INPUT_DEVICE`` (exact index or name substring)
-      2. PREFER list match (e.g. shure / jabra on the Pi)
-      3. PyAudio's reported default input device — what the OS treats as
+      1. ``LAFUFU_INPUT_DEVICE`` env (highest — operator override)
+      2. ``agent.input_device`` DB setting (set via admin UI; "auto" skips)
+      3. PREFER list match (e.g. shure / jabra on the Pi)
+      4. PyAudio's reported default input device — what the OS treats as
          the user's chosen mic. On Linux/Pi this is usually whatever ALSA
          picks first; on Windows it's the device the user set in Sound
          Settings. (Used to be "first non-avoided", which on Windows
          routes through the Sound Mapper virtual device and produces
          silence to wake-word detectors.)
-      4. First non-AVOID device (legacy fallback if PyAudio refuses to
+      5. First non-AVOID device (legacy fallback if PyAudio refuses to
          report a default — very rare).
     """
     global _selector_logged
@@ -97,6 +111,20 @@ def select_input_device(p: pyaudio.PyAudio) -> int | None:
             for i, name in devices:
                 if needle in name.lower():
                     chosen, reason = i, f"LAFUFU_INPUT_DEVICE~={forced!r} → {name!r}"
+                    break
+
+    if chosen is None and _db_input_device != "auto":
+        db_value = _db_input_device
+        if db_value.isdigit():
+            idx = int(db_value)
+            if any(i == idx for i, _ in devices):
+                chosen = idx
+                reason = f"agent.input_device={db_value}"
+        else:
+            needle = db_value.lower()
+            for i, name in devices:
+                if needle in name.lower():
+                    chosen, reason = i, f"agent.input_device~={db_value!r} -> {name!r}"
                     break
 
     if chosen is None:

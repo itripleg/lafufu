@@ -104,3 +104,67 @@ def test_falls_back_to_first_non_avoided_when_pyaudio_has_no_default(monkeypatch
     p = _fake_pyaudio(devices, default_idx=None)  # raises OSError
 
     assert audio_capture.select_input_device(p) == 1
+
+
+def test_db_input_device_setting_picks_named_match(monkeypatch):
+    """When LAFUFU_INPUT_DEVICE env is unset and a DB snapshot has set
+    agent.input_device to a name substring, the named device wins over
+    PyAudio's reported default."""
+    monkeypatch.delenv("LAFUFU_INPUT_DEVICE", raising=False)
+    monkeypatch.delenv("LAFUFU_INPUT_DEVICE_PREFER", raising=False)
+    monkeypatch.delenv("LAFUFU_INPUT_DEVICE_AVOID", raising=False)
+
+    devices = [
+        {"index": 0, "maxInputChannels": 2, "name": "Microsoft Sound Mapper - Input"},
+        {"index": 1, "maxInputChannels": 4, "name": "Microphone Array (Realtek)"},
+        {"index": 2, "maxInputChannels": 1, "name": "USB Mic"},
+    ]
+    p = _fake_pyaudio(devices, default_idx=0)
+
+    audio_capture.set_db_input_device("usb")
+    try:
+        assert audio_capture.select_input_device(p) == 2
+    finally:
+        audio_capture.set_db_input_device("auto")  # reset for other tests
+
+
+def test_db_input_device_numeric_index(monkeypatch):
+    monkeypatch.delenv("LAFUFU_INPUT_DEVICE", raising=False)
+    devices = [
+        {"index": 0, "maxInputChannels": 2, "name": "A"},
+        {"index": 1, "maxInputChannels": 4, "name": "B"},
+    ]
+    p = _fake_pyaudio(devices, default_idx=0)
+    audio_capture.set_db_input_device("1")
+    try:
+        assert audio_capture.select_input_device(p) == 1
+    finally:
+        audio_capture.set_db_input_device("auto")
+
+
+def test_db_input_device_auto_falls_through(monkeypatch):
+    """`auto` is the sentinel — selector behaves identically to no DB hint."""
+    monkeypatch.delenv("LAFUFU_INPUT_DEVICE", raising=False)
+    monkeypatch.setenv("LAFUFU_INPUT_DEVICE_PREFER", "shure")
+    devices = [
+        {"index": 0, "maxInputChannels": 2, "name": "Generic"},
+        {"index": 1, "maxInputChannels": 1, "name": "Shure SM7B"},
+    ]
+    p = _fake_pyaudio(devices, default_idx=0)
+    audio_capture.set_db_input_device("auto")
+    assert audio_capture.select_input_device(p) == 1
+
+
+def test_env_var_beats_db_setting(monkeypatch):
+    """LAFUFU_INPUT_DEVICE always wins — operator override is highest priority."""
+    monkeypatch.setenv("LAFUFU_INPUT_DEVICE", "0")
+    devices = [
+        {"index": 0, "maxInputChannels": 1, "name": "A"},
+        {"index": 1, "maxInputChannels": 1, "name": "B"},
+    ]
+    p = _fake_pyaudio(devices, default_idx=1)
+    audio_capture.set_db_input_device("1")  # would otherwise win
+    try:
+        assert audio_capture.select_input_device(p) == 0
+    finally:
+        audio_capture.set_db_input_device("auto")
