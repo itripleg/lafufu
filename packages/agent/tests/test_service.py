@@ -1,6 +1,7 @@
 import asyncio
 
 import nats
+import numpy as np
 from lafufu_agent.service import AgentService
 from lafufu_shared import schemas, topics
 from lafufu_shared.nats_helper import publish_model
@@ -54,6 +55,39 @@ async def test_text_message_intent_triggers_pipeline(nats_server):
     await asyncio.wait_for(task, timeout=3)
     assert len(replies) == 1
     assert replies[0].text == "pong"
+
+
+async def test_text_message_intent_does_not_publish_listening(nats_server):
+    """A text intent has no mic phase — it must not emit a 'listening' state."""
+    svc = AgentService(
+        mic=FakeMicForService([]),  # mic does nothing
+        ollama=FakeOllama(scripts=[("ping", "[neutral]\npong")]),
+        piper=FakePiper(chunks=[(b"\x00" * 100, 0.3)]),
+        nats_url=nats_server,
+    )
+
+    nc = await nats.connect(nats_server)
+    states: list[str] = []
+
+    async def on_state(msg):
+        states.append(msg.subject.split(".")[-1])
+
+    await nc.subscribe(f"{topics.AGENT_STATE}.*", cb=on_state)
+
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.5)  # wait for ready
+
+    await publish_model(
+        nc, topics.AGENT_INTENT_TEXT_MESSAGE, schemas.AgentIntentTextMessage(text="ping")
+    )
+    await asyncio.sleep(0.5)
+    await nc.drain()
+
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)
+
+    assert "listening" not in states, f"text intent must not emit 'listening'; got {states}"
+    assert "thinking" in states, f"text intent should still emit 'thinking'; got {states}"
 
 
 async def test_stt_backend_change_swaps_stt_instance(nats_server):
@@ -298,7 +332,7 @@ async def test_text_intent_processes_while_mic_is_waiting_for_onset(nats_server)
             return False, []
 
         def record_until_silence(self, pre_roll):
-            return ""
+            return np.zeros(0, dtype=np.float32)
 
         def listen_once(self):
             self.wait_for_onset()
@@ -342,3 +376,46 @@ async def test_text_intent_processes_while_mic_is_waiting_for_onset(nats_server)
 
     svc._shutdown.set()
     await asyncio.wait_for(task, timeout=3)
+
+
+async def test_voice_cycle_publishes_transcribing_state(nats_server):
+    """Voice cycle should publish 'transcribing' state after speech onset, before LLM."""
+    from lafufu_shared.testing import FakeWhisper
+
+    class _OnsetMic:
+        def wait_for_onset(self):
+            return (True, [])
+
+        def record_until_silence(self, pre_roll):
+            return np.zeros(1600, dtype=np.float32)
+
+        def listen_once(self):
+            return ""
+
+    svc = AgentService(
+        mic=_OnsetMic(),
+        ollama=FakeOllama(scripts=[("hello", "[neutral]\nhi")]),
+        piper=FakePiper(chunks=[(b"\x00" * 100, 0.3)]),
+        nats_url=nats_server,
+        stt=FakeWhisper(fixed_reply="hello there"),
+    )
+
+    nc = await nats.connect(nats_server)
+    collected_states: list[str] = []
+
+    async def on_state(msg):
+        # subject is e.g. "agent.state.transcribing" — grab the trailing token
+        token = msg.subject.split(".")[-1]
+        collected_states.append(token)
+
+    await nc.subscribe(f"{topics.AGENT_STATE}.*", cb=on_state)
+
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.3)
+    svc.start_mic_loop()
+    await asyncio.sleep(0.6)
+    await nc.drain()
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)
+
+    assert "transcribing" in collected_states

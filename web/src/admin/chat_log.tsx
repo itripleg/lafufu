@@ -1,12 +1,14 @@
-import { Component, createSignal, onCleanup, onMount, For, Show } from "solid-js";
+import { Component, createMemo, createSignal, onCleanup, onMount, For, Show } from "solid-js";
 import { NatsWs } from "../shared/nats_ws";
-import { api } from "../shared/api";
+import { api, type ChatRow } from "../shared/api";
 import { EMOTION_COLORS, EMOTION_GLYPH, type Emotion } from "../shared/design";
 import { lsGet, lsSet } from "../shared/local_storage";
 import { toast } from "../shared/toast";
 import { Panel } from "./panel";
 
-interface Entry {
+export interface Entry {
+  /** DB row id — absent for live (not-yet-persisted) entries. */
+  id?: number;
   role: "user" | "lafufu" | "puppet";
   text: string;
   emotion?: string;
@@ -27,6 +29,33 @@ const fmtElapsed = (ms: number): string => {
   return s < 10 ? `${s.toFixed(1)}s` : `${Math.round(s)}s`;
 };
 
+const rowToEntry = (r: ChatRow): Entry => {
+  const hasTz = /(?:Z|[+-]\d\d:?\d\d)$/.test(r.created_at);
+  return {
+    id: r.id,
+    role: r.role,
+    text: r.text,
+    emotion: r.emotion ?? undefined,
+    ts: Date.parse(hasTz ? r.created_at : r.created_at + "Z"),
+    elapsedMs: r.reply_delay_ms ?? undefined,
+  };
+};
+
+/**
+ * Merge loaded history in front of entries that arrived live during the fetch.
+ * History is older so it goes first; a live entry that duplicates the tail of
+ * history — the same turn fanned out live while the GET was in flight — is
+ * dropped. The result keeps the most recent 100 entries.
+ */
+export const mergeHistory = (history: Entry[], live: Entry[]): Entry[] => {
+  if (live.length === 0) return history.slice(-100);
+  if (history.length === 0) return live.slice(-100);
+  const tail = history[history.length - 1];
+  const deduped =
+    live[0].role === tail.role && live[0].text === tail.text ? live.slice(1) : live;
+  return [...history, ...deduped].slice(-100);
+};
+
 const DEFAULT_PUPPET =
   "Hello! I'm Lafufu, a little mischievous creature. " +
   "If you can hear me clearly through the speaker right now, then the " +
@@ -45,10 +74,19 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
   // when its reply lands. nowTick drives the live counter while pending.
   const [pendingSince, setPendingSince] = createSignal<number | null>(null);
   const [nowTick, setNowTick] = createSignal(Date.now());
+  const [stage, setStage] = createSignal<{ name: string; since: number } | null>(null);
+
+  // The pipeline stage to show in the indicator: a live agent stage if one is
+  // active, else a "thinking" placeholder while a widget chat send is pending.
+  const activeStage = createMemo(() =>
+    stage() ?? (pendingSince() !== null ? { name: "thinking", since: pendingSince()! } : null),
+  );
+
   let scrollEl!: HTMLDivElement;
 
   let unsubT: (() => void) | undefined;
   let unsubR: (() => void) | undefined;
+  let unsubS: (() => void) | undefined;
   let tickTimer: number | undefined;
 
   const appendDedup = (entry: Omit<Entry, "ts">) => {
@@ -64,12 +102,8 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
   };
 
   onMount(() => {
-    // Hydrate drafted inputs (so a refresh doesn't lose the puppet text)
-    const cached = lsGet<{ chat?: string; speak?: string; emotion?: Emotion }>(DRAFT_INPUTS, {});
-    if (cached.chat)    setChatInput(cached.chat);
-    if (cached.speak)   setSpeakInput(cached.speak);
-    if (cached.emotion) setSpeakEmotion(cached.emotion);
-
+    // Subscribe to the live stream FIRST — before the history fetch below — so
+    // a turn that completes while the GET is in flight isn't missed.
     unsubT = props.nats.subscribe("agent.transcript", (f) => {
       appendDedup({ role: "user", text: f.payload.text });
     });
@@ -84,15 +118,45 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
       }
       appendDedup({ role, text: f.payload.text, emotion: f.payload.emotion, elapsedMs });
     });
+    unsubS = props.nats.subscribe("agent.state.*", (f) => {
+      const name = String(f.payload?.state ?? "");
+      // Only the working stages drive the indicator; any other state clears it.
+      if (name === "transcribing" || name === "thinking" || name === "speaking") {
+        setStage((cur) => (cur?.name === name ? cur : { name, since: Date.now() }));
+      } else {
+        setStage(null);
+      }
+    });
 
-    // Tick the live round-trip counter ~10x/s while a reply is pending.
+    // Hydrate persisted history, merging it in front of any entries that
+    // arrived live while the request was in flight. A failed load degrades
+    // gracefully to live-only.
+    void api
+      .chatMessages()
+      .then(({ messages }) => {
+        const history = messages.map(rowToEntry);
+        setEntries((live) => mergeHistory(history, live));
+        queueMicrotask(() => { if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight; });
+      })
+      .catch((err) => {
+        toast.err("chat history failed to load", err instanceof Error ? err.message : String(err));
+      });
+
+    // Hydrate drafted inputs (so a refresh doesn't lose the puppet text)
+    const cached = lsGet<{ chat?: string; speak?: string; emotion?: Emotion }>(DRAFT_INPUTS, {});
+    if (cached.chat)    setChatInput(cached.chat);
+    if (cached.speak)   setSpeakInput(cached.speak);
+    if (cached.emotion) setSpeakEmotion(cached.emotion);
+
+    // Tick the live round-trip counter ~10x/s while a reply is pending or a stage is active.
     tickTimer = window.setInterval(() => {
-      if (pendingSince() !== null) setNowTick(Date.now());
+      if (pendingSince() !== null || stage() !== null) setNowTick(Date.now());
     }, 100);
   });
   onCleanup(() => {
     unsubT?.();
     unsubR?.();
+    unsubS?.();
     if (tickTimer) clearInterval(tickTimer);
     // Persist inputs on unmount
     lsSet(DRAFT_INPUTS, {
@@ -257,6 +321,9 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
                 }}
               >
                 <span>{e.role}</span>
+                <span style={{ color: "var(--c-stone)" }}>
+                  {new Date(e.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                </span>
                 <Show when={e.emotion}>
                   <span style={{ color: EMOTION_COLORS[e.emotion as Emotion] ?? "var(--c-mist)" }}>
                     {EMOTION_GLYPH[e.emotion as Emotion]} {e.emotion}
@@ -277,33 +344,31 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
             </div>
           )}
         </For>
-        <Show when={pendingSince()}>
-          {(since) => (
-            <div
+        <Show when={activeStage()}>
+          <div
+            style={{
+              "align-self": "flex-start",
+              "max-width": "82%",
+              padding: "8px 12px",
+              "border-radius": "14px 14px 14px 4px",
+              background: "rgba(149,176,122,0.10)",
+              border: "1px solid var(--c-edge)",
+              animation: "fade-up .3s cubic-bezier(.2,.7,.3,1.1) both",
+            }}
+          >
+            <span
+              class="f-mono"
               style={{
-                "align-self": "flex-start",
-                "max-width": "82%",
-                padding: "8px 12px",
-                "border-radius": "14px 14px 14px 4px",
-                background: "rgba(149,176,122,0.10)",
-                border: "1px solid var(--c-edge)",
-                animation: "fade-up .3s cubic-bezier(.2,.7,.3,1.1) both",
+                "font-size": "10px",
+                color: "var(--c-moss)",
+                "letter-spacing": ".05em",
               }}
             >
-              <span
-                class="f-mono"
-                style={{
-                  "font-size": "10px",
-                  color: "var(--c-moss)",
-                  "letter-spacing": ".05em",
-                }}
-              >
-                lafufu · thinking… ⧗ {fmtElapsed(nowTick() - since())}
-              </span>
-            </div>
-          )}
+              lafufu · {activeStage()!.name}… ⧗ {fmtElapsed(nowTick() - activeStage()!.since)}
+            </span>
+          </div>
         </Show>
-        <Show when={entries().length === 0 && pendingSince() === null}>
+        <Show when={entries().length === 0 && pendingSince() === null && stage() === null}>
           <div
             style={{
               color: "var(--c-stone)",

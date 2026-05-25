@@ -46,6 +46,17 @@ async function upload<T>(path: string, file: File): Promise<T> {
   return (await r.json()) as T;
 }
 
+/** A single row from the chat_messages DB table. */
+export type ChatRow = {
+  id: number;
+  role: "user" | "lafufu" | "puppet";
+  text: string;
+  emotion: string | null;
+  source: string | null;
+  reply_delay_ms: number | null;
+  created_at: string;
+};
+
 /** A letterhead or font asset — bundled with the repo or operator-uploaded. */
 export type PrinterAsset = {
   kind: "default" | "upload";
@@ -170,6 +181,8 @@ export const api = {
     req("POST", `/printer/fonts/${kind}/${encodeURIComponent(name)}/activate`),
   deleteFont: (kind: string, name: string) =>
     req("DELETE", `/printer/fonts/${kind}/${encodeURIComponent(name)}`),
+
+  chatMessages: () => req<{ messages: ChatRow[] }>("GET", "/chat/messages"),
 
   printLetterhead: () => req("POST", "/printer/print_letterhead"),
   testPrint:       () => req("POST", "/printer/test_print"),

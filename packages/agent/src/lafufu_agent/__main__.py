@@ -18,14 +18,16 @@ from .tts import Piper
 
 
 class RealMic:
-    """Records from mic until silence using pre-roll + started-flag VAD, then
-    transcribes via STT. Only commits audio AROUND detected speech — silent
-    waiting time is discarded so STT doesn't hallucinate words from
-    minutes of ambient noise.
+    """Continuous mic capture with pre-roll + started-flag VAD.
 
-    Holds a single PyAudio stream open across listen_once calls —
-    opening/closing it every utterance was costing ~50-200ms per cycle and
-    fragmenting the first buffer (clipping the leading 20-40ms of speech).
+    `record_until_silence` returns the float32 audio AROUND detected speech —
+    silent waiting time is discarded so STT doesn't hallucinate words from
+    minutes of ambient noise — and the caller runs transcription. `listen_once`
+    wraps record + transcribe for the legacy single-call interface.
+
+    Holds a single PyAudio stream open across utterances — opening/closing it
+    every cycle was costing ~50-200ms and fragmenting the first buffer
+    (clipping the leading 20-40ms of speech).
 
     Port of the original monolith's `record_until_silence` pattern.
     """
@@ -156,8 +158,8 @@ class RealMic:
                     # Gave up waiting — nothing said.
                     return False, []
 
-    def record_until_silence(self, pre_roll: list[bytes]) -> str:
-        """Continue reading after onset, transcribe when silence ends."""
+    def record_until_silence(self, pre_roll: list[bytes]) -> "np.ndarray":  # noqa: F821
+        """Continue reading after onset; return float32 audio array (caller transcribes)."""
         import audioop
         import numpy as np
 
@@ -183,7 +185,7 @@ class RealMic:
                 break
 
         if not frames:
-            return ""
+            return np.zeros(0, dtype=np.float32)
 
         raw = b"".join(frames)
         if eff_rate != 16000:
@@ -192,14 +194,17 @@ class RealMic:
         # Convert int16 PCM bytes -> float32 numpy array normalized to [-1, 1].
         # Both STT backends accept this directly, skipping a disk write + decode.
         audio_np = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
-        return self.stt.transcribe(audio_np)
+        return audio_np
 
     def listen_once(self) -> str:
-        """Backward-compat single-call interface (used by text intent paths)."""
+        """Backward-compat single-call interface: record one utterance, then transcribe it."""
         started, pre_roll = self.wait_for_onset()
         if not started:
             return ""
-        return self.record_until_silence(pre_roll)
+        audio = self.record_until_silence(pre_roll)
+        if audio.size == 0:
+            return ""
+        return self.stt.transcribe(audio)
 
 
 def audio_rms_bytes(pcm16_bytes: bytes) -> float:

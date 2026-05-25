@@ -24,7 +24,7 @@ def create_engine_for_path(path: str):
 
 
 def init_db(engine) -> None:
-    from .models import behavior, expression, plugin, setting  # noqa: F401
+    from .models import behavior, chat, expression, plugin, setting  # noqa: F401
 
     SQLModel.metadata.create_all(engine)
 

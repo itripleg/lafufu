@@ -434,7 +434,9 @@ class AgentService(BaseService):
             tmp = VoicePipeline(
                 self.nats, _OnceMic(msg.text), self._ollama, self._piper, self._speaker_play
             )
-            await tmp.run_one_cycle()
+            # A typed intent never used the mic — suppress the spurious
+            # 'listening' state so the pipeline view reflects reality.
+            await tmp.run_one_cycle(publish_listening=False)
 
     async def _on_speak_text(self, subject: str, msg: schemas.AgentIntentSpeakText) -> None:
         """Direct text-to-speech: skip LLM, play exactly what was sent."""
@@ -477,7 +479,17 @@ class AgentService(BaseService):
             return
 
         async with self._cycle_lock:
-            transcript = await loop.run_in_executor(None, self._mic.record_until_silence, pre_roll)
+            audio = await loop.run_in_executor(None, self._mic.record_until_silence, pre_roll)
+            if getattr(audio, "size", 0) == 0:
+                await self._publish_state("idle")
+                return
+
+            if self.stt is None:
+                await self._publish_state("idle")
+                return
+
+            await self._publish_state("transcribing")
+            transcript = await loop.run_in_executor(None, self.stt.transcribe, audio)
             clean = (transcript or "").strip()
             if len(clean) < 2:
                 await self._publish_state("idle")
@@ -492,4 +504,4 @@ class AgentService(BaseService):
             tmp = VoicePipeline(
                 self.nats, _OnceMic(), self._ollama, self._piper, self._speaker_play
             )
-            await tmp.run_one_cycle()
+            await tmp.run_one_cycle(publish_listening=False)
