@@ -105,12 +105,14 @@ of the LLM on next `dev-up`).
 
 ## Troubleshooting
 
-- **`PortAudioError: Error opening InputStream`** — another process is
-  holding the mic. Close Zoom/Teams/Chrome tabs that requested mic
-  access.
-- **"Failed to connect to NATS"** — verify the container is up with
-  `docker compose -f docker-compose.dev.yml ps`. Restart with
-  `docker compose -f docker-compose.dev.yml restart nats`.
+- **`OSError: [Errno -9996] Invalid input device`** (or similar PyAudio
+  open failure) — another process is holding the mic. Close
+  Zoom/Teams/Chrome tabs that requested mic access.
+- **Repeated `nats.connect.failed attempt=N` warnings in the agent log**
+  — NATS isn't reachable. The service retries forever rather than
+  exiting, so the log will keep streaming these. Verify the container
+  is up with `docker compose -f docker-compose.dev.yml ps` and restart
+  with `docker compose -f docker-compose.dev.yml restart nats`.
 - **Ollama is slow** — qwen2.5:1.5b on CPU takes ~1-3 s per reply on a
   modern laptop. If you have NVIDIA + the container toolkit set up, add
   `deploy.resources.reservations.devices` for GPU passthrough in

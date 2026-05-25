@@ -2,11 +2,14 @@
 # Downloads a Piper TTS voice from rhasspy/piper-voices into ./models/.
 #
 # Default voice (en_US-amy-medium) is small + fast. Override:
-#     LAFUFU_VOICE=en_US-lessac-medium ./scripts/get_piper_voice.sh
+#     LAFUFU_DEV_VOICE=en_US-lessac-medium ./scripts/get_piper_voice.sh
+#
+# Script-local env var — not consumed by the agent. The agent reads
+# LAFUFU_PIPER_MODEL (full path) or LAFUFU_VOICE_MODEL (bare name).
 
 set -euo pipefail
 
-VOICE="${LAFUFU_VOICE:-en_US-amy-medium}"
+VOICE="${LAFUFU_DEV_VOICE:-en_US-amy-medium}"
 OUTDIR="models"
 
 # voice naming "<lang>_<region>-<speaker>-<quality>"

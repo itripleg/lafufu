@@ -2,7 +2,8 @@
 # Brings up the local dev stack (NATS + Ollama) and pulls the LLM model the
 # agent expects. Idempotent.
 #
-# Defaults to qwen2.5:1.5b to match the Pi. Override with LAFUFU_DEV_MODEL.
+# Defaults to qwen2.5:1.5b — light enough for laptop CPU and matches what the
+# Pi runs at runtime. Override with LAFUFU_DEV_MODEL.
 
 set -euo pipefail
 

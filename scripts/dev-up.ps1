@@ -2,7 +2,9 @@
 # Brings up the local dev stack (NATS + Ollama) and pulls the LLM model the
 # agent expects. Idempotent — safe to re-run.
 #
-# Defaults to qwen2.5:1.5b to match what the Pi runs. Pass -Model to override.
+# Defaults to qwen2.5:1.5b — light enough for laptop CPU and matches what the
+# Pi runs at runtime (the systemd default is 7b; admin UI swaps to 1.5b via
+# the agent.llm_model setting). Pass -Model to override.
 #
 # Usage:
 #     ./scripts/dev-up.ps1
