@@ -109,7 +109,11 @@ def test_step_eases_toward_target_pose():
     """Repeated steps converge every servo onto the target pose."""
     sm = _smoother()
     sm.reset_to(pose.idle_pose())
-    target = AnimatorPose(head_lr=2200, head_ud=3200, eye=2100, jaw=1560, brow=2090)
+    # Values picked inside each servo's calibrated CLAMP range (pose.CLAMP).
+    # If those ranges tighten, refresh these to stay strictly inside — the
+    # next test (test_step_clamps_each_servo_to_safe_range) covers behavior
+    # when the target IS outside the range.
+    target = AnimatorPose(head_lr=2200, head_ud=3200, eye=2070, jaw=1700, brow=2080)
     out = pose.idle_pose()
     for _ in range(400):
         out = sm.step(target, 1 / 30)

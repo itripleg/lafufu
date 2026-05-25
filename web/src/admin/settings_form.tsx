@@ -37,9 +37,9 @@ const SLIDER_HINTS: Record<string, { min: number; max: number; step?: number }> 
   // Moving these sliders moves the robot LIVE — descriptions warn the operator.
   "animator.head_lr.default": { min: 1828, max: 2298, step: 1     },
   "animator.head_ud.default": { min: 2885, max: 3278, step: 1     },
-  "animator.eye.default":     { min: 1960, max: 2130, step: 1     },
-  "animator.jaw.default":     { min: 1534, max: 1728, step: 1     },
-  "animator.brow.default":    { min: 2051, max: 2099, step: 1     },
+  "animator.eye.default":     { min: 1995, max: 2085, step: 1     },
+  "animator.jaw.default":     { min: 1594, max: 1811, step: 1     },
+  "animator.brow.default":    { min: 2056, max: 2087, step: 1     },
 };
 
 /** A dropdown option: stored value (saved to DB) + display label (what the

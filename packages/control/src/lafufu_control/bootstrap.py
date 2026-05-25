@@ -148,19 +148,19 @@ DEFAULTS: list[tuple[str, str, str, str]] = [
         "animator.eye.default",
         "2045",
         "int",
-        "Default eye servo position (DXL units, 1960=left..2130=right). Moves the robot live when changed.",
+        "Default eye servo position (DXL units, 1995=left..2085=right). Moves the robot live when changed.",
     ),
     (
         "animator.jaw.default",
-        "1728",
+        "1811",
         "int",
-        "Default jaw closed position (DXL units, 1534=open..1728=closed). Moves the robot live when changed.",
+        "Default jaw closed position (DXL units, 1594=open..1811=closed). Moves the robot live when changed.",
     ),
     (
         "animator.brow.default",
         "2075",
         "int",
-        "Default brow position (DXL units, 2051=down..2099=up). Moves the robot live when changed.",
+        "Default brow position (DXL units, 2056=down..2087=up). Moves the robot live when changed.",
     ),
     # Printer
     (
