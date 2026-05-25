@@ -2,6 +2,7 @@ import { Component, createSignal, onCleanup, onMount, Show } from "solid-js";
 import { useNavigate } from "@solidjs/router";
 import { NatsWs } from "../shared/nats_ws";
 import { emotionToColor } from "../shared/design";
+import { stateBadge } from "../shared/agent_state";
 import { Caption } from "./caption";
 
 const BG_VIDEO_SRC = "/lafufu-bg.mp4";
@@ -225,7 +226,7 @@ const Face: Component = () => {
             "text-shadow": "0 1px 12px rgba(0,0,0,.6)",
           }}
         >
-          {state()}
+          {stateBadge(state()).label}
         </div>
       </div>
 

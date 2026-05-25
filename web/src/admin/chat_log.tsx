@@ -29,32 +29,10 @@ const fmtElapsed = (ms: number): string => {
   return s < 10 ? `${s.toFixed(1)}s` : `${Math.round(s)}s`;
 };
 
-/**
- * Map raw agent state names → (label, accent-color) for the persistent state
- * badge above the chat. Distinguishes `wake_listening` (waiting for the
- * trigger word, only used in trigger mode) from plain `listening`
- * (mid-session, recording the user's answer).
- */
-export interface StateBadge {
-  label: string;
-  color: string;
-  /** True if the badge should pulse — visually marks "actively doing work". */
-  pulse: boolean;
-}
-export const stateBadge = (name: string | null | undefined): StateBadge => {
-  switch (name) {
-    case "warming":         return { label: "warming up",           color: "var(--c-amber)", pulse: true };
-    case "wake_listening":  return { label: "waiting for wake word", color: "var(--c-mist)",  pulse: true };
-    case "listening":       return { label: "listening",            color: "var(--c-moss)",  pulse: true };
-    case "transcribing":    return { label: "transcribing",         color: "var(--c-amber)", pulse: true };
-    case "thinking":        return { label: "thinking",             color: "var(--c-amber)", pulse: true };
-    case "speaking":        return { label: "speaking",             color: "var(--c-moss)",  pulse: true };
-    case "degraded":        return { label: "degraded",             color: "var(--c-coral)", pulse: false };
-    case "shutdown":        return { label: "shutting down",        color: "var(--c-stone)", pulse: false };
-    case "idle":            return { label: "idle",                 color: "var(--c-stone)", pulse: false };
-    default:                return { label: "connecting…",          color: "var(--c-stone)", pulse: false };
-  }
-};
+// stateBadge moved to ../shared/agent_state — re-exported here so existing
+// imports (including the unit tests) keep working.
+export { stateBadge, type StateBadge } from "../shared/agent_state";
+import { stateBadge } from "../shared/agent_state";
 
 const rowToEntry = (r: ChatRow): Entry => {
   const hasTz = /(?:Z|[+-]\d\d:?\d\d)$/.test(r.created_at);
