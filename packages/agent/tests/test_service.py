@@ -700,3 +700,43 @@ async def test_input_device_setting_resets_mic(nats_server):
     svc._shutdown.set()
     await asyncio.wait_for(task, timeout=3)
     audio_capture.set_db_input_device("auto")  # reset for other tests
+
+
+async def test_interaction_mode_setting_swaps_field(nats_server):
+    """Flipping agent.interaction_mode at runtime should update the field
+    so the next _mic_loop iteration uses the new branch."""
+    from lafufu_agent.trigger import InteractionMode
+
+    svc = AgentService(
+        mic=FakeMicForService([]),
+        ollama=FakeOllama(),
+        piper=FakePiper(),
+        nats_url=nats_server,
+    )
+    assert svc._interaction_mode == InteractionMode.CONTINUOUS
+
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.5)
+
+    nc = await nats.connect(nats_server)
+    await publish_model(
+        nc,
+        f"{topics.CONFIG_CHANGED}.agent.interaction_mode",
+        schemas.ConfigChanged(key="agent.interaction_mode", value="trigger", source="test"),
+    )
+    await asyncio.sleep(0.3)
+
+    assert svc._interaction_mode == InteractionMode.TRIGGER
+
+    # Invalid values should be rejected (logged + ignored), not crash
+    await publish_model(
+        nc,
+        f"{topics.CONFIG_CHANGED}.agent.interaction_mode",
+        schemas.ConfigChanged(key="agent.interaction_mode", value="bogus", source="test"),
+    )
+    await asyncio.sleep(0.3)
+    await nc.drain()
+    assert svc._interaction_mode == InteractionMode.TRIGGER  # unchanged
+
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)

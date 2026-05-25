@@ -246,6 +246,15 @@ class AgentService(BaseService):
             self._on_config_input_device,
         )
 
+        # Interaction-mode toggle — live-swap between continuous and trigger
+        # (wake-word-gated) without restarting the agent.
+        await nats_helper.subscribe_model(
+            self.nats,
+            f"{topics.CONFIG_CHANGED}.agent.interaction_mode",
+            schemas.ConfigChanged,
+            self._on_config_interaction_mode,
+        )
+
         # Sync to DB on startup so all the *.changed.* subscribers above receive
         # the current admin-set values immediately, instead of waiting for the
         # operator to toggle each one.
@@ -430,6 +439,21 @@ class AgentService(BaseService):
                 self._mic.close()
             except Exception as e:
                 self.log.warning("mic.close.failed_during_input_device_swap error=%s", e)
+
+    async def _on_config_interaction_mode(self, subject: str, msg: schemas.ConfigChanged) -> None:
+        raw = str(msg.value).strip().lower()
+        try:
+            new_mode = InteractionMode(raw)
+        except ValueError:
+            self.log.warning("agent.interaction_mode.bad_value value=%r", msg.value)
+            return
+        if new_mode != self._interaction_mode:
+            self.log.info(
+                "agent.interaction_mode.set value=%s from=%s",
+                new_mode.value,
+                self._interaction_mode.value,
+            )
+            self._interaction_mode = new_mode
 
     async def _on_config_auto_listen(self, subject: str, msg: schemas.ConfigChanged) -> None:
         v = msg.value
