@@ -5,6 +5,7 @@ Pulls config from env vars.
 """
 
 import asyncio
+import logging
 import os
 from pathlib import Path
 
@@ -45,6 +46,7 @@ class RealMic:
         chunk_ms: int = 40,
         silence_threshold: int = 800,
         silence_tail_s: float = 1.5,
+        wake_detector=None,
     ):
         self.stt = stt
         self.rate = rate
@@ -55,12 +57,18 @@ class RealMic:
         # Trailing silence (seconds) that ends an utterance. Live-tunable via
         # agent.silence_seconds.
         self.silence_tail_s = silence_tail_s
+        # When set, wait_for_onset gates on a wake word instead of RMS onset.
+        self.wake_detector = wake_detector
 
         # Lazily populated on first listen_once — needs PyAudio init.
         self._stream = None
         self._eff_rate: int | None = None
         self._eff_chunk: int | None = None
         self._device_index: int | None = None
+        # Persistent audioop.ratecv state for the wake-word resample path —
+        # needed across chunks so the resampler doesn't restart its phase on
+        # every call (which would produce audible artifacts in the 16k stream).
+        self._wake_rcv_state = None
 
     def set_stt(self, stt) -> None:
         """Hot-swap STT instance (called by AgentService on config.changed)."""
@@ -110,6 +118,22 @@ class RealMic:
             except OSError:
                 pass
             self._stream = None
+        self._wake_rcv_state = None
+
+    def _resample_for_wakeword(self, data: bytes) -> bytes:
+        """Convert a chunk from the input stream's native rate to 16kHz mono
+        int16, which is what openwakeword expects. Pass-through when the
+        input is already at 16kHz."""
+        if self._eff_rate == 16000:
+            return data
+        try:
+            import audioop
+        except ModuleNotFoundError:
+            import audioop_lts as audioop  # type: ignore[no-redef]
+        out, self._wake_rcv_state = audioop.ratecv(
+            data, 2, 1, self._eff_rate, 16000, self._wake_rcv_state
+        )
+        return out
 
     def wait_for_onset(self) -> tuple[bool, list[bytes]]:
         """Listen until speech starts or MAX_WAIT_S elapses.
@@ -143,9 +167,26 @@ class RealMic:
 
         while True:
             data = stream.read(eff_chunk, exception_on_overflow=False)
+            pre_roll.append(data)
+
+            if self.wake_detector is not None:
+                # Gate on wake-word: skip RMS heuristics, only fire when the
+                # detector's score crosses its threshold. Whisper stays idle
+                # the rest of the time.
+                chunk_16k = self._resample_for_wakeword(data)
+                score = self.wake_detector.feed(chunk_16k)
+                if score >= self.wake_detector.threshold:
+                    # Drop the detector's internal buffer so the same wake
+                    # audio doesn't immediately re-fire on the next listen.
+                    self.wake_detector.reset()
+                    return True, list(pre_roll)
+                waiting_chunks += 1
+                if waiting_chunks > max_chunks_waiting:
+                    return False, []
+                continue
+
             rms = audio_rms_bytes(data)
             loud = rms >= self.silence_threshold
-            pre_roll.append(data)
             if loud:
                 voiced_chunks += 1
                 if voiced_chunks >= self.MIN_VOICED_CHUNKS:
@@ -318,7 +359,23 @@ def main() -> None:
     ollama = Ollama(base_url=ollama_url, model=qwen_model, system_prompt=SYSTEM_PROMPT)
     piper = Piper(model_path=piper_model_path)
     piper.load()  # populate sample_rate from the .onnx config
-    mic = RealMic(stt=stt)
+
+    wake_detector = None
+    if os.environ.get("LAFUFU_WAKEWORD_ENABLED", "").lower() in ("1", "true", "yes"):
+        from .wakeword import OpenWakeWordDetector, has_openwakeword
+
+        if not has_openwakeword():
+            logging.getLogger(__name__).warning(
+                "wakeword.enabled_but_missing — install with `uv sync --extra wakeword`; "
+                "falling back to RMS-based onset"
+            )
+        else:
+            wake_detector = OpenWakeWordDetector(
+                model_name=os.environ.get("LAFUFU_WAKEWORD_MODEL", "hey_jarvis_v0.1"),
+                threshold=float(os.environ.get("LAFUFU_WAKEWORD_THRESHOLD", "0.5")),
+            )
+
+    mic = RealMic(stt=stt, wake_detector=wake_detector)
     player = make_player(piper.sample_rate)
 
     # Mic loop is started/stopped by the config.changed.agent.auto_listen

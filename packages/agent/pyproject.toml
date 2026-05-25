@@ -12,6 +12,21 @@ dependencies = [
     "audioop-lts>=0.2.2",
 ]
 
+[project.optional-dependencies]
+# Wake-word gate: feeds raw mic audio to a tiny ONNX/LiteRT model so Whisper
+# only runs after a keyword fires. Enable at runtime with
+# LAFUFU_WAKEWORD_ENABLED=1.
+#
+# Pinned to a post-migration git commit because openwakeword has not cut a
+# PyPI release since v0.6.0 (Feb 2024). v0.6.0 still depends on the dead
+# tflite-runtime (no Python 3.13 wheels). Upstream main switched to
+# ai-edge-litert on 2025-10-18 (PR #289 / commit af923e1d), which has
+# 3.13 wheels for Linux aarch64 (Pi), Linux x64, macOS, and Windows.
+# Repin to a real release once one is cut.
+wakeword = [
+    "openwakeword @ git+https://github.com/dscripka/openWakeWord.git@af923e1d",
+]
+
 [tool.uv.sources]
 lafufu-shared = { workspace = true }
 
@@ -24,3 +39,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/lafufu_agent"]
+
+# Required because the `wakeword` extra pins openwakeword to a git URL
+# (no PyPI release with ai-edge-litert support exists yet — see the comment
+# on the extra above).
+[tool.hatch.metadata]
+allow-direct-references = true
