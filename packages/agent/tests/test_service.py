@@ -2,6 +2,7 @@ import asyncio
 
 import nats
 import numpy as np
+import pytest
 from lafufu_agent.service import AgentService
 from lafufu_shared import schemas, topics
 from lafufu_shared.nats_helper import publish_model
@@ -419,3 +420,122 @@ async def test_voice_cycle_publishes_transcribing_state(nats_server):
     await asyncio.wait_for(task, timeout=3)
 
     assert "transcribing" in collected_states
+
+
+# ---------------------------------------------------------------------------
+# Trigger-mode interaction loop
+# ---------------------------------------------------------------------------
+
+
+class _TriggerMic:
+    """Mic that mimics RealMic's wake-then-RMS split.
+
+    First wait_for_onset() call simulates the wake-word firing; subsequent
+    calls (with force_rms=True) simulate in-session user input. After
+    `num_user_inputs` such calls, it blocks (idle) so the agent shuts down
+    without re-firing.
+    """
+
+    def __init__(self, num_user_inputs: int = 1):
+        self.wake_detector = object()  # truthy sentinel — passes trigger-mode validation
+        self._max_inputs = num_user_inputs
+        self._wake_fired = False
+        self._inputs_served = 0
+
+    def wait_for_onset(self, force_rms: bool = False):
+        if not self._wake_fired:
+            if force_rms:
+                # Caller is asking for an in-session listen without ever firing
+                # the wake — shouldn't happen in trigger mode.
+                import time
+
+                time.sleep(60)
+                return False, []
+            self._wake_fired = True
+            return True, [b"\x00" * 100]
+        if self._inputs_served < self._max_inputs:
+            self._inputs_served += 1
+            return True, [b"\x00" * 100]
+        # Out of scripted inputs — block (simulates the agent settling back
+        # into wake-listen until shutdown).
+        import time
+
+        time.sleep(60)
+        return False, []
+
+    def record_until_silence(self, pre_roll):
+        return np.zeros(1280, dtype=np.float32)
+
+    def listen_once(self):
+        return ""
+
+
+async def test_trigger_mode_speaks_opening_runs_round_and_auto_prints(nats_server):
+    """Happy path: wake → opening phrase → 1 round → auto-print of LLM reply."""
+    from lafufu_agent.trigger import InteractionMode, TriggerConfig
+    from lafufu_shared.testing import FakeWhisper
+
+    svc = AgentService(
+        mic=_TriggerMic(num_user_inputs=1),
+        ollama=FakeOllama(scripts=[("tell me my fortune", "[happy]\nGreat fortune awaits.")]),
+        piper=FakePiper(chunks=[(b"\x00" * 100, 0.3)]),
+        nats_url=nats_server,
+        stt=FakeWhisper(fixed_reply="tell me my fortune"),
+        interaction_mode=InteractionMode.TRIGGER,
+        trigger_config=TriggerConfig(
+            phrase="Ask, traveler.",
+            emotion="neutral",
+            rounds=1,
+            print_mode="auto",
+            print_prompt="Want a slip?",
+        ),
+    )
+
+    nc = await nats.connect(nats_server)
+    replies: list[schemas.AgentReply] = []
+    prints: list[schemas.PrinterIntentPrintText] = []
+
+    async def cb_reply(msg):
+        replies.append(schemas.AgentReply.model_validate_json(msg.data))
+
+    async def cb_print(msg):
+        prints.append(schemas.PrinterIntentPrintText.model_validate_json(msg.data))
+
+    await nc.subscribe(topics.AGENT_REPLY, cb=cb_reply)
+    await nc.subscribe(topics.PRINTER_INTENT_PRINT_TEXT, cb=cb_print)
+
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.3)
+    svc.start_mic_loop()
+    await asyncio.sleep(1.2)  # one full session
+    await nc.drain()
+
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)
+
+    assert len(replies) >= 2, f"expected opening + round reply, got {[r.text for r in replies]}"
+    opening = next(r for r in replies if r.source == "system")
+    assert opening.text == "Ask, traveler."
+    assert opening.emotion == "neutral"
+
+    llm_reply = next(r for r in replies if r.source == "llm")
+    assert llm_reply.text == "Great fortune awaits."
+
+    assert len(prints) == 1, f"auto-print should emit exactly one print job, got {len(prints)}"
+    assert prints[0].text == "Great fortune awaits."
+
+
+async def test_trigger_mode_without_wake_detector_fails_startup(nats_server):
+    """Trigger mode requires a wake-gated mic — bare mics must fail loudly."""
+    from lafufu_agent.trigger import InteractionMode, TriggerConfig
+
+    svc = AgentService(
+        mic=FakeMicForService([]),  # no wake_detector attribute, no wait_for_onset
+        ollama=FakeOllama(),
+        piper=FakePiper(),
+        nats_url=nats_server,
+        interaction_mode=InteractionMode.TRIGGER,
+        trigger_config=TriggerConfig.from_env({}),
+    )
+    with pytest.raises(RuntimeError, match="wake"):
+        await asyncio.wait_for(svc.run(), timeout=3)

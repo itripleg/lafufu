@@ -15,6 +15,7 @@ from lafufu_shared.prompts import DEFAULT_SYSTEM_PROMPT as SYSTEM_PROMPT
 from .audio_capture import get_pyaudio, select_input_device
 from .llm import Ollama
 from .service import AgentService
+from .trigger import InteractionMode, TriggerConfig
 from .tts import Piper
 
 
@@ -135,11 +136,15 @@ class RealMic:
         )
         return out
 
-    def wait_for_onset(self) -> tuple[bool, list[bytes]]:
+    def wait_for_onset(self, force_rms: bool = False) -> tuple[bool, list[bytes]]:
         """Listen until speech starts or MAX_WAIT_S elapses.
 
         Returns (started, pre_roll_frames). Does NOT hold any external lock —
         safe to run while other coroutines need the agent.
+
+        If ``force_rms`` is True, the wake_detector branch is bypassed even when
+        one is configured — used for in-session follow-up rounds in trigger mode
+        (the user just heard Lafufu prompt them, no wake re-trigger needed).
         """
         import collections
 
@@ -169,7 +174,7 @@ class RealMic:
             data = stream.read(eff_chunk, exception_on_overflow=False)
             pre_roll.append(data)
 
-            if self.wake_detector is not None:
+            if self.wake_detector is not None and not force_rms:
                 # Gate on wake-word: skip RMS heuristics, only fire when the
                 # detector's score crosses its threshold. Whisper stays idle
                 # the rest of the time.
@@ -381,6 +386,9 @@ def main() -> None:
     # Mic loop is started/stopped by the config.changed.agent.auto_listen
     # subscriber inside AgentService — driven by the DB setting via the
     # snapshot mechanism. Env vars no longer toggle it.
+    interaction_mode = InteractionMode.from_env(os.environ)
+    trigger_config = TriggerConfig.from_env(os.environ)
+
     svc = AgentService(
         mic=mic,
         ollama=ollama,
@@ -390,6 +398,8 @@ def main() -> None:
         stt_factory=lambda backend, model: make_stt(backend, model_name=model),
         piper_factory=make_piper,
         player_factory=make_player,
+        interaction_mode=interaction_mode,
+        trigger_config=trigger_config,
     )
 
     asyncio.run(svc.run())
