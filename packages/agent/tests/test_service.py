@@ -659,3 +659,357 @@ async def test_trigger_session_publishes_wake_listening_state(nats_server):
     assert "listening" in later, (
         f"expected an in-session 'listening' after wake_listening; later={later}"
     )
+
+
+async def test_input_device_setting_resets_mic(nats_server):
+    """A change to agent.input_device should both update the audio_capture
+    module-level snapshot AND close the existing mic stream so the next
+    listen rebinds to the new device."""
+    from lafufu_agent import audio_capture
+
+    closed = {"count": 0}
+
+    class _Mic:
+        def close(self):
+            closed["count"] += 1
+
+        def listen_once(self):
+            return ""
+
+    svc = AgentService(
+        mic=_Mic(),
+        ollama=FakeOllama(),
+        piper=FakePiper(),
+        nats_url=nats_server,
+    )
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.5)
+
+    nc = await nats.connect(nats_server)
+    await publish_model(
+        nc,
+        f"{topics.CONFIG_CHANGED}.agent.input_device",
+        schemas.ConfigChanged(key="agent.input_device", value="usb", source="test"),
+    )
+    await asyncio.sleep(0.3)
+    await nc.drain()
+
+    assert audio_capture._db_input_device == "usb"
+    assert closed["count"] >= 1, "mic should be closed so next listen picks the new device"
+
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)
+    audio_capture.set_db_input_device("auto")  # reset for other tests
+
+
+async def test_interaction_mode_setting_swaps_field(nats_server):
+    """Flipping agent.interaction_mode at runtime should update the field
+    so the next _mic_loop iteration uses the new branch."""
+    from lafufu_agent.trigger import InteractionMode
+
+    svc = AgentService(
+        mic=FakeMicForService([]),
+        ollama=FakeOllama(),
+        piper=FakePiper(),
+        nats_url=nats_server,
+    )
+    assert svc._interaction_mode == InteractionMode.CONTINUOUS
+
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.5)
+
+    nc = await nats.connect(nats_server)
+    await publish_model(
+        nc,
+        f"{topics.CONFIG_CHANGED}.agent.interaction_mode",
+        schemas.ConfigChanged(key="agent.interaction_mode", value="trigger", source="test"),
+    )
+    await asyncio.sleep(0.3)
+
+    assert svc._interaction_mode == InteractionMode.TRIGGER
+
+    # Invalid values should be rejected (logged + ignored), not crash
+    await publish_model(
+        nc,
+        f"{topics.CONFIG_CHANGED}.agent.interaction_mode",
+        schemas.ConfigChanged(key="agent.interaction_mode", value="bogus", source="test"),
+    )
+    await asyncio.sleep(0.3)
+    await nc.drain()
+    assert svc._interaction_mode == InteractionMode.TRIGGER  # unchanged
+
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)
+
+
+async def test_trigger_subscribers_mutate_config(nats_server):
+    """Every agent.trigger.* setting should live-swap the corresponding field
+    of svc._trigger via dataclasses.replace. Bad values get rejected, not
+    crash the subscriber."""
+    from lafufu_agent.trigger import TriggerConfig
+
+    svc = AgentService(
+        mic=FakeMicForService([]),
+        ollama=FakeOllama(),
+        piper=FakePiper(),
+        nats_url=nats_server,
+        trigger_config=TriggerConfig.from_env({}),
+    )
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.5)
+
+    nc = await nats.connect(nats_server)
+
+    async def push(key: str, value: str) -> None:
+        await publish_model(
+            nc,
+            f"{topics.CONFIG_CHANGED}.{key}",
+            schemas.ConfigChanged(key=key, value=value, source="test"),
+        )
+        await asyncio.sleep(0.15)
+
+    await push("agent.trigger.phrase", "Speak your truth.")
+    assert svc._trigger.phrase == "Speak your truth."
+
+    await push("agent.trigger.emotion", "happy")
+    assert svc._trigger.emotion == "happy"
+
+    await push("agent.trigger.rounds", "3")
+    assert svc._trigger.rounds == 3
+
+    await push("agent.trigger.print_mode", "auto")
+    assert svc._trigger.print_mode == "auto"
+
+    await push("agent.trigger.print_prompt", "Want it on paper?")
+    assert svc._trigger.print_prompt == "Want it on paper?"
+
+    # Invalid values are rejected (logged + ignored) — config stays at last good value
+    await push("agent.trigger.rounds", "0")
+    assert svc._trigger.rounds == 3
+    await push("agent.trigger.emotion", "drunk")
+    assert svc._trigger.emotion == "happy"
+    await push("agent.trigger.print_mode", "always")
+    assert svc._trigger.print_mode == "auto"
+
+    await nc.drain()
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)
+
+
+async def test_wakeword_enabled_toggles_detector_on_mic(nats_server):
+    """agent.wakeword.enabled=true attaches the stored detector to the mic;
+    false detaches it. Mic still works either way."""
+
+    class _MicWithDetector:
+        def __init__(self):
+            self.wake_detector = None
+
+        def listen_once(self):
+            return ""
+
+    fake_detector = object()  # any truthy sentinel; the mic just stores it
+    mic = _MicWithDetector()
+
+    svc = AgentService(
+        mic=mic,
+        ollama=FakeOllama(),
+        piper=FakePiper(),
+        nats_url=nats_server,
+        wake_detector=fake_detector,
+    )
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.5)
+
+    nc = await nats.connect(nats_server)
+    await publish_model(
+        nc,
+        f"{topics.CONFIG_CHANGED}.agent.wakeword.enabled",
+        schemas.ConfigChanged(key="agent.wakeword.enabled", value="true", source="test"),
+    )
+    await asyncio.sleep(0.2)
+    assert mic.wake_detector is fake_detector
+
+    await publish_model(
+        nc,
+        f"{topics.CONFIG_CHANGED}.agent.wakeword.enabled",
+        schemas.ConfigChanged(key="agent.wakeword.enabled", value="false", source="test"),
+    )
+    await asyncio.sleep(0.2)
+    assert mic.wake_detector is None
+
+    await nc.drain()
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)
+
+
+async def test_wakeword_model_swap_replaces_detector(nats_server):
+    """Changing the model name should construct a new OpenWakeWordDetector
+    and attach it to the mic if the previous one was attached."""
+
+    class _Detector:
+        def __init__(self, name, threshold):
+            self.model_name = name
+            self.threshold = threshold
+            self.loaded = False
+
+        def load(self):
+            self.loaded = True
+
+    class _Mic:
+        def __init__(self):
+            self.wake_detector = None
+
+        def listen_once(self):
+            return ""
+
+    mic = _Mic()
+    initial = _Detector("hey_jarvis_v0.1", 0.5)
+    mic.wake_detector = initial  # simulate enabled
+
+    def detector_factory(name: str, threshold: float):
+        d = _Detector(name, threshold)
+        d.load()
+        return d
+
+    svc = AgentService(
+        mic=mic,
+        ollama=FakeOllama(),
+        piper=FakePiper(),
+        nats_url=nats_server,
+        wake_detector=initial,
+        wake_detector_factory=detector_factory,
+    )
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.5)
+
+    nc = await nats.connect(nats_server)
+    await publish_model(
+        nc,
+        f"{topics.CONFIG_CHANGED}.agent.wakeword.model",
+        schemas.ConfigChanged(key="agent.wakeword.model", value="alexa_v0.1", source="test"),
+    )
+    await asyncio.sleep(0.3)
+
+    assert svc._wake_detector is not initial
+    assert svc._wake_detector.model_name == "alexa_v0.1"
+    assert svc._wake_detector.loaded
+    assert mic.wake_detector is svc._wake_detector  # re-attached because was attached
+
+    await nc.drain()
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)
+
+
+async def test_wakeword_threshold_setting_mutates_detector(nats_server):
+    class _Detector:
+        threshold = 0.5
+
+    class _Mic:
+        wake_detector = None
+
+        def listen_once(self):
+            return ""
+
+    det = _Detector()
+    mic = _Mic()
+    mic.wake_detector = det
+
+    svc = AgentService(
+        mic=mic,
+        ollama=FakeOllama(),
+        piper=FakePiper(),
+        nats_url=nats_server,
+        wake_detector=det,
+    )
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.5)
+
+    nc = await nats.connect(nats_server)
+    await publish_model(
+        nc,
+        f"{topics.CONFIG_CHANGED}.agent.wakeword.threshold",
+        schemas.ConfigChanged(key="agent.wakeword.threshold", value="0.3", source="test"),
+    )
+    await asyncio.sleep(0.2)
+    assert det.threshold == 0.3
+
+    # Out-of-range clamps
+    await publish_model(
+        nc,
+        f"{topics.CONFIG_CHANGED}.agent.wakeword.threshold",
+        schemas.ConfigChanged(key="agent.wakeword.threshold", value="1.5", source="test"),
+    )
+    await asyncio.sleep(0.2)
+    assert det.threshold == 1.0
+    await publish_model(
+        nc,
+        f"{topics.CONFIG_CHANGED}.agent.wakeword.threshold",
+        schemas.ConfigChanged(key="agent.wakeword.threshold", value="-0.5", source="test"),
+    )
+    await asyncio.sleep(0.2)
+    assert det.threshold == 0.0
+
+    await nc.drain()
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)
+
+
+async def test_rebuild_tts_closes_old_player(nats_server):
+    """When voice swap produces a new player, the old one's close() must
+    be called so PyAudio output streams don't leak on Windows/macOS."""
+    close_calls = {"count": 0}
+
+    class _Player:
+        def __init__(self, sr):
+            self.sample_rate = sr
+
+        def play(self, chunk):
+            pass
+
+        def end(self):
+            pass
+
+        def close(self):
+            close_calls["count"] += 1
+
+    from pathlib import Path
+
+    def make_fake_piper(name: str) -> FakePiper:
+        p = FakePiper()
+        p.model_path = Path(f"/fake/{name}.onnx")
+        p.voice_name = name
+        # Different sample rate forces _rebuild_tts to construct a new player.
+        p.sample_rate = 16000 if name == "voice_b" else 22050
+        return p
+
+    initial_piper = make_fake_piper("voice_a")
+    initial_player = _Player(22050)
+
+    svc = AgentService(
+        mic=FakeMicForService([]),
+        ollama=FakeOllama(),
+        piper=initial_piper,
+        speaker_play=initial_player,
+        nats_url=nats_server,
+        piper_factory=make_fake_piper,
+        player_factory=lambda sr: _Player(sr),
+    )
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.5)
+
+    nc = await nats.connect(nats_server)
+    await publish_model(
+        nc,
+        f"{topics.CONFIG_CHANGED}.agent.voice_model",
+        schemas.ConfigChanged(key="agent.voice_model", value="voice_b", source="test"),
+    )
+    await asyncio.sleep(0.3)
+    await nc.drain()
+
+    assert close_calls["count"] == 1, (
+        f"old player should be closed exactly once on voice swap; got {close_calls['count']}"
+    )
+    assert svc._speaker_play is not initial_player
+
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)

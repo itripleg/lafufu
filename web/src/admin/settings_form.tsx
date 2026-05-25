@@ -30,6 +30,16 @@ const SLIDER_HINTS: Record<string, { min: number; max: number; step?: number }> 
   "printer.scale_pct":         { min: 25,   max: 200,   step: 5     },
   "printer.dead_zone_top_mm":  { min: 0,    max: 15,    step: 1     },
   "printer.dead_zone_bottom_mm": { min: 0,  max: 15,    step: 1     },
+  // Trigger / wake-word numeric tunables.
+  "agent.trigger.rounds":     { min: 1,    max: 10,   step: 1     },
+  "agent.wakeword.threshold": { min: 0.0,  max: 1.0,  step: 0.05  },
+  // Servo defaults — ranges mirror packages/animator/.../pose.py CLAMP table.
+  // Moving these sliders moves the robot LIVE — descriptions warn the operator.
+  "animator.head_lr.default": { min: 1828, max: 2298, step: 1     },
+  "animator.head_ud.default": { min: 2885, max: 3278, step: 1     },
+  "animator.eye.default":     { min: 1995, max: 2085, step: 1     },
+  "animator.jaw.default":     { min: 1594, max: 1811, step: 1     },
+  "animator.brow.default":    { min: 2056, max: 2087, step: 1     },
 };
 
 /** A dropdown option: stored value (saved to DB) + display label (what the
@@ -65,6 +75,31 @@ const DYNAMIC_OPTIONS: Record<string, () => Promise<OptionEntry[]>> = {
         : `${m.name} — ${m.size_mb} MB (will download)`,
     }));
   },
+  // Trigger mode + wake-word config — all enums hardcoded since these are
+  // tiny fixed sets the backend doesn't enumerate.
+  "agent.interaction_mode": async () => ["continuous", "trigger"],
+  "agent.trigger.emotion": async () => [
+    "happy", "sad", "angry", "surprised", "neutral", "agree", "disagree",
+  ],
+  "agent.trigger.print_mode": async () => ["none", "auto", "ask"],
+  // openwakeword's bundled default models. When a custom hey_lafufu.onnx
+  // lands in assets/wakeword/ (per the training scaffold), this should
+  // switch to a /api/agent/wakeword-models endpoint that enumerates the
+  // directory like /voices does.
+  "agent.wakeword.model": async () => [
+    "hey_jarvis_v0.1",
+    "alexa_v0.1",
+    "hey_mycroft_v0.1",
+    "hey_rhasspy_v0.1",
+    "timer_v0.1",
+    "weather_v0.1",
+  ],
+  // Mic device picker — backend enumerates PyAudio's input devices,
+  // first entry is always the "auto" sentinel.
+  "agent.input_device": async () => {
+    const { devices } = await api.listInputDevices();
+    return devices.map((d) => ({ value: d.name, label: d.label }));
+  },
 };
 
 /** Pure helper: split an OptionEntry into (value, label). */
@@ -73,31 +108,25 @@ export const optionParts = (o: OptionEntry): { value: string; label: string } =>
 
 const DRAFT_PREFIX = "settings/draft/";
 
-type Tab = "audio" | "model" | "printer" | "other";
+type Tab = "agent" | "animator" | "audio" | "printer" | "other";
 
 const TABS: Array<{ id: Tab; label: string; hint: string }> = [
-  { id: "audio",   label: "audio",   hint: "speaker, tts, mic" },
-  { id: "model",   label: "model",   hint: "llm + stt + tts voice + system prompt" },
-  { id: "printer", label: "printer", hint: "auto-print + letterhead" },
-  { id: "other",   label: "other",   hint: "animator, misc" },
+  { id: "agent",    label: "agent",    hint: "voice loop · trigger · wake word · mic" },
+  { id: "animator", label: "animator", hint: "idle animation · servo defaults" },
+  { id: "audio",    label: "audio",    hint: "speaker · TTS" },
+  { id: "printer",  label: "printer",  hint: "auto-print · letterhead" },
+  { id: "other",    label: "other",    hint: "uncategorised" },
 ];
 
-function categoryOf(key: string): Tab {
-  if (
-    key === "agent.llm_model" ||
-    key === "agent.system_prompt" ||
-    key === "agent.voice_model" ||
-    key === "agent.stt_backend" ||
-    key === "agent.whisper_model"
-  ) return "model";
-  if (key.startsWith("printer.")) return "printer";
-  if (
-    key.startsWith("speaker.") ||
-    key.startsWith("tts.") ||
-    key === "agent.silence_threshold" ||
-    key === "agent.silence_seconds" ||
-    key === "agent.auto_listen"
-  ) return "audio";
+export function categoryOf(key: string): Tab {
+  // Audio tab is the one cross-namespace exception — speaker.* + tts.* both
+  // live there because operators think of them together (volume + voice
+  // playback speed).
+  if (key.startsWith("speaker.") || key.startsWith("tts.")) return "audio";
+  const prefix = key.split(".", 1)[0];
+  if (prefix === "agent" || prefix === "animator" || prefix === "printer") {
+    return prefix;
+  }
   return "other";
 }
 
@@ -346,8 +375,19 @@ export const SettingsForm: Component<Props> = (props) => {
       // virtual keyboard on mobile. Validation happens at commit (parseValue).
       const inputMode = row.value_type === "float" ? "decimal" : "numeric";
       if (hint) {
+        // Compact bound labels flanking the slider — operators can see
+        // the legal range at a glance (matches the hardware clamp for servo
+        // defaults, the API contract for thresholds, etc.).
+        const boundStyle = {
+          "font-size": "10px",
+          color: "var(--c-stone)",
+          "min-width": "32px",
+          "text-align": "center" as const,
+          "font-variant-numeric": "tabular-nums",
+        };
         return (
-          <div style={{ flex: 1, display: "flex", gap: "10px", "align-items": "center" }}>
+          <div style={{ flex: 1, display: "flex", gap: "8px", "align-items": "center" }}>
+            <span class="f-mono" style={boundStyle}>{hint.min}</span>
             <input
               type="range" class="slider"
               min={hint.min} max={hint.max} step={hint.step ?? step}
@@ -355,6 +395,7 @@ export const SettingsForm: Component<Props> = (props) => {
               style={{ flex: 1 }}
               onInput={(e) => update(row.key, e.currentTarget.value)}
             />
+            <span class="f-mono" style={boundStyle}>{hint.max}</span>
             <input
               type="text"
               inputMode={inputMode}
@@ -425,8 +466,9 @@ export const SettingsForm: Component<Props> = (props) => {
   const countsByTab = createMemo(() => {
     const q = filter().trim().toLowerCase();
     const out: Record<Tab, { dirty: number; matches: number }> = {
+      agent: { dirty: 0, matches: 0 },
+      animator: { dirty: 0, matches: 0 },
       audio: { dirty: 0, matches: 0 },
-      model: { dirty: 0, matches: 0 },
       printer: { dirty: 0, matches: 0 },
       other: { dirty: 0, matches: 0 },
     };
@@ -474,92 +516,103 @@ export const SettingsForm: Component<Props> = (props) => {
         </>
       }
     >
-      {/* Tab bar — categories of settings. Shows a count only while a search
-          is active (how many matches live in each tab) and a discreet amber
-          dot when that tab has dirty drafts. */}
+      {/* Sticky header — tab bar + search input stay visible while scrolling
+          through the settings list. The individual chrome on the tab bar and
+          search input already provides a solid surface, so no outer background
+          is needed — that would just produce a floating bar effect mid-panel. */}
       <div
-        role="tablist"
         style={{
-          display: "flex",
-          gap: "4px",
-          padding: "3px",
-          background: "var(--c-shell)",
-          border: "1px solid var(--c-edge)",
-          "border-radius": "12px",
-          "margin-bottom": "12px",
-          "flex-wrap": "wrap",
+          position: "sticky",
+          top: 0,
+          "z-index": 1,
+          "margin-bottom": "8px",
         }}
       >
-        <For each={TABS}>
-          {(t) => {
-            const c = () => countsByTab()[t.id];
-            const active = () => tab() === t.id;
-            return (
-              <button
-                role="tab"
-                aria-selected={active()}
-                onClick={() => setActiveTab(t.id)}
-                title={t.hint}
-                class="btn btn--micro"
-                style={{
-                  position: "relative",
-                  background: active() ? "var(--c-raised)" : "transparent",
-                  border: active() ? "1px solid var(--c-edge)" : "1px solid transparent",
-                  color: active() ? "var(--c-bone)" : "var(--c-mist)",
-                  display: "flex",
-                  "align-items": "center",
-                  flex: "1 1 auto",
-                  "justify-content": "center",
-                  "min-width": "0",
-                }}
-              >
-                <span>{t.label}</span>
-                {/* Match count + dirty dot are absolutely positioned so they
-                    never change the tab's flow size — no layout shift when a
-                    search toggles the badge on and off. */}
-                <Show when={c().matches > 0}>
-                  <span
-                    class="f-mono"
-                    style={{
-                      position: "absolute",
-                      top: "50%",
-                      right: "5px",
-                      transform: "translateY(-50%)",
-                      "font-size": "9px",
-                      color: "var(--c-amber)",
-                      background: "rgba(212, 162, 89, 0.14)",
-                      "border-radius": "999px",
-                      padding: "1px 5px",
-                      "pointer-events": "none",
-                    }}
-                    title={`${c().matches} search match${c().matches === 1 ? "" : "es"}`}
-                  >
-                    {c().matches}
-                  </span>
-                </Show>
-                <Show when={c().dirty > 0}>
-                  <span
-                    style={{
-                      position: "absolute",
-                      top: "4px",
-                      left: "5px",
-                      width: "6px",
-                      height: "6px",
-                      "border-radius": "50%",
-                      background: "var(--c-amber)",
-                      "box-shadow": "0 0 4px var(--c-amber)",
-                      "pointer-events": "none",
-                    }}
-                    title={`${c().dirty} unsaved draft${c().dirty === 1 ? "" : "s"}`}
-                  />
-                </Show>
-              </button>
-            );
+        {/* Tab bar — categories of settings. Shows a count only while a search
+            is active (how many matches live in each tab) and a discreet amber
+            dot when that tab has dirty drafts. */}
+        <div
+          role="tablist"
+          style={{
+            display: "flex",
+            gap: "4px",
+            padding: "3px",
+            background: "var(--c-shell)",
+            border: "1px solid var(--c-edge)",
+            "border-radius": "12px",
+            "margin-bottom": "12px",
+            "flex-wrap": "wrap",
           }}
-        </For>
-      </div>
+        >
+          <For each={TABS}>
+            {(t) => {
+              const c = () => countsByTab()[t.id];
+              const active = () => tab() === t.id;
+              return (
+                <button
+                  role="tab"
+                  aria-selected={active()}
+                  onClick={() => setActiveTab(t.id)}
+                  title={t.hint}
+                  class="btn btn--micro"
+                  style={{
+                    position: "relative",
+                    background: active() ? "var(--c-raised)" : "transparent",
+                    border: active() ? "1px solid var(--c-edge)" : "1px solid transparent",
+                    color: active() ? "var(--c-bone)" : "var(--c-mist)",
+                    display: "flex",
+                    "align-items": "center",
+                    flex: "1 1 auto",
+                    "justify-content": "center",
+                    "min-width": "0",
+                  }}
+                >
+                  <span>{t.label}</span>
+                  {/* Match count + dirty dot are absolutely positioned so they
+                      never change the tab's flow size — no layout shift when a
+                      search toggles the badge on and off. */}
+                  <Show when={c().matches > 0}>
+                    <span
+                      class="f-mono"
+                      style={{
+                        position: "absolute",
+                        top: "50%",
+                        right: "5px",
+                        transform: "translateY(-50%)",
+                        "font-size": "9px",
+                        color: "var(--c-amber)",
+                        background: "rgba(212, 162, 89, 0.14)",
+                        "border-radius": "999px",
+                        padding: "1px 5px",
+                        "pointer-events": "none",
+                      }}
+                      title={`${c().matches} search match${c().matches === 1 ? "" : "es"}`}
+                    >
+                      {c().matches}
+                    </span>
+                  </Show>
+                  <Show when={c().dirty > 0}>
+                    <span
+                      style={{
+                        position: "absolute",
+                        top: "4px",
+                        left: "5px",
+                        width: "6px",
+                        height: "6px",
+                        "border-radius": "50%",
+                        background: "var(--c-amber)",
+                        "box-shadow": "0 0 4px var(--c-amber)",
+                        "pointer-events": "none",
+                      }}
+                      title={`${c().dirty} unsaved draft${c().dirty === 1 ? "" : "s"}`}
+                    />
+                  </Show>
+                </button>
+              );
+            }}
+          </For>
+        </div>
 
-      <div style={{ "margin-bottom": "14px" }}>
         <input
           type="text"
           class="field"
@@ -714,7 +767,9 @@ export const SettingsForm: Component<Props> = (props) => {
               "font-style": "italic",
             }}
           >
-            no settings matching "{filter()}"
+            {filter().trim()
+              ? `no settings matching "${filter()}"`
+              : "no settings in this tab"}
           </div>
         </Show>
       </div>

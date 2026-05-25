@@ -133,3 +133,23 @@ of the LLM on next `dev-up`).
 The agent publishes events for animator and printer over NATS as usual;
 nothing subscribes locally, which is fine — the trigger loop completes
 without them.
+
+## Env vars vs DB settings
+
+`bootstrap.py` seeds 24+ tunables into the control DB on first start. Most
+operator-facing knobs (trigger mode, wake word, mic device, voice model,
+LLM model, etc.) read from the DB at runtime via the `config.changed.*`
+NATS subjects.
+
+The `LAFUFU_*` env vars in agent / control service units act as
+**first-boot seeds** only: their values populate the DB on a fresh
+install via the bootstrap defaults. Once the rows exist, the env
+vars are ignored — change settings via the admin UI instead.
+
+Exceptions (always env-only):
+- `LAFUFU_WAKEWORD_ENABLED` — controls whether `openwakeword` is
+  imported at startup. Process-level decision; can't be a DB toggle.
+- `LAFUFU_INPUT_DEVICE_PREFER` / `_AVOID` — per-host hardware lists;
+  surfacing them as DB settings would require multi-host config.
+- `LAFUFU_INPUT_DEVICE` — operator-level override; **always wins** over
+  the `agent.input_device` DB setting.

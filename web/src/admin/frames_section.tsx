@@ -14,14 +14,14 @@ import { ImagePicker } from "./image_picker";
 
 type Pose = { head_lr: number; head_ud: number; eye: number; jaw: number; brow: number };
 
-const IDLE: Pose = { head_lr: 2063, head_ud: 3082, eye: 2045, jaw: 1728, brow: 2075 };
+const IDLE: Pose = { head_lr: 2063, head_ud: 3082, eye: 2045, jaw: 1811, brow: 2075 };
 
 const RANGES: Array<{ key: keyof Pose; lo: number; hi: number; glyph: string }> = [
   { key: "head_lr", lo: 1828, hi: 2298, glyph: "↔" },
   { key: "head_ud", lo: 2885, hi: 3278, glyph: "↕" },
-  { key: "eye",     lo: 1960, hi: 2130, glyph: "◉" },
-  { key: "jaw",     lo: 1534, hi: 1728, glyph: "▽" },
-  { key: "brow",    lo: 2051, hi: 2099, glyph: "︿" },
+  { key: "eye",     lo: 1995, hi: 2085, glyph: "◉" },
+  { key: "jaw",     lo: 1594, hi: 1811, glyph: "▽" },
+  { key: "brow",    lo: 2056, hi: 2087, glyph: "︿" },
 ];
 
 const PREVIEW_DEBOUNCE_MS = 40;

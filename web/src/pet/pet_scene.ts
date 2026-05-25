@@ -5,19 +5,19 @@ import * as THREE from "three";
  * parents under it so head_lr/head_ud drive the whole face. eye/jaw/brow
  * drive their respective sub-rigs.
  *
- * Servo ranges (matched to web/src/admin/servo_sliders.tsx):
+ * Servo ranges (mirror of packages/animator/.../pose.py CLAMP table):
  *   head_lr: 1828..2298  (yaw)
  *   head_ud: 2885..3278  (pitch)
- *   eye:     1960..2130  (look direction)
- *   jaw:     1534..1728  (mouth open)
- *   brow:    2051..2099  (brow lift)
+ *   eye:     1995..2085  (look direction)
+ *   jaw:     1594..1811  (mouth open..close)
+ *   brow:    2056..2087  (brow lift)
  */
 export const SERVO_RANGES = {
   head_lr: [1828, 2298] as const,
   head_ud: [2885, 3278] as const,
-  eye:     [1960, 2130] as const,
-  jaw:     [1534, 1728] as const,
-  brow:    [2051, 2099] as const,
+  eye:     [1995, 2085] as const,
+  jaw:     [1594, 1811] as const,
+  brow:    [2056, 2087] as const,
 };
 
 const norm = (v: number, [lo, hi]: readonly [number, number]) =>

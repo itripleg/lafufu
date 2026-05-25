@@ -54,6 +54,8 @@ class AgentService(BaseService):
         player_factory=None,
         interaction_mode: InteractionMode = InteractionMode.CONTINUOUS,
         trigger_config: TriggerConfig | None = None,
+        wake_detector=None,
+        wake_detector_factory=None,  # callable(name: str, threshold: float) -> Detector
     ) -> None:
         super().__init__()
         self._mic = mic
@@ -67,6 +69,15 @@ class AgentService(BaseService):
         # Default trigger config is harmless to construct (it just reads env);
         # only consulted when mode == TRIGGER.
         self._trigger = trigger_config or TriggerConfig.from_env({})
+        # Constructed once in __main__.py (env-gated import). The
+        # agent.wakeword.enabled setting controls whether it's currently
+        # attached to the mic — we hold a stable reference here so the
+        # enabled toggle can re-attach without reconstructing.
+        self._wake_detector = wake_detector
+        # Factory for constructing a fresh detector with a new model name.
+        # Mirrors the piper_factory / stt_factory pattern — service.py never
+        # imports wakeword.py directly; the caller wires the dependency.
+        self._wake_detector_factory = wake_detector_factory
         # Seed from the injected stt so a config snapshot that matches the
         # env-configured backend doesn't trigger a redundant rebuild — which
         # would discard the already-warmed instance for a cold one.
@@ -237,6 +248,66 @@ class AgentService(BaseService):
             self._on_config_silence_seconds,
         )
 
+        # Mic device selection — operator can pick a specific input from the
+        # admin UI. "auto" preserves the existing PREFER/PyAudio-default chain.
+        await nats_helper.subscribe_model(
+            self.nats,
+            f"{topics.CONFIG_CHANGED}.agent.input_device",
+            schemas.ConfigChanged,
+            self._on_config_input_device,
+        )
+
+        # Interaction-mode toggle — live-swap between continuous and trigger
+        # (wake-word-gated) without restarting the agent.
+        await nats_helper.subscribe_model(
+            self.nats,
+            f"{topics.CONFIG_CHANGED}.agent.interaction_mode",
+            schemas.ConfigChanged,
+            self._on_config_interaction_mode,
+        )
+
+        # Wake-word enabled toggle — re-attaches or detaches the pre-built
+        # detector from the mic without reconstructing it.
+        await nats_helper.subscribe_model(
+            self.nats,
+            f"{topics.CONFIG_CHANGED}.agent.wakeword.enabled",
+            schemas.ConfigChanged,
+            self._on_config_wakeword_enabled,
+        )
+
+        # Wake-word model swap — builds a fresh detector via the injected
+        # factory and hot-swaps it (re-attaches to mic if previously attached).
+        await nats_helper.subscribe_model(
+            self.nats,
+            f"{topics.CONFIG_CHANGED}.agent.wakeword.model",
+            schemas.ConfigChanged,
+            self._on_config_wakeword_model,
+        )
+
+        # Wake-word threshold — live-tune detection sensitivity without restart.
+        await nats_helper.subscribe_model(
+            self.nats,
+            f"{topics.CONFIG_CHANGED}.agent.wakeword.threshold",
+            schemas.ConfigChanged,
+            self._on_config_wakeword_threshold,
+        )
+
+        # Trigger-mode loop config — every field is live-tunable so the
+        # admin UI can change wording/rounds/print behavior without restart.
+        for field, handler in (
+            ("agent.trigger.phrase", self._on_config_trigger_phrase),
+            ("agent.trigger.emotion", self._on_config_trigger_emotion),
+            ("agent.trigger.rounds", self._on_config_trigger_rounds),
+            ("agent.trigger.print_mode", self._on_config_trigger_print_mode),
+            ("agent.trigger.print_prompt", self._on_config_trigger_print_prompt),
+        ):
+            await nats_helper.subscribe_model(
+                self.nats,
+                f"{topics.CONFIG_CHANGED}.{field}",
+                schemas.ConfigChanged,
+                handler,
+            )
+
         # Sync to DB on startup so all the *.changed.* subscribers above receive
         # the current admin-set values immediately, instead of waiting for the
         # operator to toggle each one.
@@ -371,7 +442,16 @@ class AgentService(BaseService):
         if self._tts_length_scale is not None:
             self._piper.length_scale = self._tts_length_scale
         if self._player_factory is not None and new_rate is not None and new_rate != old_rate:
+            old_player = self._speaker_play
             self._speaker_play = self._player_factory(new_rate)
+            # _PyAudioPlayer (Windows/macOS dev path) holds an open output
+            # stream + pyaudio.PyAudio() instance. _AplayPlayer and
+            # _NoOpPlayer have no close() — hasattr guards both.
+            if hasattr(old_player, "close"):
+                try:
+                    old_player.close()
+                except Exception as e:
+                    self.log.warning("speaker_play.close.failed_during_swap error=%s", e)
             self.log.info("tts.player.rebuilt sample_rate=%s prev_rate=%s", new_rate, old_rate)
         # Propagate the swap to the persistent pipeline so the mic loop picks up
         # the new voice. Per-call pipelines (built inside _on_text_message /
@@ -407,6 +487,151 @@ class AgentService(BaseService):
         if hasattr(self._mic, "silence_tail_s"):
             self._mic.silence_tail_s = value
             self.log.info("mic.silence_tail_s.set value=%.2f", value)
+
+    async def _on_config_input_device(self, subject: str, msg: schemas.ConfigChanged) -> None:
+        from .audio_capture import set_db_input_device
+
+        value = str(msg.value).strip() or "auto"
+        set_db_input_device(value)
+        self.log.info("agent.input_device.set value=%s", value)
+        # Force the next listen to re-pick by closing the stream. _ensure_stream
+        # reopens it bound to the new device.
+        if hasattr(self._mic, "close"):
+            try:
+                self._mic.close()
+            except Exception as e:
+                self.log.warning("mic.close.failed_during_input_device_swap error=%s", e)
+
+    async def _on_config_interaction_mode(self, subject: str, msg: schemas.ConfigChanged) -> None:
+        raw = str(msg.value).strip().lower()
+        try:
+            new_mode = InteractionMode(raw)
+        except ValueError:
+            self.log.warning("agent.interaction_mode.bad_value value=%r", msg.value)
+            return
+        if new_mode != self._interaction_mode:
+            self.log.info(
+                "agent.interaction_mode.set value=%s from=%s",
+                new_mode.value,
+                self._interaction_mode.value,
+            )
+            self._interaction_mode = new_mode
+
+    async def _on_config_wakeword_model(self, subject: str, msg: schemas.ConfigChanged) -> None:
+        if self._wake_detector_factory is None:
+            self.log.warning(
+                "agent.wakeword.model.set ignored — no detector factory configured "
+                "(set LAFUFU_WAKEWORD_ENABLED=1 + restart to enable wakeword)"
+            )
+            return
+        new_name = str(msg.value).strip()
+        if not new_name:
+            self.log.warning("agent.wakeword.model.empty_value")
+            return
+        previous = self._wake_detector
+        previous_threshold = getattr(previous, "threshold", 0.5) if previous is not None else 0.5
+        try:
+            new_detector = self._wake_detector_factory(new_name, previous_threshold)
+        except Exception as e:
+            self.log.warning(
+                "agent.wakeword.model.failed value=%s error=%s — keeping previous",
+                new_name,
+                e,
+            )
+            return
+
+        currently_attached = (
+            previous is not None and getattr(self._mic, "wake_detector", None) is previous
+        )
+        self._wake_detector = new_detector
+        if currently_attached and hasattr(self._mic, "wake_detector"):
+            self._mic.wake_detector = new_detector
+        self.log.info("agent.wakeword.model.set value=%s", new_name)
+
+    async def _on_config_wakeword_threshold(self, subject: str, msg: schemas.ConfigChanged) -> None:
+        try:
+            v = float(msg.value)
+        except (TypeError, ValueError):
+            self.log.warning("agent.wakeword.threshold.bad_value value=%r", msg.value)
+            return
+        clamped = max(0.0, min(1.0, v))
+        if self._wake_detector is None:
+            self.log.info(
+                "agent.wakeword.threshold.set value=%.3f (deferred — no detector)",
+                clamped,
+            )
+            return
+        self._wake_detector.threshold = clamped
+        self.log.info("agent.wakeword.threshold.set value=%.3f", clamped)
+
+    async def _on_config_wakeword_enabled(self, subject: str, msg: schemas.ConfigChanged) -> None:
+        v = msg.value
+        enabled = v.strip().lower() in ("true", "1", "yes", "on") if isinstance(v, str) else bool(v)
+
+        if enabled and self._wake_detector is None:
+            self.log.warning(
+                "agent.wakeword.enabled=true but no detector was constructed at startup — "
+                "set LAFUFU_WAKEWORD_ENABLED=1 in the service env and restart to import the dep"
+            )
+            return
+
+        if not hasattr(self._mic, "wake_detector"):
+            self.log.warning("mic has no wake_detector attribute — ignoring wakeword toggle")
+            return
+
+        self._mic.wake_detector = self._wake_detector if enabled else None
+        self.log.info("agent.wakeword.enabled.set value=%s", enabled)
+
+    async def _on_config_trigger_phrase(self, subject, msg: schemas.ConfigChanged) -> None:
+        import dataclasses
+
+        self._trigger = dataclasses.replace(self._trigger, phrase=str(msg.value))
+        self.log.info("agent.trigger.phrase.set len=%d", len(self._trigger.phrase))
+
+    async def _on_config_trigger_emotion(self, subject, msg: schemas.ConfigChanged) -> None:
+        import dataclasses
+
+        from .trigger import validate_emotion
+
+        try:
+            value = validate_emotion(str(msg.value))
+        except ValueError as e:
+            self.log.warning("agent.trigger.emotion.bad_value %s", e)
+            return
+        self._trigger = dataclasses.replace(self._trigger, emotion=value)
+        self.log.info("agent.trigger.emotion.set value=%s", value)
+
+    async def _on_config_trigger_rounds(self, subject, msg: schemas.ConfigChanged) -> None:
+        import dataclasses
+
+        from .trigger import validate_rounds
+
+        try:
+            value = validate_rounds(msg.value)
+        except (TypeError, ValueError) as e:
+            self.log.warning("agent.trigger.rounds.bad_value %s", e)
+            return
+        self._trigger = dataclasses.replace(self._trigger, rounds=value)
+        self.log.info("agent.trigger.rounds.set value=%d", value)
+
+    async def _on_config_trigger_print_mode(self, subject, msg: schemas.ConfigChanged) -> None:
+        import dataclasses
+
+        from .trigger import validate_print_mode
+
+        try:
+            value = validate_print_mode(str(msg.value))
+        except ValueError as e:
+            self.log.warning("agent.trigger.print_mode.bad_value %s", e)
+            return
+        self._trigger = dataclasses.replace(self._trigger, print_mode=value)
+        self.log.info("agent.trigger.print_mode.set value=%s", value)
+
+    async def _on_config_trigger_print_prompt(self, subject, msg: schemas.ConfigChanged) -> None:
+        import dataclasses
+
+        self._trigger = dataclasses.replace(self._trigger, print_prompt=str(msg.value))
+        self.log.info("agent.trigger.print_prompt.set len=%d", len(self._trigger.print_prompt))
 
     async def _on_config_auto_listen(self, subject: str, msg: schemas.ConfigChanged) -> None:
         v = msg.value

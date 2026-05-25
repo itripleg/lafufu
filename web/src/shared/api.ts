@@ -167,6 +167,15 @@ export const api = {
         cached: boolean;
       }>;
     }>("GET", "/agent/whisper-models"),
+  listInputDevices: () =>
+    req<{
+      devices: Array<{
+        name: string;
+        label: string;
+        channels: number;
+      }>;
+      error?: string;
+    }>("GET", "/agent/input-devices"),
 
   // Printer letterhead + font galleries.
   listLetterheads: () => req<{ items: PrinterAsset[] }>("GET", "/printer/letterheads"),

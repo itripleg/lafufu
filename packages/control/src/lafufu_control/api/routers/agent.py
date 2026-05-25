@@ -16,6 +16,15 @@ OLLAMA_URL = os.environ.get("LAFUFU_OLLAMA_URL", "http://localhost:11434")
 router = APIRouter()
 
 
+# Lazy import so the control service can run on machines without PyAudio
+# installed (PyAudio is an agent dep, not a control dep). Resolved at
+# request time inside the endpoint.
+def get_pyaudio():
+    from lafufu_agent.audio_capture import get_pyaudio as _impl
+
+    return _impl()
+
+
 @router.get("/models")
 async def list_models(_: Request):
     """List Ollama models available on the Pi (via /api/tags).
@@ -95,6 +104,40 @@ async def list_voices(_: Request):
             }
         )
     return {"voices": voices}
+
+
+@router.get("/input-devices")
+async def list_input_devices(_: Request):
+    """List PyAudio input devices the agent can bind its mic to.
+
+    First entry is always the ``auto`` sentinel — selecting it falls
+    through to the existing PREFER -> PyAudio default -> first-non-avoided
+    chain. Other entries' ``name`` field is the numeric PyAudio index as a
+    string (matching how ``LAFUFU_INPUT_DEVICE`` and ``agent.input_device``
+    parse the value).
+    """
+    devices: list[dict] = [
+        {"name": "auto", "label": "auto — system default", "channels": 0},
+    ]
+    try:
+        p = get_pyaudio()
+    except Exception as e:
+        # PyAudio not importable on this host (control sometimes runs on
+        # machines without ALSA / PortAudio). Return just the sentinel so
+        # the dropdown still renders.
+        return {"devices": devices, "error": str(e)}
+
+    for i in range(p.get_device_count()):
+        info = p.get_device_info_by_index(i)
+        if info.get("maxInputChannels", 0) > 0:
+            devices.append(
+                {
+                    "name": str(int(info["index"])),
+                    "label": info.get("name", f"device {i}"),
+                    "channels": int(info.get("maxInputChannels", 0)),
+                }
+            )
+    return {"devices": devices}
 
 
 # Canonical Whisper model names + their approximate download sizes (MB).
