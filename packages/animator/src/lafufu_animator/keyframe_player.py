@@ -44,13 +44,19 @@ from .pose import (
 )
 
 # Per-servo amplitude at intensity=1.0, expressed as a fraction of the servo's
-# full DXL range. Lifted from the pre-rewrite procedural idle loop — calibrated
-# by feel on the real robot.
+# full DXL range. The original calibration (head_lr=0.06, head_ud=0.05,
+# eye=0.45, brow=0.16) was tuned by feel against the *original* CLAMP table.
+# When pose.py recalibrated brow (48→31, -35%) and eye (170→90, -47%) to the
+# real hardware limits, the absolute motion shrank with them. These percentages
+# are bumped to keep idle visually energetic on the new (tighter) ranges:
+#   eye:  0.45 * 170 ~= 76 units  ->  0.85 * 90 ~= 76 units (preserved)
+#   brow: 0.16 * 48  ~= 7.7 units ->  0.25 * 31 ~= 7.7 units (preserved)
+# Head ranges were not recalibrated; head percentages are unchanged.
 _RW_AMP_PCT = {
     "head_lr": 0.06,
     "head_ud": 0.05,
-    "eye": 0.45,
-    "brow": 0.16,
+    "eye": 0.85,
+    "brow": 0.25,
 }
 _RW_FREQ_HZ = {
     "head_lr": (0.08, 0.22),
