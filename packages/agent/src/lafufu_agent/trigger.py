@@ -17,6 +17,12 @@ from typing import Literal
 PrintMode = Literal["none", "auto", "ask"]
 _PRINT_MODES: tuple[PrintMode, ...] = ("none", "auto", "ask")
 
+# Mirror of lafufu_shared.schemas.Emotion. Duplicated here to keep this module
+# import-light and to fail loud at config load instead of at the first wake
+# trigger (when pydantic would otherwise reject the bad value inside
+# AgentReply construction).
+_VALID_EMOTIONS = frozenset(["happy", "sad", "angry", "surprised", "neutral", "agree", "disagree"])
+
 _DEFAULT_PHRASE = "Welcome, traveler. Ask, and the cards shall reveal."
 _DEFAULT_PRINT_PROMPT = "Would you like a printed fortune?"
 
@@ -40,6 +46,24 @@ _AFFIRMATIVES = frozenset(
 # Affirmative *phrases* (multi-word) checked with substring after normalisation.
 _AFFIRMATIVE_PHRASES = ("do it", "of course")
 
+# Any token here in the transcript flips the result to non-affirmative, even
+# if an affirmative keyword also appears. Catches the common false-positive
+# class: "of course not", "absolutely not", "yeah no", "yes never mind",
+# "sure no problem". Better to under-print than over-print.
+_NEGATIONS = frozenset(
+    [
+        "no",
+        "not",
+        "never",
+        "nope",
+        "nah",
+        "skip",
+        "cancel",
+        "don't",
+        "dont",
+    ]
+)
+
 # Strip leading/trailing punctuation that's commonly hallucinated by Whisper.
 _TRIM_RE = re.compile(r"^[^\w]+|[^\w]+$")
 
@@ -49,9 +73,13 @@ def is_affirmative(transcript: str) -> bool:
     norm = _TRIM_RE.sub("", transcript.strip().lower())
     if not norm:
         return False
+    tokens = norm.split()
+    # If any negation token appears, treat as non-affirmative even when an
+    # affirmative keyword is also present ("of course not", "yes never mind").
+    if any(t in _NEGATIONS for t in tokens):
+        return False
     if norm in _AFFIRMATIVES:
         return True
-    tokens = norm.split()
     if tokens and tokens[0] in _AFFIRMATIVES:
         return True
     return any(phrase in norm for phrase in _AFFIRMATIVE_PHRASES)
@@ -98,9 +126,15 @@ class TriggerConfig:
                 f"LAFUFU_TRIGGER_PRINT={print_mode_raw!r} is not one of {list(_PRINT_MODES)}"
             )
 
+        emotion_raw = env.get("LAFUFU_TRIGGER_EMOTION", "neutral").strip().lower()
+        if emotion_raw not in _VALID_EMOTIONS:
+            raise ValueError(
+                f"LAFUFU_TRIGGER_EMOTION={emotion_raw!r} is not one of {sorted(_VALID_EMOTIONS)}"
+            )
+
         return cls(
             phrase=env.get("LAFUFU_TRIGGER_PHRASE", _DEFAULT_PHRASE),
-            emotion=env.get("LAFUFU_TRIGGER_EMOTION", "neutral"),
+            emotion=emotion_raw,
             rounds=rounds,
             print_mode=print_mode_raw,  # type: ignore[arg-type]
             print_prompt=env.get("LAFUFU_TRIGGER_PRINT_PROMPT", _DEFAULT_PRINT_PROMPT),

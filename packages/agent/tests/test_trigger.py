@@ -48,6 +48,25 @@ class TestIsAffirmative:
     def test_rejects_non_affirmative(self, transcript: str) -> None:
         assert is_affirmative(transcript) is False
 
+    @pytest.mark.parametrize(
+        "transcript",
+        [
+            # Common negations that contain an affirmative keyword as a prefix
+            # or phrase. The classifier must NOT treat these as a yes — they
+            # are the dominant false-positive class for ask-mode printing.
+            "of course not",
+            "absolutely not",
+            "yeah no",
+            "yes never mind",
+            "sure no problem",
+            "yep don't print it",
+            "yes don't",
+            "ok never mind",
+        ],
+    )
+    def test_negation_overrides_affirmative_keyword(self, transcript: str) -> None:
+        assert is_affirmative(transcript) is False
+
 
 class TestInteractionModeFromEnv:
     def test_default_is_continuous(self) -> None:
@@ -112,3 +131,14 @@ class TestTriggerConfigFromEnv:
     def test_invalid_print_mode_rejected(self) -> None:
         with pytest.raises(ValueError, match="LAFUFU_TRIGGER_PRINT"):
             TriggerConfig.from_env({"LAFUFU_TRIGGER_PRINT": "always"})
+
+    def test_invalid_emotion_rejected(self) -> None:
+        with pytest.raises(ValueError, match="LAFUFU_TRIGGER_EMOTION"):
+            TriggerConfig.from_env({"LAFUFU_TRIGGER_EMOTION": "drunk"})
+
+    @pytest.mark.parametrize(
+        "emotion", ["happy", "sad", "angry", "surprised", "neutral", "agree", "disagree"]
+    )
+    def test_valid_emotions_accepted(self, emotion: str) -> None:
+        cfg = TriggerConfig.from_env({"LAFUFU_TRIGGER_EMOTION": emotion})
+        assert cfg.emotion == emotion
