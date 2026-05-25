@@ -162,6 +162,28 @@ DEFAULTS: list[tuple[str, str, str, str]] = [
         "int",
         "Default brow position (DXL units, 2056=down..2087=up). Moves the robot live when changed.",
     ),
+    # Lipsync envelope tuning. attack = how fast the mouth opens to a louder
+    # sample; release = how fast it closes back to quieter. offset shifts the
+    # whole envelope in time relative to audio playback — bump it up if the
+    # mouth still moves before you hear the speech.
+    (
+        "animator.lipsync.attack_ms",
+        "30",
+        "int",
+        "Mouth-open speed in ms (5=snappy..200=sluggish). Smaller = jaw tracks loud syllable onsets more tightly.",
+    ),
+    (
+        "animator.lipsync.release_ms",
+        "80",
+        "int",
+        "Mouth-close speed in ms (5=fast..400=slow). Smaller = jaw snaps shut between syllables; larger = lingering open shape.",
+    ),
+    (
+        "animator.lipsync.offset_ms",
+        "0",
+        "int",
+        "Delay applied to each RMS event before driving the jaw (0..500 ms). Bump up if the mouth still moves before audio is heard.",
+    ),
     # Printer
     (
         "printer.auto_print",

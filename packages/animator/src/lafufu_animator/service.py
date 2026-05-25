@@ -43,6 +43,10 @@ class AnimatorService(BaseService):
         self._bus = bus
         self._nats_url = nats_url
         self._envelope = lipsync.LipsyncEnvelope()
+        # RMS arrival → jaw apply delay, in seconds. Live-tunable via
+        # animator.lipsync.offset_ms. Bump positive if the mouth still leads
+        # audio after the agent-side aplay period shrink.
+        self._lipsync_offset_s = 0.0
         # _current_pose = what we last actually wrote to the bus.
         # _target_pose = where intent/idle-anim/etc wants us to go.
         # _stepper_loop eases current toward target at stepper_hz and writes.
@@ -179,6 +183,27 @@ class AnimatorService(BaseService):
             self._on_config_idle_animation,
         )
 
+        # Lipsync tuning — attack/release shape jaw responsiveness, offset
+        # shifts the whole jaw track in time relative to audio playback.
+        await nats_helper.subscribe_model(
+            self.nats,
+            f"{topics.CONFIG_CHANGED}.animator.lipsync.attack_ms",
+            schemas.ConfigChanged,
+            self._on_config_lipsync_attack,
+        )
+        await nats_helper.subscribe_model(
+            self.nats,
+            f"{topics.CONFIG_CHANGED}.animator.lipsync.release_ms",
+            schemas.ConfigChanged,
+            self._on_config_lipsync_release,
+        )
+        await nats_helper.subscribe_model(
+            self.nats,
+            f"{topics.CONFIG_CHANGED}.animator.lipsync.offset_ms",
+            schemas.ConfigChanged,
+            self._on_config_lipsync_offset,
+        )
+
         # Sync to DB on startup so idle_animation_enabled reflects admin's
         # current value rather than the in-code default.
         await self.request_config_snapshot()
@@ -224,6 +249,36 @@ class AnimatorService(BaseService):
             self.log.info("animator.%s.default.set value=%d", servo, clamped)
 
         return _h
+
+    async def _on_config_lipsync_attack(self, subject: str, msg: schemas.ConfigChanged) -> None:
+        try:
+            ms = float(msg.value)
+        except (TypeError, ValueError):
+            self.log.warning("animator.lipsync.attack_ms.bad_value value=%r", msg.value)
+            return
+        # Floor at 1 ms so the envelope's exp(-dt/tau) never divides by zero.
+        self._envelope.attack_s = max(0.001, ms / 1000.0)
+        self.log.info("animator.lipsync.attack_ms.set value=%.0f", ms)
+
+    async def _on_config_lipsync_release(self, subject: str, msg: schemas.ConfigChanged) -> None:
+        try:
+            ms = float(msg.value)
+        except (TypeError, ValueError):
+            self.log.warning("animator.lipsync.release_ms.bad_value value=%r", msg.value)
+            return
+        self._envelope.release_s = max(0.001, ms / 1000.0)
+        self.log.info("animator.lipsync.release_ms.set value=%.0f", ms)
+
+    async def _on_config_lipsync_offset(self, subject: str, msg: schemas.ConfigChanged) -> None:
+        try:
+            ms = float(msg.value)
+        except (TypeError, ValueError):
+            self.log.warning("animator.lipsync.offset_ms.bad_value value=%r", msg.value)
+            return
+        # Clamp negative — only forward (delay) offsets work with this approach.
+        # Backward "advance" would need look-ahead in the agent pipeline.
+        self._lipsync_offset_s = max(0.0, ms / 1000.0)
+        self.log.info("animator.lipsync.offset_ms.set value=%.0f", ms)
 
     async def _on_config_idle_animation(self, subject: str, msg: schemas.ConfigChanged) -> None:
         # value may be bool, "true"/"false" str, or 0/1
@@ -360,6 +415,12 @@ class AnimatorService(BaseService):
     async def _on_tts_rms(self, subject: str, msg: schemas.AgentTtsRms) -> None:
         # Drive the jaw via the attack/release envelope. mouth_target is already
         # the adaptively-normalized 0..1 value from the agent's LipsyncNormalizer.
+        # Optional delay so the operator can shift the whole jaw track in time
+        # relative to audio. The NATS callback runs in its own task per message,
+        # so sleeping here delays *this* apply without stalling later messages —
+        # they queue behind in arrival order and stay correctly ordered.
+        if self._lipsync_offset_s > 0:
+            await asyncio.sleep(self._lipsync_offset_s)
         smoothed = self._envelope.step(target=msg.mouth_target, dt=_LIPSYNC_DT)
         jaw_pos = lipsync.rms_to_jaw_dxl(smoothed)
         new = self._current_pose.model_copy(update={"jaw": jaw_pos})

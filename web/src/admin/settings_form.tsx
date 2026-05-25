@@ -40,6 +40,22 @@ const SLIDER_HINTS: Record<string, { min: number; max: number; step?: number }> 
   "animator.eye.default":     { min: 1995, max: 2085, step: 1     },
   "animator.jaw.default":     { min: 1594, max: 1811, step: 1     },
   "animator.brow.default":    { min: 2056, max: 2087, step: 1     },
+  // Lipsync — speed (attack/release) + timing offset.
+  "animator.lipsync.attack_ms":  { min: 5, max: 200, step: 1 },
+  "animator.lipsync.release_ms": { min: 5, max: 400, step: 1 },
+  "animator.lipsync.offset_ms":  { min: 0, max: 500, step: 5 },
+};
+
+// Servo-default setting keys → the servo name the /preview API expects.
+// Hand-dragging one of these sliders fires a coalesced preview so Lafufu
+// moves under your hands (matches FramesSection's editor UX). The DB write
+// still happens on save — preview only nudges the live target_pose.
+const PREVIEW_SERVO: Record<string, string> = {
+  "animator.head_lr.default": "head_lr",
+  "animator.head_ud.default": "head_ud",
+  "animator.eye.default":     "eye",
+  "animator.jaw.default":     "jaw",
+  "animator.brow.default":    "brow",
 };
 
 /** A dropdown option: stored value (saved to DB) + display label (what the
@@ -194,6 +210,24 @@ export const SettingsForm: Component<Props> = (props) => {
     window.addEventListener("lafufu:drafts-wiped", onWipe);
     onCleanup(() => window.removeEventListener("lafufu:drafts-wiped", onWipe));
   });
+
+  // Throttle live-preview POSTs to ~40 ms during slider drag — matches
+  // FramesSection so two open editors share the same feel. Coalesces to the
+  // most recent (servo, value) pair so a fast drag never queues stale frames.
+  let previewTimer: number | undefined;
+  let pendingPreview: { servo: string; value: number } | null = null;
+  const schedulePreview = (servo: string, value: number) => {
+    pendingPreview = { servo, value };
+    if (previewTimer != null) return;
+    previewTimer = window.setTimeout(async () => {
+      previewTimer = undefined;
+      const p = pendingPreview;
+      pendingPreview = null;
+      if (p) {
+        try { await api.animatorPreview(p.servo, p.value); } catch { /* drop */ }
+      }
+    }, 40);
+  };
 
   /** Update in-memory + persist to localStorage. */
   const update = (key: string, newValue: string) => {
@@ -393,7 +427,12 @@ export const SettingsForm: Component<Props> = (props) => {
               min={hint.min} max={hint.max} step={hint.step ?? step}
               value={row.value}
               style={{ flex: 1 }}
-              onInput={(e) => update(row.key, e.currentTarget.value)}
+              onInput={(e) => {
+                const v = e.currentTarget.value;
+                update(row.key, v);
+                const servo = PREVIEW_SERVO[row.key];
+                if (servo) schedulePreview(servo, parseInt(v, 10));
+              }}
             />
             <span class="f-mono" style={boundStyle}>{hint.max}</span>
             <input
