@@ -1,5 +1,7 @@
 """Tests for /api/agent/* endpoints."""
 
+from unittest.mock import MagicMock, patch
+
 import pytest
 from fastapi.testclient import TestClient
 from lafufu_control.api.app import create_app
@@ -73,3 +75,39 @@ def test_voices_endpoint_survives_malformed_config(client, tmp_path, monkeypatch
     assert voices[0]["name"] == "voice_x"
     assert voices[0]["has_config"] is True  # file exists, just unparseable
     assert voices[0]["sample_rate"] is None
+
+
+def _make_client():
+    app = create_app(engine=MagicMock(), nats_publish=lambda *a, **kw: None, api_token="")
+    return TestClient(app)
+
+
+def test_input_devices_returns_auto_first():
+    """`auto` sentinel is the first entry so operators always see it as default."""
+    fake_p = MagicMock()
+    fake_p.get_device_count.return_value = 0
+    with patch("lafufu_control.api.routers.agent.get_pyaudio", return_value=fake_p):
+        r = _make_client().get("/api/agent/input-devices")
+    assert r.status_code == 200
+    devices = r.json()["devices"]
+    assert devices[0]["name"] == "auto"
+    assert "system default" in devices[0]["label"].lower()
+
+
+def test_input_devices_enumerates_pyaudio():
+    """Real-shape devices show up with numeric index strings as `name`."""
+    fake_p = MagicMock()
+    fake_p.get_device_count.return_value = 3
+    fake_p.get_device_info_by_index.side_effect = [
+        {"index": 0, "maxInputChannels": 2, "name": "Microphone Array"},
+        {"index": 1, "maxInputChannels": 0, "name": "Speakers"},  # output, skipped
+        {"index": 2, "maxInputChannels": 1, "name": "USB Mic"},
+    ]
+    with patch("lafufu_control.api.routers.agent.get_pyaudio", return_value=fake_p):
+        r = _make_client().get("/api/agent/input-devices")
+    assert r.status_code == 200
+    devices = r.json()["devices"]
+    # auto + 2 inputs (index 1 is output-only, skipped)
+    assert [d["name"] for d in devices] == ["auto", "0", "2"]
+    assert devices[1]["label"] == "Microphone Array"
+    assert devices[2]["label"] == "USB Mic"
