@@ -1,0 +1,39 @@
+# Local dev stack — runs alongside the agent + control services on the host.
+#
+# Brings up just the heavy non-Python dependencies (NATS broker + Ollama LLM)
+# so the full voice loop can be exercised against the laptop mic + speakers +
+# the SolidJS admin UI, without provisioning a Pi.
+#
+# This is DEV ONLY. The Pi deploy at deploy/install.sh installs NATS + Ollama
+# natively via systemd and does not consume this file.
+#
+# See docs/local-dev.md for the run order.
+
+services:
+  nats:
+    image: nats:2.10-alpine
+    # JetStream is enabled to match the existing test fixtures + control
+    # service snapshot mechanism, even though the trigger-mode test path
+    # doesn't strictly need it.
+    command: ["-js"]
+    ports:
+      - "4222:4222"   # agent + control connect here
+      - "8222:8222"   # http monitoring
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"   # matches LAFUFU_OLLAMA_URL default in agent/__main__.py
+    volumes:
+      - ollama-data:/root/.ollama   # persist pulled models across container restarts
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+volumes:
+  ollama-data:
