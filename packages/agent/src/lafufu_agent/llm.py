@@ -43,13 +43,27 @@ class Ollama:
             r.raise_for_status()
         return time.monotonic() - t0
 
-    async def chat(self, user_text: str) -> str:
+    async def chat(
+        self,
+        user_text: str,
+        history: list[tuple[str, str]] | None = None,
+    ) -> str:
+        """Run one chat turn.
+
+        ``history`` is an optional list of (role, content) tuples representing
+        prior turns of the current session — used by trigger-mode to feed the
+        opening phrase + earlier rounds back into the LLM so multi-round
+        sessions can produce context-aware ("personalized") fortunes. Each
+        entry's role must be ``"user"`` or ``"assistant"``. Default ``None``
+        preserves the single-shot continuous-mode behaviour exactly.
+        """
+        messages: list[dict[str, str]] = [{"role": "system", "content": self.system_prompt}]
+        if history is not None:
+            messages.extend({"role": role, "content": content} for role, content in history)
+        messages.append({"role": "user", "content": user_text})
         payload = {
             "model": self.model,
-            "messages": [
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": user_text},
-            ],
+            "messages": messages,
             "stream": False,
             "keep_alive": self.keep_alive,
         }

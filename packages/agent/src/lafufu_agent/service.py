@@ -539,6 +539,12 @@ class AgentService(BaseService):
         ``wait_for_onset`` runs OUTSIDE ``_cycle_lock`` so concurrent text
         intents stay responsive during the (up to 30 s) silent listen, and the
         lock is acquired only around the bounded processing/speak portions.
+
+        The session maintains an in-memory ``history`` of (role, content)
+        turns — opening phrase first, then alternating user/assistant per
+        round — and feeds it back into each round's LLM call so multi-round
+        sessions produce context-aware replies. History is cleared between
+        sessions (no cross-session memory in this revision).
         """
         if self._pipeline is None:
             await asyncio.sleep(0.5)
@@ -563,29 +569,43 @@ class AgentService(BaseService):
                 source="system",
             )
 
-        # Each round and the print-ask sub-flow manage their own lock around
-        # the bounded processing parts; their onset waits stay outside.
+        # History seeded with the opening phrase so round 1's LLM sees what
+        # Lafufu just said. Each successful round appends the user transcript
+        # and the assistant reply for the next round to consume.
+        history: list[tuple[str, str]] = [("assistant", self._trigger.phrase)]
         last_reply_text = ""
         for _ in range(self._trigger.rounds):
-            reply = await self._trigger_round(loop)
-            if reply is None:
+            result = await self._trigger_round(loop, history)
+            if result is None:
                 # Silence timeout or empty transcript — session ends early.
                 break
-            last_reply_text = reply
+            transcript, body = result
+            history.append(("user", transcript))
+            history.append(("assistant", body))
+            last_reply_text = body
 
         await self._handle_trigger_print(loop, last_reply_text)
         await self._publish_state("idle")
 
-    async def _trigger_round(self, loop: asyncio.AbstractEventLoop) -> str | None:
+    async def _trigger_round(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        history: list[tuple[str, str]],
+    ) -> tuple[str, str] | None:
         """One user-input → LLM-reply round inside a trigger session.
 
         ``wait_for_onset`` is called OUTSIDE ``_cycle_lock`` so text intents can
         run during the silent listen. The lock is acquired once speech onset
         is detected and held only for the bounded record + STT + LLM + speak.
 
-        Returns the LLM reply body text on success, or None when the round
-        couldn't produce a reply (silence timeout, empty audio, trivial
-        transcript, or STT not configured).
+        ``history`` is the conversation context preceding this round (opening
+        phrase + earlier rounds). It is passed verbatim to the LLM so the
+        reply can reference what was already said in the session.
+
+        Returns ``(transcript, body)`` on success — caller appends these to
+        the session history for the next round. Returns ``None`` when the
+        round couldn't produce a reply (silence timeout, empty audio,
+        trivial transcript, or STT not configured).
         """
         # Onset wait: outside the lock.
         await self._publish_state("listening")
@@ -618,7 +638,7 @@ class AgentService(BaseService):
             )
 
             await self._publish_state("thinking")
-            reply_raw = await self._ollama.chat(clean)
+            reply_raw = await self._ollama.chat(clean, history=history)
 
             from .emotion_parser import parse
 
@@ -626,7 +646,7 @@ class AgentService(BaseService):
 
             tmp = VoicePipeline(self.nats, None, self._ollama, self._piper, self._speaker_play)
             await tmp.speak(body, emotion)
-            return body
+            return clean, body
 
     async def _send_print(self, text: str) -> None:
         """Publish a print-text intent for the receipt printer."""

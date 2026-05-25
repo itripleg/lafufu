@@ -539,3 +539,73 @@ async def test_trigger_mode_without_wake_detector_fails_startup(nats_server):
     )
     with pytest.raises(RuntimeError, match="wake"):
         await asyncio.wait_for(svc.run(), timeout=3)
+
+
+class _ScriptedSTT:
+    """STT that returns a different transcript per call (list order)."""
+
+    backend_id = "fake"
+    model_name = "fake"
+
+    def __init__(self, replies: list[str]) -> None:
+        self._replies = list(replies)
+        self.calls = 0
+
+    def transcribe(self, audio) -> str:
+        idx = self.calls
+        self.calls += 1
+        return self._replies[idx] if idx < len(self._replies) else ""
+
+    def warmup(self) -> float:
+        return 0.0
+
+
+async def test_trigger_mode_passes_in_session_history_to_llm(nats_server):
+    """Each round's LLM call should receive the opening phrase + every prior
+    round's (user, assistant) turn as history, so multi-round trigger sessions
+    can produce context-aware ("personalized") fortunes.
+    """
+    from lafufu_agent.trigger import InteractionMode, TriggerConfig
+
+    ollama = FakeOllama(
+        scripts=[
+            ("first question", "[neutral]\nfirst reply"),
+            ("second question", "[neutral]\nsecond reply"),
+        ]
+    )
+
+    svc = AgentService(
+        mic=_TriggerMic(num_user_inputs=2),
+        ollama=ollama,
+        piper=FakePiper(chunks=[(b"\x00" * 100, 0.3)]),
+        nats_url=nats_server,
+        stt=_ScriptedSTT(["first question", "second question"]),
+        interaction_mode=InteractionMode.TRIGGER,
+        trigger_config=TriggerConfig(
+            phrase="Ask away.",
+            emotion="neutral",
+            rounds=2,
+            print_mode="none",
+            print_prompt="",
+        ),
+    )
+
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.3)
+    svc.start_mic_loop()
+    await asyncio.sleep(2.0)  # both rounds
+
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)
+
+    assert len(ollama.calls) == 2, f"expected two LLM calls, got {ollama.calls}"
+
+    # Round 1: history is just the opening phrase (the assistant turn).
+    assert ollama.history_calls[0] == [("assistant", "Ask away.")]
+
+    # Round 2: history grows with round 1's user transcript + emotion-stripped reply.
+    assert ollama.history_calls[1] == [
+        ("assistant", "Ask away."),
+        ("user", "first question"),
+        ("assistant", "first reply"),
+    ]
