@@ -25,7 +25,7 @@ class MicProtocol(Protocol):
 
 
 class OllamaProtocol(Protocol):
-    async def chat(self, user_text: str) -> str: ...
+    async def chat(self, user_text: str, history: list[tuple[str, str]] | None = None) -> str: ...
 
 
 class PiperProtocol(Protocol):

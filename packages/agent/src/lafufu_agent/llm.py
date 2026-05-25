@@ -58,7 +58,7 @@ class Ollama:
         preserves the single-shot continuous-mode behaviour exactly.
         """
         messages: list[dict[str, str]] = [{"role": "system", "content": self.system_prompt}]
-        if history:
+        if history is not None:
             messages.extend({"role": role, "content": content} for role, content in history)
         messages.append({"role": "user", "content": user_text})
         payload = {
