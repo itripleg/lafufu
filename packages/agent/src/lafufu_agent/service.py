@@ -535,15 +535,10 @@ class AgentService(BaseService):
     async def _trigger_session(self) -> None:
         """One wake-gated interaction: opening line, N rounds, optional print.
 
-        Flow:
-          1. wait_for_onset() with wake-word gate active — sits idle until the
-             trigger fires.
-          2. Speak the configured opening phrase (source=system).
-          3. Run trigger_config.rounds back-and-forth rounds. Onset detection
-             inside the session uses RMS (force_rms=True) so the user can speak
-             naturally after Lafufu prompts them.
-          4. Dispatch the configured print mode against the last LLM reply.
-          5. Return to wake-listen.
+        Lock discipline mirrors ``_voice_cycle_with_split_lock``: every
+        ``wait_for_onset`` runs OUTSIDE ``_cycle_lock`` so concurrent text
+        intents stay responsive during the (up to 30 s) silent listen, and the
+        lock is acquired only around the bounded processing/speak portions.
         """
         if self._pipeline is None:
             await asyncio.sleep(0.5)
@@ -551,16 +546,16 @@ class AgentService(BaseService):
 
         loop = asyncio.get_running_loop()
 
+        # Wake-listen: outside the lock — text intents can run during this.
         await self._publish_state("listening")
         started, _ = await loop.run_in_executor(None, self._mic.wait_for_onset)
         if not started:
             await self._publish_state("idle")
             return
 
+        # Opening phrase — short, bounded; hold the lock around the speak so
+        # text intents don't interleave with the TTS for this utterance.
         async with self._cycle_lock:
-            # Opening phrase — short utterance via a per-session pipeline so the
-            # voice swap path picks up any current piper without reconstructing
-            # self._pipeline.
             tmp = VoicePipeline(self.nats, None, self._ollama, self._piper, self._speaker_play)
             await tmp.speak(
                 self._trigger.phrase,
@@ -568,25 +563,31 @@ class AgentService(BaseService):
                 source="system",
             )
 
-            last_reply_text = ""
-            for _ in range(self._trigger.rounds):
-                reply = await self._trigger_round(loop)
-                if reply is None:
-                    # Silence timeout or empty transcript — session ends early.
-                    break
-                last_reply_text = reply
+        # Each round and the print-ask sub-flow manage their own lock around
+        # the bounded processing parts; their onset waits stay outside.
+        last_reply_text = ""
+        for _ in range(self._trigger.rounds):
+            reply = await self._trigger_round(loop)
+            if reply is None:
+                # Silence timeout or empty transcript — session ends early.
+                break
+            last_reply_text = reply
 
-            await self._handle_trigger_print(loop, last_reply_text)
-
+        await self._handle_trigger_print(loop, last_reply_text)
         await self._publish_state("idle")
 
     async def _trigger_round(self, loop: asyncio.AbstractEventLoop) -> str | None:
         """One user-input → LLM-reply round inside a trigger session.
 
+        ``wait_for_onset`` is called OUTSIDE ``_cycle_lock`` so text intents can
+        run during the silent listen. The lock is acquired once speech onset
+        is detected and held only for the bounded record + STT + LLM + speak.
+
         Returns the LLM reply body text on success, or None when the round
         couldn't produce a reply (silence timeout, empty audio, trivial
         transcript, or STT not configured).
         """
+        # Onset wait: outside the lock.
         await self._publish_state("listening")
         started, pre_roll = await loop.run_in_executor(
             None,
@@ -596,34 +597,36 @@ class AgentService(BaseService):
         if not started:
             return None
 
-        audio = await loop.run_in_executor(None, self._mic.record_until_silence, pre_roll)
-        if getattr(audio, "size", 0) == 0:
-            return None
-        if self.stt is None:
-            return None
+        # Process: hold the lock.
+        async with self._cycle_lock:
+            audio = await loop.run_in_executor(None, self._mic.record_until_silence, pre_roll)
+            if getattr(audio, "size", 0) == 0:
+                return None
+            if self.stt is None:
+                return None
 
-        await self._publish_state("transcribing")
-        transcript = await loop.run_in_executor(None, self.stt.transcribe, audio)
-        clean = (transcript or "").strip()
-        if len(clean) < 2:
-            return None
+            await self._publish_state("transcribing")
+            transcript = await loop.run_in_executor(None, self.stt.transcribe, audio)
+            clean = (transcript or "").strip()
+            if len(clean) < 2:
+                return None
 
-        await nats_helper.publish_model(
-            self.nats,
-            topics.AGENT_TRANSCRIPT,
-            schemas.AgentTranscript(text=clean, timestamp=time.time()),
-        )
+            await nats_helper.publish_model(
+                self.nats,
+                topics.AGENT_TRANSCRIPT,
+                schemas.AgentTranscript(text=clean, timestamp=time.time()),
+            )
 
-        await self._publish_state("thinking")
-        reply_raw = await self._ollama.chat(clean)
+            await self._publish_state("thinking")
+            reply_raw = await self._ollama.chat(clean)
 
-        from .emotion_parser import parse
+            from .emotion_parser import parse
 
-        emotion, body = parse(reply_raw)
+            emotion, body = parse(reply_raw)
 
-        tmp = VoicePipeline(self.nats, None, self._ollama, self._piper, self._speaker_play)
-        await tmp.speak(body, emotion)
-        return body
+            tmp = VoicePipeline(self.nats, None, self._ollama, self._piper, self._speaker_play)
+            await tmp.speak(body, emotion)
+            return body
 
     async def _send_print(self, text: str) -> None:
         """Publish a print-text intent for the receipt printer."""
@@ -636,24 +639,35 @@ class AgentService(BaseService):
     async def _handle_trigger_print(
         self, loop: asyncio.AbstractEventLoop, last_reply_text: str
     ) -> None:
-        """Dispatch the configured trigger-mode print behaviour."""
+        """Dispatch the configured trigger-mode print behaviour.
+
+        For ``ask`` mode, the prompt is spoken under ``_cycle_lock``, but the
+        subsequent yes/no onset wait runs outside it (same split-lock pattern
+        as ``_trigger_round``).
+        """
         mode = self._trigger.print_mode
         if mode == "none" or not last_reply_text:
             return
         if mode == "auto":
             await self._send_print(last_reply_text)
             return
-        # mode == "ask" — Lafufu asks; user confirms via voice.
-        tmp = VoicePipeline(self.nats, None, self._ollama, self._piper, self._speaker_play)
-        await tmp.speak(self._trigger.print_prompt, emotion="neutral", source="system")
 
+        # ask mode: speak the prompt under the lock — short and bounded.
+        async with self._cycle_lock:
+            tmp = VoicePipeline(self.nats, None, self._ollama, self._piper, self._speaker_play)
+            await tmp.speak(self._trigger.print_prompt, emotion="neutral", source="system")
+
+        # Onset wait: outside the lock.
         started, pre_roll = await loop.run_in_executor(None, self._mic.wait_for_onset, True)
         if not started:
             return
-        audio = await loop.run_in_executor(None, self._mic.record_until_silence, pre_roll)
-        if getattr(audio, "size", 0) == 0 or self.stt is None:
-            return
-        await self._publish_state("transcribing")
-        transcript = await loop.run_in_executor(None, self.stt.transcribe, audio)
-        if is_affirmative(transcript or ""):
-            await self._send_print(last_reply_text)
+
+        # Process: hold the lock.
+        async with self._cycle_lock:
+            audio = await loop.run_in_executor(None, self._mic.record_until_silence, pre_roll)
+            if getattr(audio, "size", 0) == 0 or self.stt is None:
+                return
+            await self._publish_state("transcribing")
+            transcript = await loop.run_in_executor(None, self.stt.transcribe, audio)
+            if is_affirmative(transcript or ""):
+                await self._send_print(last_reply_text)
