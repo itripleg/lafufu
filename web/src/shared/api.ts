@@ -159,6 +159,14 @@ export const api = {
         has_config: boolean;
       }>;
     }>("GET", "/agent/voices"),
+  listWhisperModels: () =>
+    req<{
+      models: Array<{
+        name: string;
+        size_mb: number;
+        cached: boolean;
+      }>;
+    }>("GET", "/agent/whisper-models"),
 
   // Printer letterhead + font galleries.
   listLetterheads: () => req<{ items: PrinterAsset[] }>("GET", "/printer/letterheads"),

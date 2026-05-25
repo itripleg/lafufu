@@ -97,6 +97,56 @@ async def list_voices(_: Request):
     return {"voices": voices}
 
 
+# Canonical Whisper model names + their approximate download sizes (MB).
+# Both OpenAI Whisper and faster-whisper download against these identifiers,
+# so no real "list models" API exists on either backend — the set is fixed.
+# Sizes are openai-whisper's published .pt sizes; faster-whisper variants are
+# slightly smaller (CT2 format) but close enough for a download-warning UI.
+_WHISPER_MODELS: list[tuple[str, int]] = [
+    ("tiny.en", 39),
+    ("tiny", 39),
+    ("base.en", 74),
+    ("base", 74),
+    ("small.en", 244),
+    ("small", 244),
+    ("medium.en", 769),
+    ("medium", 769),
+    ("large-v3", 1550),
+    ("large-v2", 1550),
+    ("large", 1550),
+]
+
+
+@router.get("/whisper-models")
+async def list_whisper_models(_: Request):
+    """List the canonical Whisper / faster-whisper model identifiers + which
+    are already cached on disk.
+
+    Used by the admin settings form to populate a dropdown for
+    ``agent.whisper_model`` with a download-size warning per model. Neither
+    backend exposes a "list installed models" API — they download lazily on
+    first use against the canonical names — so the set is hardcoded and the
+    cached-detection looks at openai-whisper's ``~/.cache/whisper/*.pt`` cache.
+    """
+    # openai-whisper writes to ~/.cache/whisper/<name>.pt by default; the
+    # download_root parameter can override but our agent process uses the
+    # default. faster-whisper stores under HuggingFace's hub cache (deeper
+    # nesting); we don't probe it here — better-than-nothing for one backend
+    # is fine for a download-warning hint.
+    cache_dir = Path.home() / ".cache" / "whisper"
+    cached_names: set[str] = set()
+    if cache_dir.is_dir():
+        for pt in cache_dir.glob("*.pt"):
+            cached_names.add(pt.stem)
+
+    return {
+        "models": [
+            {"name": name, "size_mb": size, "cached": name in cached_names}
+            for name, size in _WHISPER_MODELS
+        ]
+    }
+
+
 class TextMessageBody(BaseModel):
     text: str
 
