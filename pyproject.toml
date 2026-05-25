@@ -12,6 +12,16 @@ members = ["packages/*"]
 [tool.uv]
 package = false
 
+# openwakeword main declares speexdsp-ns (Linux-only noise suppression) as a
+# hard dep, but it has no Python 3.13 wheels. We don't use openwakeword's
+# optional noise-suppression feature — wakeword.py only calls predict() on
+# raw audio — so override the dep with an impossible marker so uv skips it.
+# Remove this override once speexdsp-ns publishes 3.13 wheels or openwakeword
+# makes the dep truly optional.
+override-dependencies = [
+    "speexdsp-ns ; extra == 'this-extra-is-never-set'",
+]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["packages"]
