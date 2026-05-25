@@ -60,7 +60,17 @@ def _env_list(name: str, fallback: tuple[str, ...]) -> tuple[str, ...]:
 def select_input_device(p: pyaudio.PyAudio) -> int | None:
     """Pick a pyaudio input device index. None → system default.
 
-    Order: LAFUFU_INPUT_DEVICE → PREFER list → first non-AVOID → None.
+    Selection order:
+      1. ``LAFUFU_INPUT_DEVICE`` (exact index or name substring)
+      2. PREFER list match (e.g. shure / jabra on the Pi)
+      3. PyAudio's reported default input device — what the OS treats as
+         the user's chosen mic. On Linux/Pi this is usually whatever ALSA
+         picks first; on Windows it's the device the user set in Sound
+         Settings. (Used to be "first non-avoided", which on Windows
+         routes through the Sound Mapper virtual device and produces
+         silence to wake-word detectors.)
+      4. First non-AVOID device (legacy fallback if PyAudio refuses to
+         report a default — very rare).
     """
     global _selector_logged
     devices: list[tuple[int, str]] = []
@@ -97,6 +107,16 @@ def select_input_device(p: pyaudio.PyAudio) -> int | None:
                     break
             if chosen is not None:
                 break
+
+    if chosen is None:
+        try:
+            default = p.get_default_input_device_info()
+            default_idx = int(default.get("index", -1))
+        except (OSError, ValueError):
+            default_idx = -1
+        if default_idx >= 0 and any(i == default_idx for i, _ in devices):
+            default_name = next(name for i, name in devices if i == default_idx)
+            chosen, reason = default_idx, f"PyAudio default → {default_name!r}"
 
     if chosen is None:
         for i, name in devices:

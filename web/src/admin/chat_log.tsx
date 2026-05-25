@@ -29,6 +29,11 @@ const fmtElapsed = (ms: number): string => {
   return s < 10 ? `${s.toFixed(1)}s` : `${Math.round(s)}s`;
 };
 
+// stateBadge moved to ../shared/agent_state — re-exported here so existing
+// imports (including the unit tests) keep working.
+export { stateBadge, type StateBadge } from "../shared/agent_state";
+import { stateBadge } from "../shared/agent_state";
+
 const rowToEntry = (r: ChatRow): Entry => {
   const hasTz = /(?:Z|[+-]\d\d:?\d\d)$/.test(r.created_at);
   return {
@@ -75,6 +80,9 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
   const [pendingSince, setPendingSince] = createSignal<number | null>(null);
   const [nowTick, setNowTick] = createSignal(Date.now());
   const [stage, setStage] = createSignal<{ name: string; since: number } | null>(null);
+  // Always-on agent state — every agent.state.* event lands here so the
+  // status badge can show "waiting for wake word" / "idle" / etc. continuously.
+  const [agentState, setAgentState] = createSignal<string | null>(null);
 
   // The pipeline stage to show in the indicator: a live agent stage if one is
   // active, else a "thinking" placeholder while a widget chat send is pending.
@@ -120,7 +128,9 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
     });
     unsubS = props.nats.subscribe("agent.state.*", (f) => {
       const name = String(f.payload?.state ?? "");
-      // Only the working stages drive the indicator; any other state clears it.
+      setAgentState(name || null);
+      // Only the working stages drive the in-flow stage bubble (with timer);
+      // the persistent state badge above shows everything.
       if (name === "transcribing" || name === "thinking" || name === "speaking") {
         setStage((cur) => (cur?.name === name ? cur : { name, since: Date.now() }));
       } else {
@@ -233,7 +243,6 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
   return (
     <Panel
       title="Chat"
-      eyebrow="agent.transcript · agent.reply"
       accent="var(--c-moss)"
       fullHeight
       style={{ "min-height": "62vh", display: "flex", "flex-direction": "column" }}
@@ -273,6 +282,36 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
         </div>
       }
     >
+      {/* Persistent agent-state badge — always visible so the operator can
+          tell whether Lafufu is waiting for the trigger word, listening to
+          their answer, thinking, etc. without having to guess from the
+          message flow. */}
+      <div
+        style={{
+          display: "flex",
+          "align-items": "center",
+          gap: "8px",
+          "margin-bottom": "10px",
+          "font-size": "11px",
+          color: "var(--c-stone)",
+          "letter-spacing": ".05em",
+        }}
+        class="f-mono"
+      >
+        <span
+          style={{
+            width: "8px",
+            height: "8px",
+            "border-radius": "50%",
+            background: stateBadge(agentState()).color,
+            "box-shadow": `0 0 6px ${stateBadge(agentState()).color}`,
+            animation: stateBadge(agentState()).pulse ? "breathe 1.4s ease-in-out infinite" : "none",
+          }}
+        />
+        <span style={{ color: stateBadge(agentState()).color }}>
+          {stateBadge(agentState()).label}
+        </span>
+      </div>
       <div
         ref={scrollEl}
         class="scroll-warm"

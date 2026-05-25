@@ -12,10 +12,10 @@
 services:
   nats:
     image: nats:2.10-alpine
-    # JetStream is enabled to match the existing test fixtures + control
-    # service snapshot mechanism, even though the trigger-mode test path
-    # doesn't strictly need it.
-    command: ["-js"]
+    # -js   JetStream (matches the existing test fixtures + control snapshot)
+    # -m    HTTP monitoring on 8222 — without this the exposed port is bound
+    #       by Docker but nothing answers; with it `curl :8222/varz` works.
+    command: ["-js", "-m", "8222"]
     ports:
       - "4222:4222"   # agent + control connect here
       - "8222:8222"   # http monitoring

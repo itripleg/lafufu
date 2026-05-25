@@ -609,3 +609,53 @@ async def test_trigger_mode_passes_in_session_history_to_llm(nats_server):
         ("user", "first question"),
         ("assistant", "first reply"),
     ]
+
+
+async def test_trigger_session_publishes_wake_listening_state(nats_server):
+    """The wake-listen slot of a trigger session should publish 'wake_listening',
+    not the generic 'listening' — admin UI uses this to label "waiting for
+    trigger word" distinctly from in-session listening for the user's answer.
+    """
+    from lafufu_agent.trigger import InteractionMode, TriggerConfig
+    from lafufu_shared.testing import FakeWhisper
+
+    svc = AgentService(
+        mic=_TriggerMic(num_user_inputs=1),
+        ollama=FakeOllama(scripts=[("hello", "[neutral]\nhi")]),
+        piper=FakePiper(chunks=[(b"\x00" * 100, 0.3)]),
+        nats_url=nats_server,
+        stt=FakeWhisper(fixed_reply="hello"),
+        interaction_mode=InteractionMode.TRIGGER,
+        trigger_config=TriggerConfig(
+            phrase="Ask.",
+            emotion="neutral",
+            rounds=1,
+            print_mode="none",
+            print_prompt="",
+        ),
+    )
+
+    nc = await nats.connect(nats_server)
+    states: list[str] = []
+
+    async def on_state(msg):
+        states.append(msg.subject.split(".")[-1])
+
+    await nc.subscribe(f"{topics.AGENT_STATE}.*", cb=on_state)
+
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.3)
+    svc.start_mic_loop()
+    await asyncio.sleep(1.2)
+    await nc.drain()
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)
+
+    assert "wake_listening" in states, f"expected wake_listening in {states}"
+    # The in-session round listen should publish plain 'listening', not
+    # 'wake_listening' again — they're semantically different slots.
+    wake_idx = states.index("wake_listening")
+    later = states[wake_idx + 1 :]
+    assert "listening" in later, (
+        f"expected an in-session 'listening' after wake_listening; later={later}"
+    )

@@ -436,6 +436,15 @@ class AgentService(BaseService):
                 self._mic.close()
             except Exception as e:
                 self.log.warning("mic.close.failed error=%s", e)
+        # _PyAudioPlayer (Windows/macOS dev path) holds its own pyaudio.PyAudio
+        # instance + open output stream; close so we don't leak across runs.
+        # _AplayPlayer / _NoOpPlayer don't implement close — `hasattr` skips
+        # both, so this is no-op on the Pi.
+        if hasattr(self._speaker_play, "close"):
+            try:
+                self._speaker_play.close()
+            except Exception as e:
+                self.log.warning("speaker_play.close.failed error=%s", e)
 
     async def _publish_state(self, name: str) -> None:
         await self.publish_state(name, schemas.AgentState(state=name))  # type: ignore[arg-type]
@@ -553,7 +562,9 @@ class AgentService(BaseService):
         loop = asyncio.get_running_loop()
 
         # Wake-listen: outside the lock — text intents can run during this.
-        await self._publish_state("listening")
+        # Distinct "wake_listening" state lets the admin UI label this slot as
+        # "waiting for trigger word" rather than the mid-session "listening".
+        await self._publish_state("wake_listening")
         started, _ = await loop.run_in_executor(None, self._mic.wait_for_onset)
         if not started:
             await self._publish_state("idle")

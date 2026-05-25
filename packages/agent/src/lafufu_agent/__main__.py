@@ -18,6 +18,8 @@ from .service import AgentService
 from .trigger import InteractionMode, TriggerConfig
 from .tts import Piper
 
+log = logging.getLogger(__name__)
+
 
 class RealMic:
     """Continuous mic capture with pre-roll + started-flag VAD.
@@ -264,6 +266,64 @@ def audio_rms_bytes(pcm16_bytes: bytes) -> float:
     return float(audioop.rms(pcm16_bytes, 2))
 
 
+class _NoOpPlayer:
+    """Silent player. Satisfies `play(chunk)` / `end()` but drops audio.
+
+    Every other side-effect of the speak path (agent.reply, agent.tts.rms for
+    lipsync, state publishes) still fires, so the web UI can be exercised
+    without a working audio output. Used when LAFUFU_NO_AUDIO_PLAYBACK=1.
+    """
+
+    def __init__(self, sample_rate: int) -> None:
+        self.sample_rate = sample_rate
+
+    def play(self, chunk: bytes) -> None:
+        pass
+
+    def end(self) -> None:
+        pass
+
+
+class _PyAudioPlayer:
+    """Native cross-platform audio output via PyAudio's output stream.
+
+    Used on Windows / macOS / any system where `aplay` is unavailable but
+    PyAudio is (PyAudio is already a dep — RealMic uses it for input).
+
+    The output stream stays open across utterances. Opening / closing per
+    utterance introduces ~50 ms of latency and isn't necessary on Windows
+    where PyAudio's WASAPI/MME backends handle the silent gaps cleanly.
+    """
+
+    def __init__(self, sample_rate: int) -> None:
+        self.sample_rate = sample_rate
+        self._p = pyaudio.PyAudio()
+        self._stream = self._p.open(
+            format=pyaudio.paInt16,
+            channels=1,
+            rate=sample_rate,
+            output=True,
+        )
+
+    def play(self, chunk: bytes) -> None:
+        # PyAudio's blocking write returns once the host buffer has accepted
+        # the chunk — pacing comes from the caller's own chunk_dt sleep loop
+        # in pipeline.speak().
+        self._stream.write(chunk)
+
+    def end(self) -> None:
+        # Stream stays open for the next utterance; nothing to flush at the
+        # agent layer.
+        pass
+
+    def close(self) -> None:
+        try:
+            self._stream.stop_stream()
+            self._stream.close()
+        finally:
+            self._p.terminate()
+
+
 class _AplayPlayer:
     """Per-utterance aplay subprocess.
 
@@ -357,8 +417,32 @@ def main() -> None:
         p.load()  # raises FileNotFoundError if the .onnx is missing
         return p
 
-    def make_player(sample_rate: int) -> _AplayPlayer:
-        return _AplayPlayer(sample_rate=sample_rate)
+    def make_player(sample_rate: int):
+        # Player selection:
+        #   LAFUFU_NO_AUDIO_PLAYBACK=1 → _NoOpPlayer (web-only dev, no sound)
+        #   aplay on PATH (Linux / Pi)  → _AplayPlayer (Pi default; battle-tested)
+        #   else (Windows / macOS)      → _PyAudioPlayer (native audio out)
+        #   _PyAudioPlayer init fails   → _NoOpPlayer + warning (last resort)
+        import shutil
+
+        forced_silent = os.environ.get("LAFUFU_NO_AUDIO_PLAYBACK", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        if forced_silent:
+            return _NoOpPlayer(sample_rate=sample_rate)
+        if shutil.which("aplay") is not None:
+            return _AplayPlayer(sample_rate=sample_rate)
+        try:
+            return _PyAudioPlayer(sample_rate=sample_rate)
+        except Exception as e:
+            log.warning(
+                "PyAudio output init failed (%s) — falling back to silent player; "
+                "set LAFUFU_NO_AUDIO_PLAYBACK=1 to silence this warning",
+                e,
+            )
+            return _NoOpPlayer(sample_rate=sample_rate)
 
     stt = make_stt(stt_backend, model_name=whisper_model)
     ollama = Ollama(base_url=ollama_url, model=qwen_model, system_prompt=SYSTEM_PROMPT)

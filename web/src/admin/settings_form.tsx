@@ -32,7 +32,11 @@ const SLIDER_HINTS: Record<string, { min: number; max: number; step?: number }> 
   "printer.dead_zone_bottom_mm": { min: 0,  max: 15,    step: 1     },
 };
 
-const DYNAMIC_OPTIONS: Record<string, () => Promise<string[]>> = {
+/** A dropdown option: stored value (saved to DB) + display label (what the
+ *  operator sees). When label is omitted, value doubles as the label. */
+export type OptionEntry = string | { value: string; label: string };
+
+const DYNAMIC_OPTIONS: Record<string, () => Promise<OptionEntry[]>> = {
   "agent.llm_model": async () => {
     const { models } = await api.listLlmModels();
     return models.map((m) => m.name);
@@ -48,7 +52,24 @@ const DYNAMIC_OPTIONS: Record<string, () => Promise<string[]>> = {
     // that would fail to load.
     return voices.filter((v) => v.has_config).map((v) => v.name);
   },
+  // Canonical Whisper / faster-whisper model identifiers. The list is fixed
+  // (neither backend exposes "list installed"; they download lazily) but the
+  // backend reports which are on disk + their download sizes so the operator
+  // sees the cost of picking a model that isn't cached.
+  "agent.whisper_model": async () => {
+    const { models } = await api.listWhisperModels();
+    return models.map((m) => ({
+      value: m.name,
+      label: m.cached
+        ? `${m.name} — ${m.size_mb} MB cached`
+        : `${m.name} — ${m.size_mb} MB (will download)`,
+    }));
+  },
 };
+
+/** Pure helper: split an OptionEntry into (value, label). */
+export const optionParts = (o: OptionEntry): { value: string; label: string } =>
+  typeof o === "string" ? { value: o, label: o } : { value: o.value, label: o.label };
 
 const DRAFT_PREFIX = "settings/draft/";
 
@@ -56,7 +77,7 @@ type Tab = "audio" | "model" | "printer" | "other";
 
 const TABS: Array<{ id: Tab; label: string; hint: string }> = [
   { id: "audio",   label: "audio",   hint: "speaker, tts, mic" },
-  { id: "model",   label: "model",   hint: "llm + tts voice + system prompt" },
+  { id: "model",   label: "model",   hint: "llm + stt + tts voice + system prompt" },
   { id: "printer", label: "printer", hint: "auto-print + letterhead" },
   { id: "other",   label: "other",   hint: "animator, misc" },
 ];
@@ -65,7 +86,9 @@ function categoryOf(key: string): Tab {
   if (
     key === "agent.llm_model" ||
     key === "agent.system_prompt" ||
-    key === "agent.voice_model"
+    key === "agent.voice_model" ||
+    key === "agent.stt_backend" ||
+    key === "agent.whisper_model"
   ) return "model";
   if (key.startsWith("printer.")) return "printer";
   if (
@@ -73,9 +96,7 @@ function categoryOf(key: string): Tab {
     key.startsWith("tts.") ||
     key === "agent.silence_threshold" ||
     key === "agent.silence_seconds" ||
-    key === "agent.auto_listen" ||
-    key === "agent.stt_backend" ||
-    key === "agent.whisper_model"
+    key === "agent.auto_listen"
   ) return "audio";
   return "other";
 }
@@ -91,7 +112,7 @@ export const SettingsForm: Component<Props> = (props) => {
   // number inputs lose focus / refuse input mid-typing.
   const [rows, setRows] = createStore<Row[]>([]);
   const [savingKey, setSavingKey] = createSignal<string | null>(null);
-  const [dynamicOptions, setDynamicOptions] = createSignal<Record<string, string[]>>({});
+  const [dynamicOptions, setDynamicOptions] = createSignal<Record<string, OptionEntry[]>>({});
   const [filter, setFilter] = createSignal("");
   const [tab, setTab] = createSignal<Tab>(lsGet<Tab>("settings/tab", "audio"));
   const setActiveTab = (t: Tab) => { setTab(t); lsSet("settings/tab", t); };
@@ -130,7 +151,7 @@ export const SettingsForm: Component<Props> = (props) => {
   };
 
   const loadDynamicOptions = async () => {
-    const out: Record<string, string[]> = {};
+    const out: Record<string, OptionEntry[]> = {};
     for (const [key, fetcher] of Object.entries(DYNAMIC_OPTIONS)) {
       try { out[key] = await fetcher(); }
       catch { /* falls back to free-text */ }
@@ -253,7 +274,7 @@ export const SettingsForm: Component<Props> = (props) => {
   const widgetFor = (row: Row) => {
     const opts = dynamicOptions()[row.key];
     if (opts && opts.length > 0) {
-      const known = opts.includes(row.value);
+      const known = opts.some((o) => optionParts(o).value === row.value);
       return (
         <select
           class={`field ${isDirty(row) ? "field--dirty" : ""}`}
@@ -266,7 +287,12 @@ export const SettingsForm: Component<Props> = (props) => {
               {row.value} (not in list)
             </option>
           </Show>
-          <For each={opts}>{(o) => <option value={o}>{o}</option>}</For>
+          <For each={opts}>
+            {(o) => {
+              const { value, label } = optionParts(o);
+              return <option value={value}>{label}</option>;
+            }}
+          </For>
         </select>
       );
     }
