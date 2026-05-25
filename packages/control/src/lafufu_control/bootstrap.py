@@ -65,12 +65,102 @@ DEFAULTS: list[tuple[str, str, str, str]] = [
         "str",
         "Piper TTS voice (bare filename, no .onnx). Files live in LAFUFU_MODELS_DIR (default /srv/lafufu/models). Switched live by the agent — next utterance uses the new voice.",
     ),
+    (
+        "agent.interaction_mode",
+        "continuous",
+        "str",
+        "Interaction loop mode. 'continuous' = listen anything, optionally auto-print. 'trigger' = wake-word-gated guided fortune (requires agent.wakeword.enabled=true).",
+    ),
+    (
+        "agent.trigger.phrase",
+        "Welcome, traveler. Ask, and the cards shall reveal.",
+        "str",
+        "Trigger-mode opening line Lafufu speaks after the wake word fires.",
+    ),
+    (
+        "agent.trigger.emotion",
+        "neutral",
+        "str",
+        "Emotion (face animation) for the trigger-mode opening line. One of: happy, sad, angry, surprised, neutral, agree, disagree.",
+    ),
+    (
+        "agent.trigger.rounds",
+        "1",
+        "int",
+        "Trigger-mode: number of back-and-forth rounds AFTER the opening. 1 = single Q&A; 2+ = conversation.",
+    ),
+    (
+        "agent.trigger.print_mode",
+        "ask",
+        "str",
+        "Trigger-mode print behavior at session end. 'none' = never print; 'auto' = always print the last reply; 'ask' = Lafufu asks the visitor.",
+    ),
+    (
+        "agent.trigger.print_prompt",
+        "Would you like a printed fortune?",
+        "str",
+        "Trigger-mode: line Lafufu speaks before the y/n print listen. Only used when agent.trigger.print_mode='ask'.",
+    ),
+    (
+        "agent.wakeword.enabled",
+        "false",
+        "bool",
+        "Whether the wake-word gate is active. When true, the mic ignores everything until the configured keyword fires (Whisper stays idle). Required for trigger mode.",
+    ),
+    (
+        "agent.wakeword.model",
+        "hey_jarvis_v0.1",
+        "str",
+        "openwakeword model name (one of the bundled defaults, or a path to a custom .onnx).",
+    ),
+    (
+        "agent.wakeword.threshold",
+        "0.5",
+        "float",
+        "Wake-word confidence threshold (0.0-1.0). Lower = more sensitive (more false positives); higher = needs clearer pronunciation.",
+    ),
+    (
+        "agent.input_device",
+        "auto",
+        "str",
+        "Mic device. 'auto' uses the PREFER list -> PyAudio default -> first non-AVOID chain. Otherwise: a numeric PyAudio device index or a name substring (case-insensitive).",
+    ),
     # Animator
     (
         "animator.idle_animation.enabled",
         "true",
         "bool",
         "When true, animator applies subtle living-presence motion when not actively driven.",
+    ),
+    (
+        "animator.head_lr.default",
+        "2063",
+        "int",
+        "Default head left/right servo position (DXL units, 1828=right..2298=left). Moves the robot live when changed.",
+    ),
+    (
+        "animator.head_ud.default",
+        "3082",
+        "int",
+        "Default head up/down servo position (DXL units, 2885=up..3278=down). Moves the robot live when changed.",
+    ),
+    (
+        "animator.eye.default",
+        "2045",
+        "int",
+        "Default eye servo position (DXL units, 1960=left..2130=right). Moves the robot live when changed.",
+    ),
+    (
+        "animator.jaw.default",
+        "1728",
+        "int",
+        "Default jaw closed position (DXL units, 1534=open..1728=closed). Moves the robot live when changed.",
+    ),
+    (
+        "animator.brow.default",
+        "2075",
+        "int",
+        "Default brow position (DXL units, 2051=down..2099=up). Moves the robot live when changed.",
     ),
     # Printer
     (
