@@ -30,6 +30,16 @@ const SLIDER_HINTS: Record<string, { min: number; max: number; step?: number }> 
   "printer.scale_pct":         { min: 25,   max: 200,   step: 5     },
   "printer.dead_zone_top_mm":  { min: 0,    max: 15,    step: 1     },
   "printer.dead_zone_bottom_mm": { min: 0,  max: 15,    step: 1     },
+  // Trigger / wake-word numeric tunables.
+  "agent.trigger.rounds":     { min: 1,    max: 10,   step: 1     },
+  "agent.wakeword.threshold": { min: 0.0,  max: 1.0,  step: 0.05  },
+  // Servo defaults — ranges mirror packages/animator/.../pose.py CLAMP table.
+  // Moving these sliders moves the robot LIVE — descriptions warn the operator.
+  "animator.head_lr.default": { min: 1828, max: 2298, step: 1     },
+  "animator.head_ud.default": { min: 2885, max: 3278, step: 1     },
+  "animator.eye.default":     { min: 1960, max: 2130, step: 1     },
+  "animator.jaw.default":     { min: 1534, max: 1728, step: 1     },
+  "animator.brow.default":    { min: 2051, max: 2099, step: 1     },
 };
 
 /** A dropdown option: stored value (saved to DB) + display label (what the
