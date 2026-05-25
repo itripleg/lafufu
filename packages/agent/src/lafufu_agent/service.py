@@ -55,6 +55,7 @@ class AgentService(BaseService):
         interaction_mode: InteractionMode = InteractionMode.CONTINUOUS,
         trigger_config: TriggerConfig | None = None,
         wake_detector=None,
+        wake_detector_factory=None,  # callable(name: str, threshold: float) -> Detector
     ) -> None:
         super().__init__()
         self._mic = mic
@@ -73,6 +74,10 @@ class AgentService(BaseService):
         # attached to the mic — we hold a stable reference here so the
         # enabled toggle can re-attach without reconstructing.
         self._wake_detector = wake_detector
+        # Factory for constructing a fresh detector with a new model name.
+        # Mirrors the piper_factory / stt_factory pattern — service.py never
+        # imports wakeword.py directly; the caller wires the dependency.
+        self._wake_detector_factory = wake_detector_factory
         # Seed from the injected stt so a config snapshot that matches the
         # env-configured backend doesn't trigger a redundant rebuild — which
         # would discard the already-warmed instance for a cold one.
@@ -268,6 +273,15 @@ class AgentService(BaseService):
             f"{topics.CONFIG_CHANGED}.agent.wakeword.enabled",
             schemas.ConfigChanged,
             self._on_config_wakeword_enabled,
+        )
+
+        # Wake-word model swap — builds a fresh detector via the injected
+        # factory and hot-swaps it (re-attaches to mic if previously attached).
+        await nats_helper.subscribe_model(
+            self.nats,
+            f"{topics.CONFIG_CHANGED}.agent.wakeword.model",
+            schemas.ConfigChanged,
+            self._on_config_wakeword_model,
         )
 
         # Trigger-mode loop config — every field is live-tunable so the
@@ -485,6 +499,37 @@ class AgentService(BaseService):
                 self._interaction_mode.value,
             )
             self._interaction_mode = new_mode
+
+    async def _on_config_wakeword_model(self, subject: str, msg: schemas.ConfigChanged) -> None:
+        if self._wake_detector_factory is None:
+            self.log.warning(
+                "agent.wakeword.model.set ignored — no detector factory configured "
+                "(set LAFUFU_WAKEWORD_ENABLED=1 + restart to enable wakeword)"
+            )
+            return
+        new_name = str(msg.value).strip()
+        if not new_name:
+            self.log.warning("agent.wakeword.model.empty_value")
+            return
+        previous = self._wake_detector
+        previous_threshold = getattr(previous, "threshold", 0.5) if previous is not None else 0.5
+        try:
+            new_detector = self._wake_detector_factory(new_name, previous_threshold)
+        except Exception as e:
+            self.log.warning(
+                "agent.wakeword.model.failed value=%s error=%s — keeping previous",
+                new_name,
+                e,
+            )
+            return
+
+        currently_attached = (
+            previous is not None and getattr(self._mic, "wake_detector", None) is previous
+        )
+        self._wake_detector = new_detector
+        if currently_attached and hasattr(self._mic, "wake_detector"):
+            self._mic.wake_detector = new_detector
+        self.log.info("agent.wakeword.model.set value=%s", new_name)
 
     async def _on_config_wakeword_enabled(self, subject: str, msg: schemas.ConfigChanged) -> None:
         v = msg.value

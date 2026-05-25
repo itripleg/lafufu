@@ -840,3 +840,61 @@ async def test_wakeword_enabled_toggles_detector_on_mic(nats_server):
     await nc.drain()
     svc._shutdown.set()
     await asyncio.wait_for(task, timeout=3)
+
+
+async def test_wakeword_model_swap_replaces_detector(nats_server):
+    """Changing the model name should construct a new OpenWakeWordDetector
+    and attach it to the mic if the previous one was attached."""
+
+    class _Detector:
+        def __init__(self, name, threshold):
+            self.model_name = name
+            self.threshold = threshold
+            self.loaded = False
+
+        def load(self):
+            self.loaded = True
+
+    class _Mic:
+        def __init__(self):
+            self.wake_detector = None
+
+        def listen_once(self):
+            return ""
+
+    mic = _Mic()
+    initial = _Detector("hey_jarvis_v0.1", 0.5)
+    mic.wake_detector = initial  # simulate enabled
+
+    def detector_factory(name: str, threshold: float):
+        d = _Detector(name, threshold)
+        d.load()
+        return d
+
+    svc = AgentService(
+        mic=mic,
+        ollama=FakeOllama(),
+        piper=FakePiper(),
+        nats_url=nats_server,
+        wake_detector=initial,
+        wake_detector_factory=detector_factory,
+    )
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.5)
+
+    nc = await nats.connect(nats_server)
+    await publish_model(
+        nc,
+        f"{topics.CONFIG_CHANGED}.agent.wakeword.model",
+        schemas.ConfigChanged(key="agent.wakeword.model", value="alexa_v0.1", source="test"),
+    )
+    await asyncio.sleep(0.3)
+
+    assert svc._wake_detector is not initial
+    assert svc._wake_detector.model_name == "alexa_v0.1"
+    assert svc._wake_detector.loaded
+    assert mic.wake_detector is svc._wake_detector  # re-attached because was attached
+
+    await nc.drain()
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)

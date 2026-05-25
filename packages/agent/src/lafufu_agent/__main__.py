@@ -449,6 +449,7 @@ def main() -> None:
     piper = Piper(model_path=piper_model_path)
     piper.load()  # populate sample_rate from the .onnx config
 
+    make_wake_detector = None
     wake_detector = None
     if os.environ.get("LAFUFU_WAKEWORD_ENABLED", "").lower() in ("1", "true", "yes"):
         from .wakeword import OpenWakeWordDetector, has_openwakeword
@@ -459,9 +460,15 @@ def main() -> None:
                 "falling back to RMS-based onset"
             )
         else:
-            wake_detector = OpenWakeWordDetector(
-                model_name=os.environ.get("LAFUFU_WAKEWORD_MODEL", "hey_jarvis_v0.1"),
-                threshold=float(os.environ.get("LAFUFU_WAKEWORD_THRESHOLD", "0.5")),
+
+            def make_wake_detector(name: str, threshold: float):
+                d = OpenWakeWordDetector(model_name=name, threshold=threshold)
+                d.load()
+                return d
+
+            wake_detector = make_wake_detector(
+                os.environ.get("LAFUFU_WAKEWORD_MODEL", "hey_jarvis_v0.1"),
+                float(os.environ.get("LAFUFU_WAKEWORD_THRESHOLD", "0.5")),
             )
 
     mic = RealMic(stt=stt, wake_detector=wake_detector)
@@ -485,6 +492,7 @@ def main() -> None:
         interaction_mode=interaction_mode,
         trigger_config=trigger_config,
         wake_detector=wake_detector,  # may be None if env disabled
+        wake_detector_factory=make_wake_detector,  # None when wakeword not enabled
     )
 
     asyncio.run(svc.run())
