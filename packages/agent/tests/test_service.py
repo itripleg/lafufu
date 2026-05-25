@@ -794,3 +794,49 @@ async def test_trigger_subscribers_mutate_config(nats_server):
     await nc.drain()
     svc._shutdown.set()
     await asyncio.wait_for(task, timeout=3)
+
+
+async def test_wakeword_enabled_toggles_detector_on_mic(nats_server):
+    """agent.wakeword.enabled=true attaches the stored detector to the mic;
+    false detaches it. Mic still works either way."""
+
+    class _MicWithDetector:
+        def __init__(self):
+            self.wake_detector = None
+
+        def listen_once(self):
+            return ""
+
+    fake_detector = object()  # any truthy sentinel; the mic just stores it
+    mic = _MicWithDetector()
+
+    svc = AgentService(
+        mic=mic,
+        ollama=FakeOllama(),
+        piper=FakePiper(),
+        nats_url=nats_server,
+        wake_detector=fake_detector,
+    )
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.5)
+
+    nc = await nats.connect(nats_server)
+    await publish_model(
+        nc,
+        f"{topics.CONFIG_CHANGED}.agent.wakeword.enabled",
+        schemas.ConfigChanged(key="agent.wakeword.enabled", value="true", source="test"),
+    )
+    await asyncio.sleep(0.2)
+    assert mic.wake_detector is fake_detector
+
+    await publish_model(
+        nc,
+        f"{topics.CONFIG_CHANGED}.agent.wakeword.enabled",
+        schemas.ConfigChanged(key="agent.wakeword.enabled", value="false", source="test"),
+    )
+    await asyncio.sleep(0.2)
+    assert mic.wake_detector is None
+
+    await nc.drain()
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)

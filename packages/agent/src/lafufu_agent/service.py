@@ -54,6 +54,7 @@ class AgentService(BaseService):
         player_factory=None,
         interaction_mode: InteractionMode = InteractionMode.CONTINUOUS,
         trigger_config: TriggerConfig | None = None,
+        wake_detector=None,
     ) -> None:
         super().__init__()
         self._mic = mic
@@ -67,6 +68,11 @@ class AgentService(BaseService):
         # Default trigger config is harmless to construct (it just reads env);
         # only consulted when mode == TRIGGER.
         self._trigger = trigger_config or TriggerConfig.from_env({})
+        # Constructed once in __main__.py (env-gated import). The
+        # agent.wakeword.enabled setting controls whether it's currently
+        # attached to the mic — we hold a stable reference here so the
+        # enabled toggle can re-attach without reconstructing.
+        self._wake_detector = wake_detector
         # Seed from the injected stt so a config snapshot that matches the
         # env-configured backend doesn't trigger a redundant rebuild — which
         # would discard the already-warmed instance for a cold one.
@@ -253,6 +259,15 @@ class AgentService(BaseService):
             f"{topics.CONFIG_CHANGED}.agent.interaction_mode",
             schemas.ConfigChanged,
             self._on_config_interaction_mode,
+        )
+
+        # Wake-word enabled toggle — re-attaches or detaches the pre-built
+        # detector from the mic without reconstructing it.
+        await nats_helper.subscribe_model(
+            self.nats,
+            f"{topics.CONFIG_CHANGED}.agent.wakeword.enabled",
+            schemas.ConfigChanged,
+            self._on_config_wakeword_enabled,
         )
 
         # Trigger-mode loop config — every field is live-tunable so the
@@ -470,6 +485,24 @@ class AgentService(BaseService):
                 self._interaction_mode.value,
             )
             self._interaction_mode = new_mode
+
+    async def _on_config_wakeword_enabled(self, subject: str, msg: schemas.ConfigChanged) -> None:
+        v = msg.value
+        enabled = v.strip().lower() in ("true", "1", "yes", "on") if isinstance(v, str) else bool(v)
+
+        if enabled and self._wake_detector is None:
+            self.log.warning(
+                "agent.wakeword.enabled=true but no detector was constructed at startup — "
+                "set LAFUFU_WAKEWORD_ENABLED=1 in the service env and restart to import the dep"
+            )
+            return
+
+        if not hasattr(self._mic, "wake_detector"):
+            self.log.warning("mic has no wake_detector attribute — ignoring wakeword toggle")
+            return
+
+        self._mic.wake_detector = self._wake_detector if enabled else None
+        self.log.info("agent.wakeword.enabled.set value=%s", enabled)
 
     async def _on_config_trigger_phrase(self, subject, msg: schemas.ConfigChanged) -> None:
         import dataclasses

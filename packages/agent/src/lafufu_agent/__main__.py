@@ -484,6 +484,7 @@ def main() -> None:
         player_factory=make_player,
         interaction_mode=interaction_mode,
         trigger_config=trigger_config,
+        wake_detector=wake_detector,  # may be None if env disabled
     )
 
     asyncio.run(svc.run())
