@@ -3,11 +3,13 @@
 import asyncio
 import logging
 import subprocess
+import time
 
 from lafufu_shared import nats_helper, schemas, topics
 from lafufu_shared.base_service import BaseService
 
 from .pipeline import VoicePipeline
+from .trigger import InteractionMode, TriggerConfig, is_affirmative
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +52,8 @@ class AgentService(BaseService):
         stt_factory=None,
         piper_factory=None,
         player_factory=None,
+        interaction_mode: InteractionMode = InteractionMode.CONTINUOUS,
+        trigger_config: TriggerConfig | None = None,
     ) -> None:
         super().__init__()
         self._mic = mic
@@ -59,6 +63,10 @@ class AgentService(BaseService):
         self._nats_url = nats_url
         self.stt = stt
         self._stt_factory = stt_factory
+        self._interaction_mode = interaction_mode
+        # Default trigger config is harmless to construct (it just reads env);
+        # only consulted when mode == TRIGGER.
+        self._trigger = trigger_config or TriggerConfig.from_env({})
         # Seed from the injected stt so a config snapshot that matches the
         # env-configured backend doesn't trigger a redundant rebuild — which
         # would discard the already-warmed instance for a cold one.
@@ -85,6 +93,17 @@ class AgentService(BaseService):
         return self._nats_url or super().nats_url
 
     async def on_startup(self) -> None:
+        # Fail loud if trigger mode is requested without a wake-gated mic —
+        # the loop would otherwise silently fall back to continuous-ish RMS,
+        # which is not what was asked for.
+        if self._interaction_mode == InteractionMode.TRIGGER and (
+            getattr(self._mic, "wake_detector", None) is None
+        ):
+            raise RuntimeError(
+                "interaction_mode=trigger requires a wake-word-gated mic; "
+                "set LAFUFU_WAKEWORD_ENABLED=1 and configure LAFUFU_WAKEWORD_MODEL."
+            )
+
         await self._publish_state("warming")
         # Hot-warm Ollama if it has a warmup method
         if hasattr(self._ollama, "warmup"):
@@ -451,7 +470,10 @@ class AgentService(BaseService):
     async def _mic_loop(self) -> None:
         while not self._shutdown.is_set():
             try:
-                await self._voice_cycle_with_split_lock()
+                if self._interaction_mode == InteractionMode.TRIGGER:
+                    await self._trigger_session()
+                else:
+                    await self._voice_cycle_with_split_lock()
             except Exception as e:
                 self.log.exception("voice_cycle.failed error=%s", e)
                 await asyncio.sleep(1.0)
@@ -505,3 +527,147 @@ class AgentService(BaseService):
                 self.nats, _OnceMic(), self._ollama, self._piper, self._speaker_play
             )
             await tmp.run_one_cycle(publish_listening=False)
+
+    # ------------------------------------------------------------------
+    # Trigger-mode interaction loop
+    # ------------------------------------------------------------------
+
+    async def _trigger_session(self) -> None:
+        """One wake-gated interaction: opening line, N rounds, optional print.
+
+        Lock discipline mirrors ``_voice_cycle_with_split_lock``: every
+        ``wait_for_onset`` runs OUTSIDE ``_cycle_lock`` so concurrent text
+        intents stay responsive during the (up to 30 s) silent listen, and the
+        lock is acquired only around the bounded processing/speak portions.
+        """
+        if self._pipeline is None:
+            await asyncio.sleep(0.5)
+            return
+
+        loop = asyncio.get_running_loop()
+
+        # Wake-listen: outside the lock — text intents can run during this.
+        await self._publish_state("listening")
+        started, _ = await loop.run_in_executor(None, self._mic.wait_for_onset)
+        if not started:
+            await self._publish_state("idle")
+            return
+
+        # Opening phrase — short, bounded; hold the lock around the speak so
+        # text intents don't interleave with the TTS for this utterance.
+        async with self._cycle_lock:
+            tmp = VoicePipeline(self.nats, None, self._ollama, self._piper, self._speaker_play)
+            await tmp.speak(
+                self._trigger.phrase,
+                emotion=self._trigger.emotion,
+                source="system",
+            )
+
+        # Each round and the print-ask sub-flow manage their own lock around
+        # the bounded processing parts; their onset waits stay outside.
+        last_reply_text = ""
+        for _ in range(self._trigger.rounds):
+            reply = await self._trigger_round(loop)
+            if reply is None:
+                # Silence timeout or empty transcript — session ends early.
+                break
+            last_reply_text = reply
+
+        await self._handle_trigger_print(loop, last_reply_text)
+        await self._publish_state("idle")
+
+    async def _trigger_round(self, loop: asyncio.AbstractEventLoop) -> str | None:
+        """One user-input → LLM-reply round inside a trigger session.
+
+        ``wait_for_onset`` is called OUTSIDE ``_cycle_lock`` so text intents can
+        run during the silent listen. The lock is acquired once speech onset
+        is detected and held only for the bounded record + STT + LLM + speak.
+
+        Returns the LLM reply body text on success, or None when the round
+        couldn't produce a reply (silence timeout, empty audio, trivial
+        transcript, or STT not configured).
+        """
+        # Onset wait: outside the lock.
+        await self._publish_state("listening")
+        started, pre_roll = await loop.run_in_executor(
+            None,
+            self._mic.wait_for_onset,
+            True,  # force_rms — in-session listen
+        )
+        if not started:
+            return None
+
+        # Process: hold the lock.
+        async with self._cycle_lock:
+            audio = await loop.run_in_executor(None, self._mic.record_until_silence, pre_roll)
+            if getattr(audio, "size", 0) == 0:
+                return None
+            if self.stt is None:
+                return None
+
+            await self._publish_state("transcribing")
+            transcript = await loop.run_in_executor(None, self.stt.transcribe, audio)
+            clean = (transcript or "").strip()
+            if len(clean) < 2:
+                return None
+
+            await nats_helper.publish_model(
+                self.nats,
+                topics.AGENT_TRANSCRIPT,
+                schemas.AgentTranscript(text=clean, timestamp=time.time()),
+            )
+
+            await self._publish_state("thinking")
+            reply_raw = await self._ollama.chat(clean)
+
+            from .emotion_parser import parse
+
+            emotion, body = parse(reply_raw)
+
+            tmp = VoicePipeline(self.nats, None, self._ollama, self._piper, self._speaker_play)
+            await tmp.speak(body, emotion)
+            return body
+
+    async def _send_print(self, text: str) -> None:
+        """Publish a print-text intent for the receipt printer."""
+        await nats_helper.publish_model(
+            self.nats,
+            topics.PRINTER_INTENT_PRINT_TEXT,
+            schemas.PrinterIntentPrintText(text=text),
+        )
+
+    async def _handle_trigger_print(
+        self, loop: asyncio.AbstractEventLoop, last_reply_text: str
+    ) -> None:
+        """Dispatch the configured trigger-mode print behaviour.
+
+        For ``ask`` mode, the prompt is spoken under ``_cycle_lock``, but the
+        subsequent yes/no onset wait runs outside it (same split-lock pattern
+        as ``_trigger_round``).
+        """
+        mode = self._trigger.print_mode
+        if mode == "none" or not last_reply_text:
+            return
+        if mode == "auto":
+            await self._send_print(last_reply_text)
+            return
+
+        # ask mode: speak the prompt under the lock — short and bounded.
+        async with self._cycle_lock:
+            tmp = VoicePipeline(self.nats, None, self._ollama, self._piper, self._speaker_play)
+            await tmp.speak(self._trigger.print_prompt, emotion="neutral", source="system")
+
+        # Onset wait: outside the lock.
+        started, pre_roll = await loop.run_in_executor(None, self._mic.wait_for_onset, True)
+        if not started:
+            return
+
+        # Process: hold the lock.
+        async with self._cycle_lock:
+            audio = await loop.run_in_executor(None, self._mic.record_until_silence, pre_roll)
+            if getattr(audio, "size", 0) == 0 or self.stt is None:
+                return
+            await self._publish_state("transcribing")
+            transcript = await loop.run_in_executor(None, self.stt.transcribe, audio)
+            if is_affirmative(transcript or ""):
+                await self._send_print(last_reply_text)
