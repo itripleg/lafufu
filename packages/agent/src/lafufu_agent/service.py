@@ -237,6 +237,15 @@ class AgentService(BaseService):
             self._on_config_silence_seconds,
         )
 
+        # Mic device selection — operator can pick a specific input from the
+        # admin UI. "auto" preserves the existing PREFER/PyAudio-default chain.
+        await nats_helper.subscribe_model(
+            self.nats,
+            f"{topics.CONFIG_CHANGED}.agent.input_device",
+            schemas.ConfigChanged,
+            self._on_config_input_device,
+        )
+
         # Sync to DB on startup so all the *.changed.* subscribers above receive
         # the current admin-set values immediately, instead of waiting for the
         # operator to toggle each one.
@@ -407,6 +416,20 @@ class AgentService(BaseService):
         if hasattr(self._mic, "silence_tail_s"):
             self._mic.silence_tail_s = value
             self.log.info("mic.silence_tail_s.set value=%.2f", value)
+
+    async def _on_config_input_device(self, subject: str, msg: schemas.ConfigChanged) -> None:
+        from .audio_capture import set_db_input_device
+
+        value = str(msg.value).strip() or "auto"
+        set_db_input_device(value)
+        self.log.info("agent.input_device.set value=%s", value)
+        # Force the next listen to re-pick by closing the stream. _ensure_stream
+        # reopens it bound to the new device.
+        if hasattr(self._mic, "close"):
+            try:
+                self._mic.close()
+            except Exception as e:
+                self.log.warning("mic.close.failed_during_input_device_swap error=%s", e)
 
     async def _on_config_auto_listen(self, subject: str, msg: schemas.ConfigChanged) -> None:
         v = msg.value

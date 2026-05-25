@@ -659,3 +659,44 @@ async def test_trigger_session_publishes_wake_listening_state(nats_server):
     assert "listening" in later, (
         f"expected an in-session 'listening' after wake_listening; later={later}"
     )
+
+
+async def test_input_device_setting_resets_mic(nats_server):
+    """A change to agent.input_device should both update the audio_capture
+    module-level snapshot AND close the existing mic stream so the next
+    listen rebinds to the new device."""
+    from lafufu_agent import audio_capture
+
+    closed = {"count": 0}
+
+    class _Mic:
+        def close(self):
+            closed["count"] += 1
+
+        def listen_once(self):
+            return ""
+
+    svc = AgentService(
+        mic=_Mic(),
+        ollama=FakeOllama(),
+        piper=FakePiper(),
+        nats_url=nats_server,
+    )
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.5)
+
+    nc = await nats.connect(nats_server)
+    await publish_model(
+        nc,
+        f"{topics.CONFIG_CHANGED}.agent.input_device",
+        schemas.ConfigChanged(key="agent.input_device", value="usb", source="test"),
+    )
+    await asyncio.sleep(0.3)
+    await nc.drain()
+
+    assert audio_capture._db_input_device == "usb"
+    assert closed["count"] >= 1, "mic should be closed so next listen picks the new device"
+
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)
+    audio_capture.set_db_input_device("auto")  # reset for other tests
