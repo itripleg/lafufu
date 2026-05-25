@@ -33,6 +33,13 @@ web/public/lafufu-bg.mp4
 models/*.onnx
 models/*.onnx.json
 
+# Wake-word training scratch — only the scaffolding README is committed.
+training/wakeword/atlas-voice-training/
+training/wakeword/data/
+training/wakeword/models/
+training/wakeword/*.onnx
+training/wakeword/*.tflite
+
 # OS
 .DS_Store
 Thumbs.db
