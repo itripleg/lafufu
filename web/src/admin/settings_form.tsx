@@ -65,6 +65,31 @@ const DYNAMIC_OPTIONS: Record<string, () => Promise<OptionEntry[]>> = {
         : `${m.name} — ${m.size_mb} MB (will download)`,
     }));
   },
+  // Trigger mode + wake-word config — all enums hardcoded since these are
+  // tiny fixed sets the backend doesn't enumerate.
+  "agent.interaction_mode": async () => ["continuous", "trigger"],
+  "agent.trigger.emotion": async () => [
+    "happy", "sad", "angry", "surprised", "neutral", "agree", "disagree",
+  ],
+  "agent.trigger.print_mode": async () => ["none", "auto", "ask"],
+  // openwakeword's bundled default models. When a custom hey_lafufu.onnx
+  // lands in assets/wakeword/ (per the training scaffold), this should
+  // switch to a /api/agent/wakeword-models endpoint that enumerates the
+  // directory like /voices does.
+  "agent.wakeword.model": async () => [
+    "hey_jarvis_v0.1",
+    "alexa_v0.1",
+    "hey_mycroft_v0.1",
+    "hey_rhasspy_v0.1",
+    "timer_v0.1",
+    "weather_v0.1",
+  ],
+  // Mic device picker — backend enumerates PyAudio's input devices,
+  // first entry is always the "auto" sentinel.
+  "agent.input_device": async () => {
+    const { devices } = await api.listInputDevices();
+    return devices.map((d) => ({ value: d.name, label: d.label }));
+  },
 };
 
 /** Pure helper: split an OptionEntry into (value, label). */
@@ -96,7 +121,8 @@ function categoryOf(key: string): Tab {
     key.startsWith("tts.") ||
     key === "agent.silence_threshold" ||
     key === "agent.silence_seconds" ||
-    key === "agent.auto_listen"
+    key === "agent.auto_listen" ||
+    key === "agent.input_device"
   ) return "audio";
   return "other";
 }
