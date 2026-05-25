@@ -12,6 +12,11 @@ dependencies = [
     "audioop-lts>=0.2.2",
 ]
 
+[project.optional-dependencies]
+# Wake-word gate: feeds raw mic audio to a tiny ONNX model so Whisper only
+# runs after a keyword fires. Enable at runtime with LAFUFU_WAKEWORD_ENABLED=1.
+wakeword = ["openwakeword>=0.6"]
+
 [tool.uv.sources]
 lafufu-shared = { workspace = true }
 
