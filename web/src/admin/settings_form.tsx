@@ -108,32 +108,25 @@ export const optionParts = (o: OptionEntry): { value: string; label: string } =>
 
 const DRAFT_PREFIX = "settings/draft/";
 
-type Tab = "audio" | "model" | "printer" | "other";
+type Tab = "agent" | "animator" | "audio" | "printer" | "other";
 
 const TABS: Array<{ id: Tab; label: string; hint: string }> = [
-  { id: "audio",   label: "audio",   hint: "speaker, tts, mic" },
-  { id: "model",   label: "model",   hint: "llm + stt + tts voice + system prompt" },
-  { id: "printer", label: "printer", hint: "auto-print + letterhead" },
-  { id: "other",   label: "other",   hint: "animator, misc" },
+  { id: "agent",    label: "agent",    hint: "voice loop · trigger · wake word · mic" },
+  { id: "animator", label: "animator", hint: "idle animation · servo defaults" },
+  { id: "audio",    label: "audio",    hint: "speaker · TTS" },
+  { id: "printer",  label: "printer",  hint: "auto-print · letterhead" },
+  { id: "other",    label: "other",    hint: "uncategorised" },
 ];
 
-function categoryOf(key: string): Tab {
-  if (
-    key === "agent.llm_model" ||
-    key === "agent.system_prompt" ||
-    key === "agent.voice_model" ||
-    key === "agent.stt_backend" ||
-    key === "agent.whisper_model"
-  ) return "model";
-  if (key.startsWith("printer.")) return "printer";
-  if (
-    key.startsWith("speaker.") ||
-    key.startsWith("tts.") ||
-    key === "agent.silence_threshold" ||
-    key === "agent.silence_seconds" ||
-    key === "agent.auto_listen" ||
-    key === "agent.input_device"
-  ) return "audio";
+export function categoryOf(key: string): Tab {
+  // Audio tab is the one cross-namespace exception — speaker.* + tts.* both
+  // live there because operators think of them together (volume + voice
+  // playback speed).
+  if (key.startsWith("speaker.") || key.startsWith("tts.")) return "audio";
+  const prefix = key.split(".", 1)[0];
+  if (prefix === "agent" || prefix === "animator" || prefix === "printer") {
+    return prefix;
+  }
   return "other";
 }
 
@@ -461,8 +454,9 @@ export const SettingsForm: Component<Props> = (props) => {
   const countsByTab = createMemo(() => {
     const q = filter().trim().toLowerCase();
     const out: Record<Tab, { dirty: number; matches: number }> = {
+      agent: { dirty: 0, matches: 0 },
+      animator: { dirty: 0, matches: 0 },
       audio: { dirty: 0, matches: 0 },
-      model: { dirty: 0, matches: 0 },
       printer: { dirty: 0, matches: 0 },
       other: { dirty: 0, matches: 0 },
     };
@@ -510,92 +504,104 @@ export const SettingsForm: Component<Props> = (props) => {
         </>
       }
     >
-      {/* Tab bar — categories of settings. Shows a count only while a search
-          is active (how many matches live in each tab) and a discreet amber
-          dot when that tab has dirty drafts. */}
+      {/* Sticky header — tab bar + search input stay visible while scrolling
+          through the settings list. The solid background covers content that
+          would otherwise bleed through behind the stuck element. */}
       <div
-        role="tablist"
         style={{
-          display: "flex",
-          gap: "4px",
-          padding: "3px",
-          background: "var(--c-shell)",
-          border: "1px solid var(--c-edge)",
-          "border-radius": "12px",
-          "margin-bottom": "12px",
-          "flex-wrap": "wrap",
+          position: "sticky",
+          top: 0,
+          "z-index": 1,
+          background: "var(--c-shell, #1a1410)",
+          "padding-bottom": "10px",
+          "margin-bottom": "8px",
         }}
       >
-        <For each={TABS}>
-          {(t) => {
-            const c = () => countsByTab()[t.id];
-            const active = () => tab() === t.id;
-            return (
-              <button
-                role="tab"
-                aria-selected={active()}
-                onClick={() => setActiveTab(t.id)}
-                title={t.hint}
-                class="btn btn--micro"
-                style={{
-                  position: "relative",
-                  background: active() ? "var(--c-raised)" : "transparent",
-                  border: active() ? "1px solid var(--c-edge)" : "1px solid transparent",
-                  color: active() ? "var(--c-bone)" : "var(--c-mist)",
-                  display: "flex",
-                  "align-items": "center",
-                  flex: "1 1 auto",
-                  "justify-content": "center",
-                  "min-width": "0",
-                }}
-              >
-                <span>{t.label}</span>
-                {/* Match count + dirty dot are absolutely positioned so they
-                    never change the tab's flow size — no layout shift when a
-                    search toggles the badge on and off. */}
-                <Show when={c().matches > 0}>
-                  <span
-                    class="f-mono"
-                    style={{
-                      position: "absolute",
-                      top: "50%",
-                      right: "5px",
-                      transform: "translateY(-50%)",
-                      "font-size": "9px",
-                      color: "var(--c-amber)",
-                      background: "rgba(212, 162, 89, 0.14)",
-                      "border-radius": "999px",
-                      padding: "1px 5px",
-                      "pointer-events": "none",
-                    }}
-                    title={`${c().matches} search match${c().matches === 1 ? "" : "es"}`}
-                  >
-                    {c().matches}
-                  </span>
-                </Show>
-                <Show when={c().dirty > 0}>
-                  <span
-                    style={{
-                      position: "absolute",
-                      top: "4px",
-                      left: "5px",
-                      width: "6px",
-                      height: "6px",
-                      "border-radius": "50%",
-                      background: "var(--c-amber)",
-                      "box-shadow": "0 0 4px var(--c-amber)",
-                      "pointer-events": "none",
-                    }}
-                    title={`${c().dirty} unsaved draft${c().dirty === 1 ? "" : "s"}`}
-                  />
-                </Show>
-              </button>
-            );
+        {/* Tab bar — categories of settings. Shows a count only while a search
+            is active (how many matches live in each tab) and a discreet amber
+            dot when that tab has dirty drafts. */}
+        <div
+          role="tablist"
+          style={{
+            display: "flex",
+            gap: "4px",
+            padding: "3px",
+            background: "var(--c-shell)",
+            border: "1px solid var(--c-edge)",
+            "border-radius": "12px",
+            "margin-bottom": "12px",
+            "flex-wrap": "wrap",
           }}
-        </For>
-      </div>
+        >
+          <For each={TABS}>
+            {(t) => {
+              const c = () => countsByTab()[t.id];
+              const active = () => tab() === t.id;
+              return (
+                <button
+                  role="tab"
+                  aria-selected={active()}
+                  onClick={() => setActiveTab(t.id)}
+                  title={t.hint}
+                  class="btn btn--micro"
+                  style={{
+                    position: "relative",
+                    background: active() ? "var(--c-raised)" : "transparent",
+                    border: active() ? "1px solid var(--c-edge)" : "1px solid transparent",
+                    color: active() ? "var(--c-bone)" : "var(--c-mist)",
+                    display: "flex",
+                    "align-items": "center",
+                    flex: "1 1 auto",
+                    "justify-content": "center",
+                    "min-width": "0",
+                  }}
+                >
+                  <span>{t.label}</span>
+                  {/* Match count + dirty dot are absolutely positioned so they
+                      never change the tab's flow size — no layout shift when a
+                      search toggles the badge on and off. */}
+                  <Show when={c().matches > 0}>
+                    <span
+                      class="f-mono"
+                      style={{
+                        position: "absolute",
+                        top: "50%",
+                        right: "5px",
+                        transform: "translateY(-50%)",
+                        "font-size": "9px",
+                        color: "var(--c-amber)",
+                        background: "rgba(212, 162, 89, 0.14)",
+                        "border-radius": "999px",
+                        padding: "1px 5px",
+                        "pointer-events": "none",
+                      }}
+                      title={`${c().matches} search match${c().matches === 1 ? "" : "es"}`}
+                    >
+                      {c().matches}
+                    </span>
+                  </Show>
+                  <Show when={c().dirty > 0}>
+                    <span
+                      style={{
+                        position: "absolute",
+                        top: "4px",
+                        left: "5px",
+                        width: "6px",
+                        height: "6px",
+                        "border-radius": "50%",
+                        background: "var(--c-amber)",
+                        "box-shadow": "0 0 4px var(--c-amber)",
+                        "pointer-events": "none",
+                      }}
+                      title={`${c().dirty} unsaved draft${c().dirty === 1 ? "" : "s"}`}
+                    />
+                  </Show>
+                </button>
+              );
+            }}
+          </For>
+        </div>
 
-      <div style={{ "margin-bottom": "14px" }}>
         <input
           type="text"
           class="field"
