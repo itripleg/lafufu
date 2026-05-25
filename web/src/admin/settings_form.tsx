@@ -48,6 +48,24 @@ const DYNAMIC_OPTIONS: Record<string, () => Promise<string[]>> = {
     // that would fail to load.
     return voices.filter((v) => v.has_config).map((v) => v.name);
   },
+  // Standard OpenAI Whisper / faster-whisper model names. Both STT backends
+  // accept the same identifiers — the smaller .en variants are recommended
+  // for the Pi (fast + English-only); the multilingual ones for non-English
+  // visitors. Hardcoded here because neither backend exposes a "list models"
+  // API — they download on first use against these canonical names.
+  "agent.whisper_model": async () => [
+    "tiny.en",
+    "tiny",
+    "base.en",
+    "base",
+    "small.en",
+    "small",
+    "medium.en",
+    "medium",
+    "large-v3",
+    "large-v2",
+    "large",
+  ],
 };
 
 const DRAFT_PREFIX = "settings/draft/";
@@ -56,7 +74,7 @@ type Tab = "audio" | "model" | "printer" | "other";
 
 const TABS: Array<{ id: Tab; label: string; hint: string }> = [
   { id: "audio",   label: "audio",   hint: "speaker, tts, mic" },
-  { id: "model",   label: "model",   hint: "llm + tts voice + system prompt" },
+  { id: "model",   label: "model",   hint: "llm + stt + tts voice + system prompt" },
   { id: "printer", label: "printer", hint: "auto-print + letterhead" },
   { id: "other",   label: "other",   hint: "animator, misc" },
 ];
@@ -65,7 +83,9 @@ function categoryOf(key: string): Tab {
   if (
     key === "agent.llm_model" ||
     key === "agent.system_prompt" ||
-    key === "agent.voice_model"
+    key === "agent.voice_model" ||
+    key === "agent.stt_backend" ||
+    key === "agent.whisper_model"
   ) return "model";
   if (key.startsWith("printer.")) return "printer";
   if (
@@ -73,9 +93,7 @@ function categoryOf(key: string): Tab {
     key.startsWith("tts.") ||
     key === "agent.silence_threshold" ||
     key === "agent.silence_seconds" ||
-    key === "agent.auto_listen" ||
-    key === "agent.stt_backend" ||
-    key === "agent.whisper_model"
+    key === "agent.auto_listen"
   ) return "audio";
   return "other";
 }
