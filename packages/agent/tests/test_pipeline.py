@@ -304,6 +304,49 @@ async def test_ip_intent_prints_and_speaks_without_llm(nats_server, monkeypatch)
     assert "192.168.1.42" in replies[0].text
 
 
+async def test_run_one_cycle_resets_state_on_llm_failure(nats_server):
+    """If ollama.chat() raises, run_one_cycle must reset state from
+    'thinking' back to idle (via degraded), not leave it stranded."""
+    import nats
+    import pytest
+
+    nc = await nats.connect(nats_server)
+    state_tails: list[str] = []
+
+    async def cb_state(msg):
+        state_tails.append(msg.subject.rsplit(".", 1)[-1])
+
+    await nc.subscribe(f"{topics.AGENT_STATE}.*", cb=cb_state)
+
+    class _BoomOllama:
+        async def chat(self, user_text: str, history=None) -> str:
+            raise RuntimeError("ollama outage")
+
+    pipeline = VoicePipeline(
+        nats_client=await nats.connect(nats_server, name="pipeline-llm-fail"),
+        mic=FakeMic(),
+        ollama=_BoomOllama(),
+        piper=FakePiper(chunks=[(b"\x00" * 100, 0.3)]),
+    )
+
+    with pytest.raises(RuntimeError, match="ollama outage"):
+        await pipeline.run_one_cycle()
+
+    await asyncio.sleep(0.2)
+    await nc.drain()
+
+    # Must have reached 'thinking' before the failure
+    assert "thinking" in state_tails, f"expected 'thinking' in {state_tails}"
+    # Must NOT end at 'thinking'
+    assert state_tails[-1] != "thinking", (
+        f"state must not be stranded at 'thinking'; got {state_tails}"
+    )
+    # Must end at 'idle' (after degraded marker)
+    assert state_tails[-1] == "idle", f"last state must be 'idle'; got {state_tails}"
+    # Must have passed through 'degraded' as a failure marker
+    assert "degraded" in state_tails, f"expected 'degraded' marker in {state_tails}"
+
+
 async def test_run_one_cycle_can_skip_listening_state(nats_server):
     """run_one_cycle(publish_listening=False) must not emit the 'listening' state
     but must still emit 'thinking' (and the rest of the cycle)."""
