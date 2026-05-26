@@ -111,6 +111,7 @@ def _f2d(f: Frame) -> dict:
         "brow": f.brow,
         "image": f.image,
         "description": f.description,
+        "is_builtin": f.is_builtin,
     }
 
 
@@ -175,6 +176,14 @@ def delete_frame(name: str, req: Request):
         f = s.get(Frame, name)
         if f is None:
             return None  # idempotent
+        if f.is_builtin:
+            raise HTTPException(
+                400,
+                detail={
+                    "error_code": "is_builtin",
+                    "message": f"frame {name!r} is a built-in and cannot be deleted; reset it instead",
+                },
+            )
         # Refuse if any expression references this frame — otherwise /play would
         # 409 on the orphan reference later. Scan via LIKE on the JSON column;
         # cheap given the table size.
@@ -271,6 +280,7 @@ def _e2d(e: Expression) -> dict:
         "random_walk_config": rwc,
         "emotion": e.emotion,
         "description": e.description,
+        "is_builtin": e.is_builtin,
     }
 
 
@@ -346,6 +356,14 @@ def delete_expression(name: str, req: Request):
         e = s.get(Expression, name)
         if e is None:
             return None  # idempotent
+        if e.is_builtin:
+            raise HTTPException(
+                400,
+                detail={
+                    "error_code": "is_builtin",
+                    "message": f"expression {name!r} is a built-in and cannot be deleted; reset it instead",
+                },
+            )
         # Refuse if this expression is bound to an emotion — the agent service
         # (and idle bootstrap) rely on emotion → expression resolution; deleting
         # a bound expression silently orphans those code paths. Operator must
