@@ -68,9 +68,6 @@ class AnimatorService(BaseService):
         self._last_rms_ts = 0.0
         self._last_intent_mono = 0.0  # monotonic timestamp of last intent/preview/reply
         self.idle_animation_enabled = True  # toggleable via settings (Phase 0 default: on)
-        # CONCERN: idle_animation_enabled is now a no-op — the new keyframe player loop
-        # treats idle as just-another-expression. The field and subscriber are kept alive
-        # so config snapshot replay does not break, but the value is unused by the loop.
 
         # Single active KeyframePlayer (None when no expression is playing).
         # Idle fallback: when _active_player is done/None and _idle_payload is

@@ -268,7 +268,7 @@ export const api = {
   // Servo config
   getAnimatorConfig: () =>
     req<{
-      ranges: Record<string, [number, number]>;
+      ranges: Record<string, readonly [number, number]>;
       idle_defaults: Record<string, number>;
       idle_overrides: Record<string, number>;
     }>("GET", "/animator/config"),

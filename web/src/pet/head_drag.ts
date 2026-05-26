@@ -16,9 +16,6 @@ export type ServoRanges = Record<
 /** Servos the /pet page lets the user drag directly. */
 export type DraggableAxis = "head_lr" | "head_ud" | "eye" | "jaw";
 
-/** Back-compat alias — earlier code & tests only knew about the two head axes. */
-export type HeadAxis = "head_lr" | "head_ud";
-
 /** Pixels of drag that span one servo's full range. ~500px is a comfortable
  *  phone-screen swipe; uniform across axes for predictable feel. */
 const PX_PER_FULL_RANGE = 500;
