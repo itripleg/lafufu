@@ -52,6 +52,10 @@ def main() -> int:
 
     print(f"Loading {args.model!r} via onnxruntime...")
     model = Model(wakeword_models=[args.model], inference_framework="onnx")
+    # When --model is a file path, openwakeword keys scores by the file's stem
+    # (e.g. assets/wakeword/lafufu.onnx → "lafufu"). Built-in names key as-is.
+    from pathlib import Path as _P
+    score_key = _P(args.model).stem if _P(args.model).suffix in (".onnx", ".tflite") else args.model
 
     p = pyaudio.PyAudio()
     stream = p.open(
@@ -62,7 +66,7 @@ def main() -> int:
         frames_per_buffer=CHUNK,
     )
 
-    say = args.model.replace("_", " ")
+    say = score_key.replace("_", " ")
     print(f'\nListening for "{say}" — Ctrl+C to stop.  (threshold={args.threshold})\n')
 
     try:
@@ -70,7 +74,7 @@ def main() -> int:
             data = stream.read(CHUNK, exception_on_overflow=False)
             audio = np.frombuffer(data, dtype=np.int16)
             scores = model.predict(audio)
-            score = float(scores.get(args.model, 0.0))
+            score = float(scores.get(score_key, 0.0))
 
             bar = "#" * int(score * 40)
             sys.stdout.write(f"\r{score:0.3f} |{bar:<40}|")
