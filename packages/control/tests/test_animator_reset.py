@@ -86,3 +86,8 @@ def test_reset_frame_rejects_non_builtin(client):
 def test_reset_expression_missing_returns_404(client):
     r = client.post("/api/animator/expressions/zzz_nope/reset")
     assert r.status_code == 404
+
+
+def test_reset_frame_missing_returns_404(client):
+    r = client.post("/api/animator/frames/zzz_nope/reset")
+    assert r.status_code == 404
