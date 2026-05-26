@@ -1,6 +1,10 @@
 [Unit]
 Description=Lafufu Animator (servos + lipsync)
-After=nats.service
+# Order after control so request_config_snapshot fires AFTER control has
+# subscribed to it on its own startup (otherwise the snapshot request is
+# silently dropped — NATS is fire-and-forget — and the animator boots with
+# env defaults, ignoring DB-tuned idle positions).
+After=nats.service lafufu-control.service
 Wants=nats.service
 PartOf=lafufu.target
 
