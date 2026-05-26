@@ -52,16 +52,6 @@ const SortableStep: Component<{
 
 const PLAYBACK: ExpressionDTO["playback"][] = ["once", "loop", "shuffle", "random_walk"];
 const DEFAULT_RW = { intensity: 1.0, speed: 1.0, pause_chance: 0.30 };
-const EMOTIONS = [
-  "idle",
-  "agree",
-  "disagree",
-  "happy",
-  "sad",
-  "angry",
-  "surprised",
-  "neutral",
-] as const;
 
 export const ExpressionsSection: Component<{ nats: NatsWs }> = (props) => {
   const expressions = createReactiveResource(
@@ -299,7 +289,9 @@ export const ExpressionsSection: Component<{ nats: NatsWs }> = (props) => {
                       class="bg-stone-800 border border-stone-600 rounded px-1 py-0.5"
                     >
                       <option value="">(none)</option>
-                      <For each={EMOTIONS}>{(m) => <option value={m}>{m}</option>}</For>
+                      <For each={expressions() ?? []}>
+                        {(x) => <option value={x.name}>{x.name}</option>}
+                      </For>
                     </select>
                   </label>
                 </div>
