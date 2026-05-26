@@ -6,7 +6,7 @@ import { emotionToColor, EMOTION_GLYPH, type Emotion } from "../shared/design";
 import { toast } from "../shared/toast";
 import { Blob } from "../shared/blob";
 import { createPetScene, SERVO_RANGES } from "./pet_scene";
-import { applyDragDelta, axisMid } from "./head_drag";
+import { applyDragDelta, axisMid, type DraggableAxis } from "./head_drag";
 
 type ChatLine = { who: "you" | "lafufu"; text: string; emotion?: string; ts: number };
 
@@ -82,29 +82,33 @@ const Pet: Component = () => {
   // ---- Pointer interaction: drag puppeteers the head; tap detects zones ----
   let dragging = false;
   let didDrag = false;
-  let gesture: "none" | "puppeteer" | "tug" = "none";
+  let gesture: "none" | "puppeteer" | "tug" | "eye_pan" | "jaw_open" = "none";
   let tugSide: "L" | "R" | null = null;
   let lastX = 0, lastY = 0;
   let downX = 0, downY = 0;
   let downT = 0;
   let velY = 0;            // last drag dy — used to detect downward "tug" gestures
 
-  // Commanded head-servo targets (DXL units) while puppeteering.
+  // Commanded servo targets (DXL units) while dragging the corresponding part.
   let headLr = axisMid("head_lr");
   let headUd = axisMid("head_ud");
-  let lastHeadDragTs = 0;                       // post-release grace window
+  let eyeDxl = axisMid("eye");
+  let jawDxl = axisMid("jaw");
   let lastPose: Record<string, number> = {};   // latest animator.pose payload
+
+  // Per-axis release timestamp. While an axis is being dragged OR within 800ms
+  // of release, the animator.pose echo for that axis is suppressed so the
+  // servo round-trip can't fight the drag.
+  const axisHoldTs: Record<DraggableAxis, number> = {
+    head_lr: 0, head_ud: 0, eye: 0, jaw: 0,
+  };
+  const axisOwned = (a: DraggableAxis): boolean =>
+    performance.now() - axisHoldTs[a] < 800;
 
   // Spin easter-egg: timestamps of recent left<->right reversals near a
   // range extreme. Replaces the old unbounded-yaw detector.
   let sweepReversals: number[] = [];
   let sweepDir = 0;        // -1 / +1 — last horizontal drag direction
-
-  // True while the user owns the head: actively puppeteering, or within 800ms
-  // of release. The animator.pose echo is suppressed for head_lr/head_ud
-  // during this window so the servo round-trip can't fight the drag.
-  const headControlActive = () =>
-    gesture === "puppeteer" || performance.now() - lastHeadDragTs < 800;
 
   const raycaster = new THREE.Raycaster();
   const ndc = new THREE.Vector2();
@@ -123,17 +127,31 @@ const Pet: Component = () => {
     return hits.length ? (hits[0].object.userData.zone as string) : null;
   };
 
-  // Throttled servo command — sends the latest headLr/headUd at most ~every
-  // 40ms. A throttle (not body_panel's trailing debounce) so the servos keep
-  // tracking during a continuous drag, not only when the finger pauses.
+  // Throttled servo command — coalesces multiple axis updates and fires at
+  // most every ~40ms. A throttle (not body_panel's trailing debounce) so the
+  // servos keep tracking during a continuous drag, not only when the finger
+  // pauses. Per-axis pending values overwrite each other in the same window.
   let previewTimer: ReturnType<typeof setTimeout> | undefined;
+  const pendingPreview: Partial<Record<DraggableAxis, number>> = {};
   const flushPreview = () => {
     previewTimer = undefined;
-    api.animatorPreview("head_lr", Math.round(headLr)).catch(() => {});
-    api.animatorPreview("head_ud", Math.round(headUd)).catch(() => {});
+    for (const k of Object.keys(pendingPreview) as DraggableAxis[]) {
+      const v = pendingPreview[k];
+      if (v !== undefined) {
+        api.animatorPreview(k, Math.round(v)).catch(() => {});
+        delete pendingPreview[k];
+      }
+    }
   };
-  const schedulePreview = () => {
+  const queuePreview = (axis: DraggableAxis, value: number) => {
+    pendingPreview[axis] = value;
     if (previewTimer === undefined) previewTimer = setTimeout(flushPreview, 40);
+  };
+  const cancelPreviewTimer = () => {
+    if (previewTimer !== undefined) {
+      clearTimeout(previewTimer);
+      previewTimer = undefined;
+    }
   };
 
   // Count a reversal when the horizontal drag flips direction while the head
@@ -165,6 +183,14 @@ const Pet: Component = () => {
     if (zone === "earL" || zone === "earR") {
       gesture = "tug";
       tugSide = zone === "earL" ? "L" : "R";
+    } else if (zone === "eyes") {
+      gesture = "eye_pan";
+      tugSide = null;
+      eyeDxl = lastPose.eye ?? axisMid("eye");
+    } else if (zone === "mouth") {
+      gesture = "jaw_open";
+      tugSide = null;
+      jawDxl = lastPose.jaw ?? axisMid("jaw");
     } else {
       gesture = "puppeteer";
       tugSide = null;
@@ -182,16 +208,33 @@ const Pet: Component = () => {
     lastX = e.clientX; lastY = e.clientY;
     velY = dy;
 
+    const now = performance.now();
     if (gesture === "puppeteer") {
       // Drag right -> head turns right; drag down -> head tilts down. If the
       // rig moves the wrong way during manual verification, negate dx/dy here.
       headLr = applyDragDelta("head_lr", headLr, dx);
       headUd = applyDragDelta("head_ud", headUd, dy);
-      lastHeadDragTs = performance.now();
+      axisHoldTs.head_lr = now;
+      axisHoldTs.head_ud = now;
       // Optimistic visual update — the model tracks the drag immediately.
       api3d?.setPose({ head_lr: headLr, head_ud: headUd });
-      schedulePreview();
+      queuePreview("head_lr", headLr);
+      queuePreview("head_ud", headUd);
       trackSweep(dx);
+    } else if (gesture === "eye_pan") {
+      // Horizontal drag pans the shared eye servo left/right.
+      eyeDxl = applyDragDelta("eye", eyeDxl, dx);
+      axisHoldTs.eye = now;
+      api3d?.setPose({ eye: eyeDxl });
+      queuePreview("eye", eyeDxl);
+    } else if (gesture === "jaw_open") {
+      // Drag DOWN opens the mouth (like pulling the chin). Jaw range is
+      // [open=1594 .. closed=1811], so dragging down (positive dy) needs to
+      // decrease jawDxl → pass -dy.
+      jawDxl = applyDragDelta("jaw", jawDxl, -dy);
+      axisHoldTs.jaw = now;
+      api3d?.setPose({ jaw: jawDxl });
+      queuePreview("jaw", jawDxl);
     }
   };
   const onPointerUp = (e: PointerEvent) => {
@@ -219,12 +262,10 @@ const Pet: Component = () => {
     } else if (wasGesture === "puppeteer") {
       // Keep the 800ms grace window alive past release so the animator.pose
       // echo can't reclaim the head before the servo settles.
-      lastHeadDragTs = performance.now();
-      // Commit the exact release position promptly.
-      if (previewTimer !== undefined) {
-        clearTimeout(previewTimer);
-        previewTimer = undefined;
-      }
+      const now = performance.now();
+      axisHoldTs.head_lr = now;
+      axisHoldTs.head_ud = now;
+      cancelPreviewTimer();
       flushPreview();
       // "Spin" easter egg — 3 rapid end-to-end reversals.
       if (sweepReversals.length >= 3) {
@@ -233,6 +274,14 @@ const Pet: Component = () => {
         triggerExpression("disagree");
         flashHint(e.clientX, e.clientY, "stop spinning me!");
       }
+    } else if (wasGesture === "eye_pan") {
+      axisHoldTs.eye = performance.now();
+      cancelPreviewTimer();
+      flushPreview();
+    } else if (wasGesture === "jaw_open") {
+      axisHoldTs.jaw = performance.now();
+      cancelPreviewTimer();
+      flushPreview();
     }
   };
 
@@ -305,12 +354,12 @@ const Pet: Component = () => {
     }));
     subs.push(nats.subscribe("animator.pose", (f) => {
       lastPose = f.payload;
-      // While the user owns the head, drop the head axes from the echo so the
-      // servo round-trip can't fight the drag. Eyes/jaw/brow keep flowing.
-      const p = { ...f.payload };
-      if (headControlActive()) {
-        delete p.head_lr;
-        delete p.head_ud;
+      // While the user owns an axis (actively dragging or in the 800ms grace
+      // window after release), drop it from the echo so the servo round-trip
+      // can't fight the drag. Other axes keep flowing.
+      const p: Record<string, number> = { ...f.payload };
+      for (const a of ["head_lr", "head_ud", "eye", "jaw"] as DraggableAxis[]) {
+        if (axisOwned(a)) delete p[a];
       }
       api3d?.setPose(p);
     }));

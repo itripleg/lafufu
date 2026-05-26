@@ -173,22 +173,25 @@ export function createPetScene(container: HTMLElement): PetScene {
   const rightEye = makeEye(0.4);
 
   // ---- Brow: a soft strip arc over the eyes -------------------------------
+  // Sphere front surface is at z ≈ 1.248 (radius 1.2 × z-scale 1.04). All flat
+  // face elements (brow, mouth, cheeks) must sit *in front* of that surface or
+  // the head sphere occludes them. Push to z ≈ 1.27.
   const brow = new THREE.Group();
   const browStrip = new THREE.Mesh(
     new THREE.TorusGeometry(0.55, 0.06, 12, 32, Math.PI * 0.55),
     new THREE.MeshStandardMaterial({ color: 0x8a6a4a, roughness: 0.85 }),
   );
   browStrip.rotation.z = Math.PI;
-  browStrip.position.set(0, 0.55, 1.0);
+  browStrip.position.set(0, 0.55, 1.27);
   brow.add(browStrip);
   brow.userData.restY = brow.position.y;
   head.add(brow);
 
   // ---- Jaw: a half-disc mouth that hinges open ----------------------------
-  const jaw = new THREE.Group();
   const mouthMat = new THREE.MeshStandardMaterial({
-    color: 0x99685a, roughness: 0.6,
+    color: 0x4a2620, roughness: 0.6, side: THREE.DoubleSide,
   });
+  const jaw = new THREE.Group();
   const mouth = new THREE.Mesh(
     new THREE.CircleGeometry(0.32, 32, 0, Math.PI),
     mouthMat,
@@ -199,12 +202,12 @@ export function createPetScene(container: HTMLElement): PetScene {
   // Tongue accent — a tiny darker disc behind
   const tongue = new THREE.Mesh(
     new THREE.CircleGeometry(0.18, 24, 0, Math.PI),
-    new THREE.MeshStandardMaterial({ color: 0xb7796b, roughness: 0.7 }),
+    new THREE.MeshStandardMaterial({ color: 0xb7796b, roughness: 0.7, side: THREE.DoubleSide }),
   );
   tongue.rotation.x = Math.PI;
   tongue.position.set(0, -0.18, 0.01);
   jaw.add(tongue);
-  jaw.position.set(0, -0.4, 1.07); // pivot point (top of mouth)
+  jaw.position.set(0, -0.4, 1.27); // pivot point (top of mouth), past sphere surface
   head.add(jaw);
 
   // ---- Cheeks: small pink spots -------------------------------------------
@@ -213,10 +216,10 @@ export function createPetScene(container: HTMLElement): PetScene {
   });
   const cheekGeom = new THREE.CircleGeometry(0.18, 24);
   const cheekL = new THREE.Mesh(cheekGeom, cheekMat);
-  cheekL.position.set(-0.62, -0.18, 1.03);
+  cheekL.position.set(-0.62, -0.18, 1.27);
   head.add(cheekL);
   const cheekR = new THREE.Mesh(cheekGeom, cheekMat.clone());
-  cheekR.position.set(0.62, -0.18, 1.03);
+  cheekR.position.set(0.62, -0.18, 1.27);
   head.add(cheekR);
 
   // ---- Invisible hit-zones for easter-egg detection -----------------------
@@ -232,8 +235,13 @@ export function createPetScene(container: HTMLElement): PetScene {
   const hitEarR = new THREE.Mesh(new THREE.CapsuleGeometry(0.35, 1.1, 8, 12), hitMat);
   hitEarR.position.copy(rightEar.position); hitEarR.rotation.copy(rightEar.rotation);
   hitEarR.userData.zone = "earR"; hitGroup.add(hitEarR);
+  // Eye band: spans both eyes — a single drag region for the shared eye servo.
+  const hitEyes = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.45, 0.4), hitMat);
+  hitEyes.position.set(0, 0.12, 1.2);
+  hitEyes.userData.zone = "eyes";
+  hitGroup.add(hitEyes);
   const hitMouth = new THREE.Mesh(new THREE.SphereGeometry(0.42, 16, 16), hitMat);
-  hitMouth.position.set(0, -0.5, 1.05); hitMouth.userData.zone = "mouth";
+  hitMouth.position.set(0, -0.5, 1.27); hitMouth.userData.zone = "mouth";
   hitGroup.add(hitMouth);
   head.add(hitGroup);
 
@@ -300,8 +308,8 @@ export function createPetScene(container: HTMLElement): PetScene {
     }
 
     // Apply head yaw/pitch
-    head.rotation.y = signed(cur.head_lr, SERVO_RANGES.head_lr) * 0.45;
-    head.rotation.x = signed(cur.head_ud, SERVO_RANGES.head_ud) * 0.32 * -1;
+    head.rotation.y = signed(cur.head_lr, SERVO_RANGES.head_lr) * -0.45;
+    head.rotation.x = signed(cur.head_ud, SERVO_RANGES.head_ud) * 0.32;
 
     // Eyes: shared x offset from `eye` servo. Vertical look from brow position.
     const eyeOff = signed(cur.eye, SERVO_RANGES.eye) * 0.06;
