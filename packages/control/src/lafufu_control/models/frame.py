@@ -10,3 +10,4 @@ class Frame(SQLModel, table=True):
     brow: int
     image: str | None = Field(default=None, max_length=160)
     description: str | None = Field(default=None, max_length=500)
+    is_builtin: bool = Field(default=False)

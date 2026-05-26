@@ -10,3 +10,4 @@ class Expression(SQLModel, table=True):
     steps_json: str = Field(default="[]")
     emotion: str | None = Field(default=None, max_length=40, unique=True)
     description: str | None = Field(default=None, max_length=500)
+    is_builtin: bool = Field(default=False)
