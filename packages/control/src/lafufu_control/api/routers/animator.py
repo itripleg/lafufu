@@ -146,7 +146,9 @@ def create_frame(body: FrameBody, req: Request):
         s.add(f)
         s.commit()
         s.refresh(f)
-        return _f2d(f)
+        out = _f2d(f)
+    req.app.state.nats_publish("frames.changed", {"kind": "create", "name": body.name})
+    return out
 
 
 @router.put("/frames/{name}")
@@ -167,7 +169,9 @@ def update_frame(name: str, body: FrameBody, req: Request):
         s.add(f)
         s.commit()
         s.refresh(f)
-        return _f2d(f)
+        out = _f2d(f)
+    req.app.state.nats_publish("frames.changed", {"kind": "update", "name": name})
+    return out
 
 
 @router.delete("/frames/{name}", status_code=204)
@@ -207,6 +211,7 @@ def delete_frame(name: str, req: Request):
             )
         s.delete(f)
         s.commit()
+    req.app.state.nats_publish("frames.changed", {"kind": "delete", "name": name})
     return None
 
 
@@ -325,7 +330,9 @@ def create_expression(body: ExpressionBody, req: Request):
         s.add(e)
         s.commit()
         s.refresh(e)
-        return _e2d(e)
+        out = _e2d(e)
+    req.app.state.nats_publish("expressions.changed", {"kind": "create", "name": body.name})
+    return out
 
 
 @router.put("/expressions/{name}")
@@ -347,7 +354,9 @@ def update_expression(name: str, body: ExpressionBody, req: Request):
         s.add(e)
         s.commit()
         s.refresh(e)
-        return _e2d(e)
+        out = _e2d(e)
+    req.app.state.nats_publish("expressions.changed", {"kind": "update", "name": name})
+    return out
 
 
 @router.delete("/expressions/{name}", status_code=204)
@@ -383,6 +392,7 @@ def delete_expression(name: str, req: Request):
             )
         s.delete(e)
         s.commit()
+    req.app.state.nats_publish("expressions.changed", {"kind": "delete", "name": name})
     return None
 
 
@@ -460,7 +470,9 @@ def reset_expression(name: str, req: Request):
         apply_expression_seed(s, name)
         s.commit()
         e = s.get(Expression, name)
-        return _e2d(e)
+        out = _e2d(e)
+    req.app.state.nats_publish("expressions.changed", {"kind": "reset", "name": name})
+    return out
 
 
 @router.post("/frames/{name}/reset")
@@ -482,4 +494,6 @@ def reset_frame(name: str, req: Request):
         apply_frame_seed(s, name)
         s.commit()
         f = s.get(Frame, name)
-        return _f2d(f)
+        out = _f2d(f)
+    req.app.state.nats_publish("frames.changed", {"kind": "reset", "name": name})
+    return out
