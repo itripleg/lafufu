@@ -120,12 +120,17 @@ class VoicePipeline:
             else self.speaker_play
         )
         # Pace chunk writes + RMS publishes to playback rate so animator's
-        # jaw motion stays in sync with audio. Without this, all RMS events
-        # fire in <50ms and the jaw barely twitches while audio plays for
-        # several more seconds.
+        # jaw motion stays in sync with audio. Anchored to the FIRST play_fn
+        # call (set inside the loop) — anchoring before queue.get() instead
+        # would leave next_tick in the past by however long Piper took to
+        # synthesize the first chunk (~100ms+), so every sleep_for would
+        # compute negative and the loop would race through publishing
+        # back-to-back. With first-write anchoring, chunk N publishes at
+        # audio_start + (N+1)*chunk_dt — i.e. exactly when ALSA's first
+        # period flips chunk N to audible (period_size = chunk_dt).
         chunk_dt = getattr(self.piper, "chunk_ms", 40) / 1000.0
-        start_ts = time.monotonic()
-        next_tick = time.monotonic()
+        start_ts: float | None = None
+        next_tick = 0.0
 
         # Stream synth in an executor — chunks arrive via a bounded queue so
         # blocking generator iteration doesn't freeze the loop. `cancelled`
@@ -158,14 +163,20 @@ class VoicePipeline:
                     audio_bytes, raw_rms = item
                     if play_fn:
                         play_fn(audio_bytes)
+                    # Anchor the pacing clock to the FIRST write into aplay —
+                    # that's the moment audio begins buffering toward the
+                    # speaker. Anchoring before queue.get() would leave the
+                    # pacing math in the past by the synth latency and every
+                    # subsequent sleep_for would compute negative.
+                    if start_ts is None:
+                        start_ts = time.monotonic()
+                        next_tick = start_ts
                     # Adapt raw RMS → 0..1 mouth target against recent loudness.
                     mouth_target = self._lipsync_norm.update(raw_rms)
-                    # Sleep BEFORE publishing the RMS event so the jaw moves at
-                    # the wall-clock instant the audio for this chunk becomes
-                    # audible (one ALSA period ≈ chunk_dt after play_fn writes).
-                    # Publishing first would make the mouth lead the speaker by
-                    # ~chunk_dt + the ALSA period — what mirrors the monolith's
-                    # `sleep until target_t → write jaw` ordering.
+                    # Sleep until next_tick (one chunk_dt after the previous
+                    # publish, i.e. when ALSA flips the freshly-buffered chunk
+                    # to audible), THEN publish so the jaw moves with the
+                    # audio rather than ahead of it.
                     next_tick += chunk_dt
                     sleep_for = next_tick - time.monotonic()
                     if sleep_for > 0:
