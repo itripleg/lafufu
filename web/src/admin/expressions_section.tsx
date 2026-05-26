@@ -1,7 +1,6 @@
 import {
   Component,
   createMemo,
-  createResource,
   createSignal,
   For,
   Show,
@@ -20,6 +19,8 @@ import {
   type FrameDTO,
 } from "../shared/api";
 import { toast } from "../shared/toast";
+import type { NatsWs } from "../shared/nats_ws";
+import { createReactiveResource } from "../shared/reactive_resource";
 
 const SortableStep: Component<{
   id: string;
@@ -62,11 +63,17 @@ const EMOTIONS = [
   "neutral",
 ] as const;
 
-export const ExpressionsSection: Component = () => {
-  const [expressions, { refetch: refetchExpr }] = createResource(async () =>
-    (await api.listExpressions()).items,
+export const ExpressionsSection: Component<{ nats: NatsWs }> = (props) => {
+  const expressions = createReactiveResource(
+    async () => (await api.listExpressions()).items,
+    ["expressions.changed"],
+    props.nats,
   );
-  const [frames] = createResource(async () => (await api.listFrames()).items);
+  const frames = createReactiveResource(
+    async () => (await api.listFrames()).items,
+    ["frames.changed"],
+    props.nats,
+  );
   const [selectedName, setSelectedName] = createSignal<string | null>(null);
 
   // Local override layer: while a fresh resource fetch is in-flight or
@@ -97,7 +104,6 @@ export const ExpressionsSection: Component = () => {
     if (!name) return;
     try {
       await api.createExpression({ name: name.trim(), steps: [] });
-      await refetchExpr();
       setLocalEdits(null);
       setSelectedName(name.trim());
     } catch (e: unknown) {
@@ -119,7 +125,6 @@ export const ExpressionsSection: Component = () => {
         emotion: e.emotion,
         description: e.description,
       });
-      await refetchExpr();
       setLocalEdits(null);
       toast.ok(`saved ${e.name}`);
     } catch (err: unknown) {
@@ -143,7 +148,6 @@ export const ExpressionsSection: Component = () => {
     if (!window.confirm(`Delete expression "${e.name}"?`)) return;
     try {
       await api.deleteExpression(e.name);
-      await refetchExpr();
       setLocalEdits(null);
       setSelectedName(null);
     } catch (err: unknown) {

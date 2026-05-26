@@ -14,7 +14,7 @@ export const BodyPanel: Component<{ nats: NatsWs }> = (props) => {
   return (
     <div class="flex flex-col gap-6">
       <FramesSection nats={props.nats} />
-      <ExpressionsSection />
+      <ExpressionsSection nats={props.nats} />
     </div>
   );
 };
