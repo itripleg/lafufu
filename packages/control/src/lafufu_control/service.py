@@ -135,8 +135,24 @@ class ControlService(BaseService):
         seed_animations(engine)
         # Publish the idle expression so the animator can cache it as its fallback —
         # without this, the animator sits frozen at startup pose until something else
-        # publishes a play_expression.
+        # publishes a play_expression. NOTE: this is a fire-and-forget publish that
+        # races the animator's own subscription startup; the animator is responsible
+        # for re-requesting via `animator.request.idle` if it missed this one (see
+        # the on_request_idle subscriber below).
         await _publish_idle_expression(engine, self.nats)
+
+        # Request-reply handshake: animator publishes `animator.request.idle` after
+        # its own subscriptions complete; we re-publish the idle expression. This
+        # closes the cold-boot race where the startup publish above lands before
+        # the animator has subscribed. Also handles animator-restart-mid-session
+        # (animator re-requests on its new subscribe). See
+        # docs/superpowers/specs/2026-05-26-idle-bootstrap-readiness-design.md.
+        async def on_request_idle(_msg) -> None:
+            _log.info("animator.request.idle received — publishing idle expression")
+            await _publish_idle_expression(engine, self.nats)
+
+        await self.nats.subscribe(topics.ANIMATOR_REQUEST_IDLE, cb=on_request_idle)
+
         loop = asyncio.get_running_loop()
 
         def publish_sync(subject: str, payload: dict) -> None:

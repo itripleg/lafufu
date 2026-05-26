@@ -39,6 +39,13 @@ ANIMATOR_EVENT_GESTURE_DONE = f"{ANIMATOR_EVENT}.gesture_done"
 ANIMATOR_EVENT_LIPSYNC_START = f"{ANIMATOR_EVENT}.lipsync_start"
 ANIMATOR_EVENT_LIPSYNC_END = f"{ANIMATOR_EVENT}.lipsync_end"
 
+# Request-reply: animator asks control to (re)publish the idle expression
+# after its own subscriptions are active. Closes the cold-boot race where
+# control's startup-time _publish_idle_expression fires before the animator
+# has subscribed and the message is silently dropped.
+# See docs/superpowers/specs/2026-05-26-idle-bootstrap-readiness-design.md.
+ANIMATOR_REQUEST_IDLE = "animator.request.idle"
+
 # Printer
 PRINTER_STATE = "printer.state"
 PRINTER_STATE_IDLE = f"{PRINTER_STATE}.idle"

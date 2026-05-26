@@ -80,6 +80,7 @@ class AnimatorService(BaseService):
         self._lipsync_watchdog_task: asyncio.Task | None = None
         self._keyframe_player_task: asyncio.Task | None = None
         self._stepper_task: asyncio.Task | None = None
+        self._idle_request_task: asyncio.Task | None = None
 
     @property
     def nats_url(self) -> str:
@@ -198,6 +199,16 @@ class AnimatorService(BaseService):
         # current value rather than the in-code default.
         await self.request_config_snapshot()
 
+        # Ask control to (re)publish the idle expression now that our
+        # ANIMATOR_INTENT_PLAY_EXPRESSION subscription is active. Control's
+        # startup-time _publish_idle_expression races our subscribe and is
+        # usually dropped on cold boot — without this request we'd sit
+        # frozen until something else fires a play_expression. See
+        # docs/superpowers/specs/2026-05-26-idle-bootstrap-readiness-design.md.
+        # Runs as a background task so it doesn't block on_startup (retries
+        # can take up to ~6 s with no control responder).
+        self._idle_request_task = asyncio.create_task(self._request_idle_payload())
+
         # Background tasks
         self._pose_publish_task = asyncio.create_task(self._pose_publish_loop())
         self._lipsync_watchdog_task = asyncio.create_task(self._lipsync_watchdog())
@@ -210,6 +221,7 @@ class AnimatorService(BaseService):
             self._lipsync_watchdog_task,
             self._keyframe_player_task,
             self._stepper_task,
+            self._idle_request_task,
         ):
             if t:
                 t.cancel()
@@ -374,6 +386,43 @@ class AnimatorService(BaseService):
         self._active_player = None
         self._active_expression_name = None
         await self._safe_apply(msg.pose)
+
+    async def _request_idle_payload(self) -> None:
+        """Ask control to (re)publish the idle expression and wait for it to
+        arrive. Closes the cold-boot race where control's startup publish
+        landed before our subscriptions were ready. Retries up to 3 times
+        with a 2 s response window each. After all attempts fail, log and
+        continue — the system still works for non-idle expressions; only
+        the always-on baseline motion is missing.
+
+        Exits early if `_idle_payload` arrives via the normal play_expression
+        subscriber, or if the service shuts down mid-retry."""
+        for attempt in range(3):
+            if self._shutdown.is_set():
+                return
+            try:
+                await self.nats.publish(topics.ANIMATOR_REQUEST_IDLE, b"{}")
+            except Exception as e:
+                self.log.warning(
+                    "animator.request.idle.publish_failed attempt=%d error=%s",
+                    attempt + 1,
+                    e,
+                )
+                await asyncio.sleep(0.5)
+                continue
+            # Poll for the response. _on_play_expression sets _idle_payload as
+            # a side effect when a play_expression with name="idle" arrives.
+            for _ in range(20):  # 20 x 100 ms = 2 s
+                if self._idle_payload is not None:
+                    self.log.info("animator.idle.received attempt=%d", attempt + 1)
+                    return
+                if self._shutdown.is_set():
+                    return
+                await asyncio.sleep(0.1)
+        self.log.warning(
+            "animator.idle.unanswered after 3 attempts — control never responded "
+            "to animator.request.idle; idle animation disabled until next play_expression"
+        )
 
     async def _on_play_expression(
         self, subject: str, msg: schemas.AnimatorIntentPlayExpression
