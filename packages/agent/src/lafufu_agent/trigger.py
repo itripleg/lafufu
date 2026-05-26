@@ -17,12 +17,6 @@ from typing import Literal
 PrintMode = Literal["none", "auto", "ask"]
 _PRINT_MODES: tuple[PrintMode, ...] = ("none", "auto", "ask")
 
-# Mirror of lafufu_shared.schemas.Emotion. Duplicated here to keep this module
-# import-light and to fail loud at config load instead of at the first wake
-# trigger (when pydantic would otherwise reject the bad value inside
-# AgentReply construction).
-_VALID_EMOTIONS = frozenset(["happy", "sad", "angry", "surprised", "neutral", "agree", "disagree"])
-
 _DEFAULT_PHRASE = "Welcome, traveler. Ask, and the cards shall reveal."
 _DEFAULT_PRINT_PROMPT = "Would you like a printed fortune?"
 
@@ -66,11 +60,10 @@ _NEGATIONS = frozenset(
 
 
 def validate_emotion(value: str) -> str:
-    """Raise ValueError if value isn't a known emotion. Returns the normalised value."""
-    norm = value.strip().lower()
-    if norm not in _VALID_EMOTIONS:
-        raise ValueError(f"emotion={value!r} is not one of {sorted(_VALID_EMOTIONS)}")
-    return norm
+    """Normalise the trigger emotion. Any non-empty name is accepted — the
+    control plane's DB lookup is the validity check; an unknown name no-ops
+    with a warning rather than crashing here."""
+    return value.strip().lower()
 
 
 def validate_print_mode(value: str) -> PrintMode:
@@ -152,13 +145,7 @@ class TriggerConfig:
                 f"LAFUFU_TRIGGER_PRINT={print_mode_raw.strip().lower()!r} is not one of {list(_PRINT_MODES)}"
             ) from e
 
-        emotion_raw = env.get("LAFUFU_TRIGGER_EMOTION", "neutral")
-        try:
-            emotion = validate_emotion(emotion_raw)
-        except ValueError as e:
-            raise ValueError(
-                f"LAFUFU_TRIGGER_EMOTION={emotion_raw.strip().lower()!r} is not one of {sorted(_VALID_EMOTIONS)}"
-            ) from e
+        emotion = validate_emotion(env.get("LAFUFU_TRIGGER_EMOTION", "neutral"))
 
         return cls(
             phrase=env.get("LAFUFU_TRIGGER_PHRASE", _DEFAULT_PHRASE),
