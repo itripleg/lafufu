@@ -103,15 +103,15 @@ DEFAULTS: list[tuple[str, str, str, str]] = [
     ),
     (
         "agent.wakeword.enabled",
-        "false",
+        "true",
         "bool",
         "Whether the wake-word gate is active. When true, the mic ignores everything until the configured keyword fires (Whisper stays idle). Required for trigger mode.",
     ),
     (
         "agent.wakeword.model",
-        "hey_jarvis_v0.1",
+        "assets/wakeword/lafufu.onnx",
         "str",
-        "openwakeword model name (one of the bundled defaults, or a path to a custom .onnx).",
+        "openwakeword model name (one of the bundled defaults, e.g. 'hey_jarvis_v0.1') or a path to a custom .onnx (resolved relative to the agent's working directory).",
     ),
     (
         "agent.wakeword.threshold",

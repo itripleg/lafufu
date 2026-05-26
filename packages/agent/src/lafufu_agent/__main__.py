@@ -455,27 +455,30 @@ def main() -> None:
     piper = Piper(model_path=piper_model_path)
     piper.load()  # populate sample_rate from the .onnx config
 
+    # openwakeword is a required dep, but keep the has_openwakeword() guard so
+    # a missing/corrupt install degrades to RMS-based onset instead of crashing
+    # the agent before the rest of the pipeline even starts. The admin UI's
+    # agent.wakeword.enabled setting controls live attachment to the mic.
+    from .wakeword import OpenWakeWordDetector, has_openwakeword
+
     make_wake_detector = None
     wake_detector = None
-    if os.environ.get("LAFUFU_WAKEWORD_ENABLED", "").lower() in ("1", "true", "yes"):
-        from .wakeword import OpenWakeWordDetector, has_openwakeword
+    if not has_openwakeword():
+        logging.getLogger(__name__).warning(
+            "wakeword.dep_missing — `openwakeword` not importable; falling back "
+            "to RMS-based onset. Re-run `uv sync`."
+        )
+    else:
 
-        if not has_openwakeword():
-            logging.getLogger(__name__).warning(
-                "wakeword.enabled_but_missing — install with `uv sync --extra wakeword`; "
-                "falling back to RMS-based onset"
-            )
-        else:
+        def make_wake_detector(name: str, threshold: float):
+            d = OpenWakeWordDetector(model_name=name, threshold=threshold)
+            d.load()
+            return d
 
-            def make_wake_detector(name: str, threshold: float):
-                d = OpenWakeWordDetector(model_name=name, threshold=threshold)
-                d.load()
-                return d
-
-            wake_detector = make_wake_detector(
-                os.environ.get("LAFUFU_WAKEWORD_MODEL", "hey_jarvis_v0.1"),
-                float(os.environ.get("LAFUFU_WAKEWORD_THRESHOLD", "0.5")),
-            )
+        wake_detector = make_wake_detector(
+            os.environ.get("LAFUFU_WAKEWORD_MODEL", "assets/wakeword/lafufu.onnx"),
+            float(os.environ.get("LAFUFU_WAKEWORD_THRESHOLD", "0.5")),
+        )
 
     mic = RealMic(stt=stt, wake_detector=wake_detector)
     player = make_player(piper.sample_rate)
