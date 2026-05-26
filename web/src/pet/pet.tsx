@@ -1,8 +1,8 @@
-import { Component, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { Component, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { NatsWs } from "../shared/nats_ws";
 import { api } from "../shared/api";
-import { applyDragDelta, axisMid, type DraggableAxis } from "./head_drag";
-import { SERVO_RANGES } from "./servo_ranges";
+import { applyDragDelta, axisMid, type DraggableAxis, type ServoRanges } from "./head_drag";
+import { useServoConfig } from "../shared/use_servo_config";
 
 /**
  * /pet — flat card pointed at the user. Drag tilts the card AND drives the
@@ -15,24 +15,40 @@ const MAX_YAW_DEG = 28;    // CSS rotateY at servo extremes
 const MAX_PITCH_DEG = -22; // CSS rotateX — negative so drag-down tilts top toward viewer (face → floor)
 const GRACE_MS = 800;     // how long after release we still ignore the echo
 
-const signedFor = (dxl: number, axis: DraggableAxis): number => {
-  const [lo, hi] = SERVO_RANGES[axis];
-  const n = Math.max(0, Math.min(1, (dxl - lo) / (hi - lo)));
-  return n * 2 - 1;
-};
-
 const Pet: Component = () => {
-  const [headLr, setHeadLr] = createSignal(axisMid("head_lr"));
-  const [headUd, setHeadUd] = createSignal(axisMid("head_ud"));
+  const nats = new NatsWs();
+  const config = useServoConfig(nats);
+
+  // Signals start as undefined so we can gate on config being loaded.
+  // Once config arrives, they're seeded from axisMid (or the live pose).
+  const [headLr, setHeadLr] = createSignal<number | undefined>(undefined);
+  const [headUd, setHeadUd] = createSignal<number | undefined>(undefined);
   const [dragging, setDragging] = createSignal(false);
 
-  const nats = new NatsWs();
   let lastPose: Record<string, number> = {};
   const axisHoldTs: Record<DraggableAxis, number> = {
     head_lr: 0, head_ud: 0, eye: 0, jaw: 0,
   };
   const axisOwned = (a: DraggableAxis) =>
     performance.now() - axisHoldTs[a] < GRACE_MS;
+
+  // Seed the head signals once config is available (and not already set by
+  // a live pose that arrived first).
+  createEffect(() => {
+    const ranges = config()?.ranges as ServoRanges | undefined;
+    if (!ranges) return;
+    if (headLr() === undefined) setHeadLr(lastPose.head_lr ?? axisMid("head_lr", ranges));
+    if (headUd() === undefined) setHeadUd(lastPose.head_ud ?? axisMid("head_ud", ranges));
+  });
+
+  // Helper: convert a DXL value to a signed [-1, 1] fraction using live ranges.
+  const signedFor = (dxl: number, axis: DraggableAxis): number => {
+    const ranges = config()?.ranges as ServoRanges | undefined;
+    if (!ranges) return 0;
+    const [lo, hi] = ranges[axis];
+    const n = Math.max(0, Math.min(1, (dxl - lo) / (hi - lo)));
+    return n * 2 - 1;
+  };
 
   // Throttled servo command — coalesces axis updates, fires at most every
   // ~40ms. A throttle so the servos keep tracking during a continuous drag.
@@ -58,30 +74,38 @@ const Pet: Component = () => {
   // its head_ud servo runs to the high end. Adjust sign once and the whole
   // pipeline stays consistent.
   const transform = createMemo(() => {
-    const yawDeg = signedFor(headLr(), "head_lr") * MAX_YAW_DEG;
-    const pitchDeg = signedFor(headUd(), "head_ud") * MAX_PITCH_DEG;
+    const lr = headLr();
+    const ud = headUd();
+    if (lr === undefined || ud === undefined) return "none";
+    const yawDeg = signedFor(lr, "head_lr") * MAX_YAW_DEG;
+    const pitchDeg = signedFor(ud, "head_ud") * MAX_PITCH_DEG;
     return `perspective(900px) rotateX(${pitchDeg}deg) rotateY(${yawDeg}deg)`;
   });
 
   let lastX = 0, lastY = 0;
   const onPointerDown = (e: PointerEvent) => {
+    const ranges = config()?.ranges as ServoRanges | undefined;
+    if (!ranges) return; // don't start drag before config is loaded
     setDragging(true);
     lastX = e.clientX;
     lastY = e.clientY;
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     // Grab the lafufu wherever it currently is (so the drag picks up from
     // the live pose instead of jumping back to the midpoint).
-    setHeadLr(lastPose.head_lr ?? axisMid("head_lr"));
-    setHeadUd(lastPose.head_ud ?? axisMid("head_ud"));
+    setHeadLr(lastPose.head_lr ?? axisMid("head_lr", ranges));
+    setHeadUd(lastPose.head_ud ?? axisMid("head_ud", ranges));
   };
   const onPointerMove = (e: PointerEvent) => {
-    if (!dragging()) return;
+    const ranges = config()?.ranges as ServoRanges | undefined;
+    if (!dragging() || !ranges) return;
     const dx = e.clientX - lastX;
     const dy = e.clientY - lastY;
     lastX = e.clientX;
     lastY = e.clientY;
-    const newLr = applyDragDelta("head_lr", headLr(), dx);
-    const newUd = applyDragDelta("head_ud", headUd(), dy);
+    const currentLr = headLr() ?? axisMid("head_lr", ranges);
+    const currentUd = headUd() ?? axisMid("head_ud", ranges);
+    const newLr = applyDragDelta("head_lr", currentLr, dx, ranges);
+    const newUd = applyDragDelta("head_ud", currentUd, dy, ranges);
     setHeadLr(newLr);
     setHeadUd(newUd);
     const now = performance.now();
