@@ -84,7 +84,11 @@ class VoicePipeline:
         emotion, body = parse(reply_raw)
 
         # ---- Speaking (also publishes agent.reply) ----
-        await self.speak(body, emotion)
+        # The parser returns "" when the LLM omitted the emotion tag entirely.
+        # Fall back to "neutral" here so AgentReply schema validation passes —
+        # the DB lookup downstream (resolve_emotion_to_play_intent) handles the
+        # unknown → no-pose case for non-empty unknown names.
+        await self.speak(body, emotion or "neutral")
 
     async def _answer_ip_query(self) -> None:
         """Answer the 'what's your IP' voice intent directly: print a slip

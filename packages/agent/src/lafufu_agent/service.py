@@ -881,7 +881,7 @@ class AgentService(BaseService):
             emotion, body = parse(reply_raw)
 
             tmp = VoicePipeline(self.nats, None, self._ollama, self._piper, self._speaker_play)
-            await tmp.speak(body, emotion)
+            await tmp.speak(body, emotion or "neutral")
             return clean, body
 
     async def _send_print(self, text: str) -> None:

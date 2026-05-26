@@ -1,75 +1,31 @@
 from lafufu_agent.emotion_parser import parse
 
 
-def test_parses_emotion_tag_at_start():
-    e, t = parse("[happy]\nHello world")
-    assert e == "happy"
-    assert t == "Hello world"
+def test_known_emotion_extracted():
+    emotion, body = parse("[happy] hello world")
+    assert emotion == "happy"
+    assert body == "hello world"
 
 
-def test_parses_with_trailing_whitespace():
-    e, t = parse("[surprised]   \nWhoa!")
-    assert e == "surprised"
-    assert t == "Whoa!"
+def test_unknown_emotion_passes_through_verbatim():
+    """The DB lookup downstream is the validity check. Parser should NOT
+    default to 'neutral' anymore — that hid typos and silently masked
+    missing expression registrations."""
+    emotion, body = parse("[zzz_unknown] some text")
+    assert emotion == "zzz_unknown"
+    assert body == "some text"
 
 
-def test_no_tag_returns_neutral():
-    e, t = parse("Just text without a tag.")
-    assert e == "neutral"
-    assert t == "Just text without a tag."
+def test_no_tag_returns_empty_emotion():
+    emotion, body = parse("just text with no tag")
+    assert emotion == ""
+    assert body == "just text with no tag"
 
 
-def test_unknown_tag_returns_neutral():
-    e, t = parse("[confused]\nHmm.")
-    assert e == "neutral"
-    # Tag is stripped even if not matched
-    assert t == "Hmm."
+def test_alternate_delimiters_still_extracted():
+    assert parse("(disagree) nope")[0] == "disagree"
+    assert parse("*sad* aww")[0] == "sad"
 
 
-def test_multiline_body_preserved():
-    e, t = parse("[sad]\nLine one.\nLine two.")
-    assert e == "sad"
-    assert t == "Line one.\nLine two."
-
-
-def test_case_insensitive_tag():
-    e, _t = parse("[HAPPY]\nWoo")
-    assert e == "happy"
-
-
-def test_strips_surrounding_whitespace():
-    e, t = parse("  [agree]\nyes  ")
-    assert e == "agree"
-    assert t == "yes"
-
-
-def test_bare_word_tag_is_stripped():
-    # Small models often drop the brackets — the bare word must not reach TTS.
-    e, t = parse("happy\nHello world")
-    assert e == "happy"
-    assert t == "Hello world"
-
-
-def test_bare_leading_word_that_is_not_an_emotion_is_kept():
-    # A normal sentence starting on its own line must not lose its first word.
-    e, t = parse("Hello\nthere friend")
-    assert e == "neutral"
-    assert t == "Hello\nthere friend"
-
-
-def test_paren_tag_is_stripped():
-    e, t = parse("(surprised) Whoa!")
-    assert e == "surprised"
-    assert t == "Whoa!"
-
-
-def test_asterisk_tag_is_stripped():
-    e, t = parse("**sad**\nOh no.")
-    assert e == "sad"
-    assert t == "Oh no."
-
-
-def test_emotion_label_prefix_is_stripped():
-    e, t = parse("Emotion: angry\nGo away.")
-    assert e == "angry"
-    assert t == "Go away."
+def test_emotion_label_prefix():
+    assert parse("emotion: angry rage")[0] == "angry"
