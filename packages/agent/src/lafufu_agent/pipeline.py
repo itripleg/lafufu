@@ -51,6 +51,15 @@ class VoicePipeline:
         )
 
     async def run_one_cycle(self, publish_listening: bool = True) -> None:
+        try:
+            await self._run_one_cycle_inner(publish_listening=publish_listening)
+        except Exception:
+            log.exception("agent.cycle.failed")
+            await self._publish_state("degraded")
+            await self._publish_state("idle")
+            raise
+
+    async def _run_one_cycle_inner(self, publish_listening: bool = True) -> None:
         # ---- Listening ----
         if publish_listening:
             await self._publish_state("listening")

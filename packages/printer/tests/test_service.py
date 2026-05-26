@@ -1,7 +1,8 @@
 import asyncio
 
 import nats
-from lafufu_printer.service import PrinterService, _resolve_font
+import pytest
+from lafufu_printer.service import PrinterService, _resolve_font, _sanitize_lp_options
 from lafufu_shared import schemas, topics
 from lafufu_shared.nats_helper import publish_model
 from lafufu_shared.testing import nats_server_fixture
@@ -229,3 +230,103 @@ async def test_compose_with_bad_image_returns_to_idle(nats_server, tmp_path):
 
     assert "error" in seen, f"expected error state, saw {seen}"
     assert seen[-1] == "idle", f"expected to return to idle, ended in {seen[-1]}; seen={seen}"
+
+
+# ---------------------------------------------------------------------------
+# P3.1 — lp_options allow-list
+# ---------------------------------------------------------------------------
+
+
+def test_sanitize_lp_options_allows_known_keys():
+    """Known option keys and KEY=VALUE pairs pass through unchanged."""
+    result = _sanitize_lp_options("-o media=4x6 scaling=95 fit-to-page")
+    assert result == ["-o", "media=4x6", "scaling=95", "fit-to-page"]
+
+
+def test_sanitize_lp_options_rejects_unknown_flags(caplog):
+    """Tokens with unknown leading keys are dropped with a warning log.
+    A malicious -h evilhost injection must be rejected."""
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="lafufu_printer.service"):
+        result = _sanitize_lp_options("-h evilhost -o media=4x6 --output-format raw")
+    assert "-h" not in result
+    assert "evilhost" not in result
+    assert "--output-format" not in result
+    assert "raw" not in result
+    # Allowed token should still be present
+    assert "-o" in result
+    assert "media=4x6" in result
+    # Warning logged for each rejected token
+    assert any("rejected" in r.message for r in caplog.records)
+
+
+def test_sanitize_lp_options_empty_string():
+    assert _sanitize_lp_options("") == []
+
+
+# ---------------------------------------------------------------------------
+# P3.6 — Printer job lock: second concurrent intent is dropped
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_concurrent_safe_print_drops_second_while_locked():
+    """Directly calling _safe_print twice concurrently — the second call
+    arrives while the first is still holding the job lock and should be
+    dropped immediately (not queued)."""
+    import threading
+
+    slow_started = asyncio.Event()
+    slow_released = threading.Event()
+    loop = asyncio.get_running_loop()
+
+    class SlowCups(FakeCups):
+        def print_text(self, text, *, title=None):
+            loop.call_soon_threadsafe(slow_started.set)
+            slow_released.wait(timeout=5)
+            self.printed.append((text, title))
+            return "job-slow"
+
+    cups = SlowCups(available=True)
+    svc = PrinterService.__new__(PrinterService)
+    svc.__init__(cups=cups, nats_url=None, auto_print=True)
+
+    # Inject a fake NATS client so _publish_state doesn't crash.
+    class FakeNats:
+        async def publish(self, *a, **kw):
+            pass
+
+    svc._nats = FakeNats()
+    svc.nats = FakeNats()  # base_service exposes both
+
+    # Monkey-patch _publish_state to be a no-op (we don't have a running NATS
+    # server here — we're testing lock semantics, not state publishing).
+    async def _noop_publish(*a, **kw):
+        pass
+
+    svc._publish_state = _noop_publish  # type: ignore[method-assign]
+
+    # Start first print (will block inside print_text via to_thread)
+    t1 = asyncio.create_task(svc._safe_print("First"))
+    # Yield to let t1 start and reach the lock acquisition + to_thread launch.
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    # Wait until the blocking thread has actually started so the lock is held.
+    await asyncio.wait_for(slow_started.wait(), timeout=2.0)
+    assert svc._job_lock.locked(), "lock should be held by first print"
+
+    # Second print arrives while lock is held — should be dropped immediately.
+    t2 = asyncio.create_task(svc._safe_print("Second"))
+    await asyncio.sleep(0)  # let t2 run its check
+    await asyncio.sleep(0)
+    # t2 should have returned (dropped) without waiting for the lock.
+    assert t2.done(), "second _safe_print should have returned (dropped) immediately"
+
+    # Release the slow print.
+    slow_released.set()
+    await asyncio.wait_for(t1, timeout=3)
+
+    # Only the first print went through.
+    assert len(cups.printed) == 1
+    assert "First" in cups.printed[0][0]

@@ -19,6 +19,43 @@ from .formatter import format_reply, format_transcript
 
 log = logging.getLogger(__name__)
 
+# Allow-list for operator-supplied raw lp options (lp_options setting).
+# Any token whose leading key is not in this set is rejected at the service
+# boundary with a warning log — prevents an attacker who can publish
+# config.changed.printer.lp_options from injecting arbitrary lp flags such
+# as `-h evilhost`.
+_ALLOWED_LP_OPTIONS = frozenset(
+    {
+        "-o",  # the option-introducing flag
+        "media",
+        "fit-to-page",
+        "page-bottom",
+        "page-top",
+        "page-left",
+        "page-right",
+        "scaling",
+        "orientation-requested",
+        "PageSize",
+        "ColorModel",
+        "Resolution",
+    }
+)
+
+
+def _sanitize_lp_options(raw: str) -> list[str]:
+    """Allow-list lp options coming from operator-controlled config.
+    Each token must either be in _ALLOWED_LP_OPTIONS or be of shape
+    'KEY=VALUE' where KEY is in the list. Reject everything else with
+    a warning log."""
+    out: list[str] = []
+    for tok in raw.split():
+        key = tok.split("=", 1)[0]
+        if key not in _ALLOWED_LP_OPTIONS:
+            log.warning("printer.lp_options.rejected token=%r", tok)
+            continue
+        out.append(tok)
+    return out
+
 
 def _printer_data_dir() -> Path:
     """Directory where uploaded letterheads + composed images live. Shares
@@ -114,6 +151,9 @@ class PrinterService(BaseService):
         # Converted to pixels at print time based on DPI.
         self.dead_zone_top_mm: int = 3
         self.dead_zone_bottom_mm: int = 0
+        # Printer is a single physical resource — serialise jobs and reject
+        # rather than queue concurrent intents (avoids interleaved lp calls).
+        self._job_lock = asyncio.Lock()
 
     def _build_lp_options(self) -> list[str]:
         """Compose structured positioning settings into a single lp arg list."""
@@ -131,7 +171,7 @@ class PrinterService(BaseService):
         if self.rotate:
             opts += ["-o", f"roRotate={self.rotate}"]
         if self.lp_options:
-            opts += self.lp_options.split()
+            opts += _sanitize_lp_options(self.lp_options)
         return opts
 
     @property
@@ -261,6 +301,20 @@ class PrinterService(BaseService):
         )
 
     async def _safe_print(self, text: str, title: str | None = None) -> None:
+        # Non-blocking acquire: if the lock is already held, reject immediately
+        # rather than queue. asyncio.Lock has no built-in try_acquire, so we
+        # acquire and immediately check whether we were first or queued — any
+        # waiter that got in after us means we waited, which should not happen.
+        # Simpler: use locked() before ANY yield; this is reliable in asyncio
+        # because no other coroutine can run between the check and the acquire
+        # (there is no await between them in the fast path).
+        if not self._job_lock.locked():
+            async with self._job_lock:
+                await self._safe_print_locked(text, title=title)
+        else:
+            self.log.warning("printer.busy — dropping print intent")
+
+    async def _safe_print_locked(self, text: str, title: str | None = None) -> None:
         if not self._cups.default_printer():
             await self._publish_state("offline")
             return
@@ -297,6 +351,13 @@ class PrinterService(BaseService):
 
     async def _on_compose(self, subject: str, msg: schemas.PrinterIntentCompose) -> None:
         """Composite text onto the letterhead, then print the result."""
+        if self._job_lock.locked():
+            self.log.warning("printer.busy — dropping compose intent")
+            return
+        async with self._job_lock:
+            await self._on_compose_locked(msg)
+
+    async def _on_compose_locked(self, msg: schemas.PrinterIntentCompose) -> None:
         from .composer import compose_fortune
 
         lh = Path(msg.letterhead_path)
@@ -374,6 +435,13 @@ class PrinterService(BaseService):
         """Send an image file (e.g. the uploaded letterhead) directly to lp.
         The path must resolve inside the printer data dir or temp dir — a
         NATS publisher must not be able to print arbitrary files."""
+        if self._job_lock.locked():
+            self.log.warning("printer.busy — dropping print-file intent")
+            return
+        async with self._job_lock:
+            await self._on_print_file_locked(msg)
+
+    async def _on_print_file_locked(self, msg: schemas.PrinterIntentPrintFile) -> None:
         path = Path(msg.path)
         if not _path_within_allowed_roots(path):
             await self._publish_state("error", detail=f"file path not allowed: {msg.path}")

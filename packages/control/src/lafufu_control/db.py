@@ -14,10 +14,11 @@ def create_engine_for_path(path: str):
     from sqlalchemy import event
 
     @event.listens_for(engine, "connect")
-    def _set_pragma(dbapi_conn, _):
+    def _set_pragmas(dbapi_conn, _connection_record):
         cur = dbapi_conn.cursor()
-        cur.execute("PRAGMA journal_mode=WAL")
-        cur.execute("PRAGMA synchronous=NORMAL")
+        cur.execute("PRAGMA busy_timeout = 5000")  # wait up to 5 s instead of immediately erroring
+        cur.execute("PRAGMA journal_mode = WAL")  # reduces write-write contention; idempotent
+        cur.execute("PRAGMA synchronous = NORMAL")
         cur.close()
 
     return engine

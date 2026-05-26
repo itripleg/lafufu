@@ -7,6 +7,10 @@ Description=Lafufu Agent (voice pipeline)
 After=nats.service lafufu-control.service
 Wants=nats.service
 PartOf=lafufu.target
+# StartLimit* must live in [Unit] on modern systemd; in [Service] they are
+# silently ignored (the directives are parsed but have no effect).
+StartLimitBurst=5
+StartLimitIntervalSec=60
 
 [Service]
 Type=simple
@@ -23,8 +27,6 @@ Environment=LAFUFU_PIPER_MODEL=/srv/lafufu/models/lafufu_voice.onnx
 ExecStart=/srv/lafufu/.venv/bin/python -m lafufu_agent
 Restart=on-failure
 RestartSec=5s
-StartLimitBurst=5
-StartLimitIntervalSec=60
 TimeoutStopSec=15s
 
 [Install]
