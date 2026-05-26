@@ -155,6 +155,20 @@ export const ExpressionsSection: Component<{ nats: NatsWs }> = (props) => {
     }
   };
 
+  const onReset = async () => {
+    const e = selectedEff();
+    if (!e) return;
+    if (!window.confirm(`Reset "${e.name}" to factory defaults? Your edits will be lost.`)) return;
+    try {
+      await api.resetExpression(e.name);
+      // expressions.changed publish will refetch automatically; clear local edits
+      setLocalEdits(null);
+      toast.ok(`reset ${e.name}`);
+    } catch (err: unknown) {
+      toast.err("reset failed", (err as Error)?.message ?? String(err));
+    }
+  };
+
   const addStep = (frameName: string) => {
     const e = selectedEff();
     if (!e) return;
@@ -195,7 +209,12 @@ export const ExpressionsSection: Component<{ nats: NatsWs }> = (props) => {
                   selectedName() === e.name ? "bg-amber-500/20 text-amber-200" : ""
                 }`}
               >
-                <div class="font-mono">{e.name}</div>
+                <div class="font-mono">
+                  {e.name}
+                  <Show when={e.is_builtin}>
+                    <span class="ml-2 text-xs text-stone-500">(builtin)</span>
+                  </Show>
+                </div>
                 <div class="text-xs text-stone-400">
                   {e.playback} · {e.steps.length} step(s)
                   {e.emotion ? ` · ${e.emotion}` : ""}
@@ -233,13 +252,24 @@ export const ExpressionsSection: Component<{ nats: NatsWs }> = (props) => {
                   >
                     Save
                   </button>
-                  <button
-                    type="button"
-                    onClick={onDelete}
-                    class="px-3 py-1 border border-red-800 text-red-300 rounded hover:bg-red-900/30 ml-auto"
-                  >
-                    Delete
-                  </button>
+                  <Show when={e().is_builtin}>
+                    <button
+                      type="button"
+                      onClick={onReset}
+                      class="px-3 py-1 border border-blue-700 text-blue-300 rounded hover:bg-blue-900/30 ml-auto"
+                    >
+                      Reset to defaults
+                    </button>
+                  </Show>
+                  <Show when={!e().is_builtin}>
+                    <button
+                      type="button"
+                      onClick={onDelete}
+                      class="px-3 py-1 border border-red-800 text-red-300 rounded hover:bg-red-900/30 ml-auto"
+                    >
+                      Delete
+                    </button>
+                  </Show>
                 </div>
 
                 <div class="flex gap-3 items-center text-sm">
