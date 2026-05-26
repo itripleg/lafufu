@@ -147,7 +147,8 @@ def apply_frame_seed(s: Session, name: str) -> Frame:
 
 
 def apply_expression_seed(s: Session, name: str) -> Expression:
-    """Overwrite an existing Expression row from its SEED_EXPRESSIONS entry."""
+    """Overwrite an existing Expression row from its SEED_EXPRESSIONS entry.
+    Caller holds the session open; commit is the caller's responsibility."""
     seed = next((row for row in SEED_EXPRESSIONS if row[0] == name), None)
     if seed is None:
         raise KeyError(f"no seed for expression {name!r}")
