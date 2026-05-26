@@ -6,7 +6,9 @@ pre-existing seed-named rows. Never clobbers user edits on other fields.
 """
 
 import json
+import logging
 
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
 from ..models.expression import Expression
@@ -86,7 +88,17 @@ IDLE_RANDOM_WALK_CONFIG = {"intensity": 1.0, "speed": 1.0, "pause_chance": 0.30}
 
 def seed_animations(engine) -> None:
     """Per-row upsert: insert missing seed rows, backfill is_builtin on
-    pre-existing seed-named rows. Never clobbers user edits."""
+    pre-existing seed-named rows. Never clobbers user edits.
+
+    Expressions are committed one-at-a-time because `Expression.emotion`
+    carries a UNIQUE constraint: if a user-created row already claims
+    `emotion="idle"` (etc.), inserting the built-in with the same emotion
+    raises IntegrityError. A single batch commit would roll back ALL the
+    other seed inserts, leaving the registry empty and the animator
+    without an idle payload — silent and very hard to diagnose remotely.
+    Per-row commit isolates the failure: log + retry without the emotion
+    field so the built-in still gets seeded."""
+    log = logging.getLogger(__name__)
     with Session(engine) as s:
         for name, pose in SEED_FRAMES.items():
             existing = s.get(Frame, name)
@@ -95,6 +107,8 @@ def seed_animations(engine) -> None:
             elif not existing.is_builtin:
                 existing.is_builtin = True
                 s.add(existing)
+        s.commit()
+
         for (
             name,
             playback,
@@ -110,22 +124,44 @@ def seed_animations(engine) -> None:
                     steps_json = json.dumps(IDLE_RANDOM_WALK_CONFIG)
                 else:
                     steps_json = json.dumps([{"frame": n} for n in frame_names])
-                s.add(
-                    Expression(
+                row = Expression(
+                    name=name,
+                    playback=playback,
+                    default_duration_ms=dur_ms,
+                    default_delay_ms=delay_ms,
+                    default_easing=easing,
+                    steps_json=steps_json,
+                    emotion=emotion,
+                    is_builtin=True,
+                )
+                s.add(row)
+                try:
+                    s.commit()
+                except IntegrityError:
+                    s.rollback()
+                    log.warning(
+                        "seed.expression.emotion_taken name=%r emotion=%r — "
+                        "another expression already claims this emotion; "
+                        "inserting seed row without the emotion binding",
+                        name,
+                        emotion,
+                    )
+                    row = Expression(
                         name=name,
                         playback=playback,
                         default_duration_ms=dur_ms,
                         default_delay_ms=delay_ms,
                         default_easing=easing,
                         steps_json=steps_json,
-                        emotion=emotion,
+                        emotion=None,
                         is_builtin=True,
                     )
-                )
+                    s.add(row)
+                    s.commit()
             elif not existing.is_builtin:
                 existing.is_builtin = True
                 s.add(existing)
-        s.commit()
+                s.commit()
 
 
 def apply_frame_seed(s: Session, name: str) -> Frame:

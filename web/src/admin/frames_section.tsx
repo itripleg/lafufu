@@ -2,13 +2,13 @@ import {
   Component,
   createEffect,
   createMemo,
-  createResource,
   createSignal,
   For,
   Show,
 } from "solid-js";
 import { api, type FrameDTO } from "../shared/api";
 import { NatsWs } from "../shared/nats_ws";
+import { createReactiveResource } from "../shared/reactive_resource";
 import { toast } from "../shared/toast";
 import { ImagePicker } from "./image_picker";
 
@@ -26,9 +26,13 @@ const RANGES: Array<{ key: keyof Pose; lo: number; hi: number; glyph: string }> 
 
 const PREVIEW_DEBOUNCE_MS = 40;
 
-export const FramesSection: Component<{ nats: NatsWs }> = (_props) => {
-  const [frames, { refetch }] = createResource(async () =>
-    (await api.listFrames()).items,
+export const FramesSection: Component<{ nats: NatsWs }> = (props) => {
+  // Reactive: refetches on any backend `frames.changed` so a snapshot
+  // in another tab (or a /reset) updates the gallery without a manual reload.
+  const [frames, refetch] = createReactiveResource(
+    async () => (await api.listFrames()).items,
+    ["frames.changed"],
+    props.nats,
   );
   const [selectedName, setSelectedName] = createSignal<string | null>(null);
   const [pose, setPose] = createSignal<Pose>({ ...IDLE });
@@ -154,10 +158,12 @@ export const FramesSection: Component<{ nats: NatsWs }> = (_props) => {
     const f = selected();
     if (!f) return;
     if (!window.confirm(`Delete frame "${f.name}"?`)) return;
+    const name = f.name;
     try {
-      await api.deleteFrame(f.name);
+      await api.deleteFrame(name);
       await refetch();
       setSelectedName(null);
+      toast.ok(`deleted ${name}`);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       toast.err("delete failed", msg);

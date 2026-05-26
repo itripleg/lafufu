@@ -1,7 +1,7 @@
 """Admin → animator intent proxy."""
 
-import contextlib
 import json
+import logging
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
@@ -13,6 +13,8 @@ from ...animation.compile import compile_expression, required_frame_names
 from ...animation.seed import apply_expression_seed, apply_frame_seed
 from ...models import Expression, Frame
 from ...models.setting import Setting
+
+_log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -316,9 +318,19 @@ def get_animator_config(req: Request):
     with Session(req.app.state.engine) as s:
         for servo in ("head_lr", "head_ud", "eye", "jaw", "brow"):
             row = s.get(Setting, f"animator.{servo}.default")
-            if row is not None:
-                with contextlib.suppress(TypeError, ValueError):
-                    overrides[servo] = int(row.value)
+            if row is None:
+                continue
+            try:
+                overrides[servo] = int(row.value)
+            except (TypeError, ValueError):
+                # Operator set a non-int via the raw settings PUT — frontend
+                # would silently fall back to the factory default and look
+                # like the override didn't apply. Log it.
+                _log.warning(
+                    "animator.config.bad_override servo=%s value=%r — not an int, skipping",
+                    servo,
+                    row.value,
+                )
     return {"ranges": ranges, "idle_defaults": idle_defaults, "idle_overrides": overrides}
 
 
@@ -444,36 +456,6 @@ def play_expression(name: str, req: Request):
         payload = compile_expression(e, frames)
     req.app.state.nats_publish("animator.intent.play_expression", payload.model_dump())
     return {"ok": True, "name": name}
-
-
-@router.post("/expressions/{name}/activate")
-def activate_expression(name: str, req: Request):
-    """Make this expression the owner of its emotion binding, evicting any
-    previous expression that held the same emotion."""
-    with Session(req.app.state.engine) as s:
-        e = s.get(Expression, name)
-        if e is None:
-            raise HTTPException(
-                404,
-                detail={"error_code": "not_found", "message": f"no expression {name!r}"},
-            )
-        if not e.emotion:
-            raise HTTPException(
-                400,
-                detail={
-                    "error_code": "no_emotion",
-                    "message": "expression must have an emotion to activate",
-                },
-            )
-        # Strip the emotion from any other expression that currently owns it.
-        others = s.exec(select(Expression).where(Expression.emotion == e.emotion)).all()
-        for other in others:
-            if other.name != e.name:
-                other.emotion = None
-                s.add(other)
-        s.commit()
-        emotion = e.emotion  # capture before session closes
-    return {"ok": True, "name": name, "emotion": emotion}
 
 
 @router.post("/expressions/{name}/reset")

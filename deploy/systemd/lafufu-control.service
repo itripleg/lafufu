@@ -1,7 +1,12 @@
 [Unit]
 Description=Lafufu Control (HTTP API + WS bridge)
-After=nats.service lafufu-animator.service
-Wants=nats.service
+After=nats.service
+# Wants= pulls animator in alongside us; ordering is intentionally NOT via
+# After= because Type=simple has no readiness gate (the previous
+# After=lafufu-animator gave false confidence — the animator wasn't actually
+# finished subscribing when control's _publish_idle_expression fired). The
+# idle-bootstrap race fix lives in a follow-up spec.
+Wants=nats.service lafufu-animator.service
 PartOf=lafufu.target
 
 [Service]

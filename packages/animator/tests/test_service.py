@@ -217,3 +217,56 @@ async def test_play_expression_drives_target_through_keyframes(running_animator,
     assert abs(bus.last_position("head_lr") - 2200) <= 5
     assert svc._active_expression_name is None  # done + cleared
     await nc.drain()
+
+
+async def test_animator_requests_idle_on_startup(running_animator, nats_server):
+    """Cold-boot handshake: animator publishes `animator.request.idle` on
+    startup so control can (re)publish the idle expression in response.
+    Without this request, control's startup-time fire-and-forget publish
+    races the animator's subscribe and is silently dropped on the broker."""
+    _svc, _bus = running_animator
+    # The fixture sleeps 0.4 s before yielding; subscribe to the request
+    # topic with a JetStream consumer-style late subscription would miss the
+    # initial publish. Instead, subscribe and trigger a fresh request — the
+    # restart-mid-session case is identical to the cold-boot case from
+    # control's POV: we expect every request to elicit a response.
+    nc = await nats.connect(nats_server)
+    received: list[bytes] = []
+
+    async def cb(msg):
+        received.append(msg.data)
+
+    await nc.subscribe(topics.ANIMATOR_REQUEST_IDLE, cb=cb)
+    # The animator will retry up to 3 times if no _idle_payload arrives,
+    # so even if we missed the first attempt during fixture startup, we
+    # will see attempt 2 or 3 within a few seconds. To make the test
+    # deterministic and fast, observe that the animator publishes the
+    # request — wait up to 3 s.
+    for _ in range(30):
+        if received:
+            break
+        await asyncio.sleep(0.1)
+    await nc.drain()
+    assert len(received) >= 1, "animator did not publish animator.request.idle on startup"
+
+
+async def test_animator_caches_idle_payload_from_play_expression(running_animator, nats_server):
+    """When a play_expression with name='idle' arrives, the animator caches
+    it as _idle_payload for the idle fallback loop. This is the response
+    path of the bootstrap handshake."""
+    svc, _bus = running_animator
+    nc = await nats.connect(nats_server)
+
+    payload = schemas.AnimatorIntentPlayExpression(
+        name="idle",
+        playback="random_walk",
+        steps=[],
+        random_walk_config=schemas.RandomWalkConfig(intensity=1.0, speed=1.0, pause_chance=0.3),
+    )
+    await publish_model(nc, topics.ANIMATOR_INTENT_PLAY_EXPRESSION, payload)
+    await asyncio.sleep(0.2)
+    await nc.drain()
+
+    assert svc._idle_payload is not None
+    assert svc._idle_payload.name == "idle"
+    assert svc._idle_payload.playback == "random_walk"

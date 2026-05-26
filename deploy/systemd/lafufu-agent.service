@@ -1,6 +1,10 @@
 [Unit]
 Description=Lafufu Agent (voice pipeline)
-After=nats.service
+# Order after control so request_config_snapshot fires AFTER control has
+# subscribed to it on its own startup (otherwise the snapshot request is
+# silently dropped — NATS is fire-and-forget — and the agent boots with
+# env defaults, ignoring DB-tuned settings).
+After=nats.service lafufu-control.service
 Wants=nats.service
 PartOf=lafufu.target
 
