@@ -30,7 +30,7 @@ async def _publish_idle_expression(engine, nats_client) -> None:
     external play_expression publish.
     """
     with Session(engine) as s:
-        e = s.exec(select(Expression).where(Expression.emotion == "idle")).first()
+        e = s.get(Expression, "idle")
         if e is None:
             return  # No idle seeded yet (fresh, unseeded DB)
         need = list(required_frame_names(e))
