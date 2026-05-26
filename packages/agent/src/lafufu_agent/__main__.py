@@ -459,7 +459,7 @@ def main() -> None:
     # a missing/corrupt install degrades to RMS-based onset instead of crashing
     # the agent before the rest of the pipeline even starts. The admin UI's
     # agent.wakeword.enabled setting controls live attachment to the mic.
-    from .wakeword import OpenWakeWordDetector, has_openwakeword
+    from .wakeword import OpenWakeWordDetector, has_openwakeword, resolve_model_ref
 
     make_wake_detector = None
     wake_detector = None
@@ -471,14 +471,31 @@ def main() -> None:
     else:
 
         def make_wake_detector(name: str, threshold: float):
-            d = OpenWakeWordDetector(model_name=name, threshold=threshold)
+            resolved = resolve_model_ref(name)
+            d = OpenWakeWordDetector(model_name=resolved, threshold=threshold)
             d.load()
             return d
 
-        wake_detector = make_wake_detector(
-            os.environ.get("LAFUFU_WAKEWORD_MODEL", "assets/wakeword/lafufu.onnx"),
-            float(os.environ.get("LAFUFU_WAKEWORD_THRESHOLD", "0.5")),
-        )
+        model_env = os.environ.get("LAFUFU_WAKEWORD_MODEL") or "assets/wakeword/lafufu.onnx"
+        threshold_raw = os.environ.get("LAFUFU_WAKEWORD_THRESHOLD", "0.5")
+        try:
+            threshold_env = float(threshold_raw)
+        except (TypeError, ValueError):
+            logging.getLogger(__name__).warning(
+                "LAFUFU_WAKEWORD_THRESHOLD=%r is not a number; using 0.5", threshold_raw
+            )
+            threshold_env = 0.5
+        try:
+            wake_detector = make_wake_detector(model_env, threshold_env)
+        except Exception as e:
+            logging.getLogger(__name__).warning(
+                "wakeword.load_failed model=%s error=%s — falling back to RMS-based onset",
+                model_env,
+                e,
+            )
+            wake_detector = None
+            # Keep make_wake_detector defined — the live-swap path can still try
+            # other models later via _on_config_wakeword_model.
 
     mic = RealMic(stt=stt, wake_detector=wake_detector)
     player = make_player(piper.sample_rate)

@@ -718,6 +718,12 @@ async def test_interaction_mode_setting_swaps_field(nats_server):
     task = asyncio.create_task(svc.run())
     await asyncio.sleep(0.5)
 
+    # Satisfy the trigger-mode safety guard — without an attached wake_detector
+    # the swap would be (correctly) refused. The companion test
+    # test_interaction_mode_trigger_refused_without_wake_detector covers the
+    # refusal path; this one is asserting the field-swap mechanic.
+    svc._mic.wake_detector = object()
+
     nc = await nats.connect(nats_server)
     await publish_model(
         nc,
@@ -950,6 +956,50 @@ async def test_wakeword_threshold_setting_mutates_detector(nats_server):
     )
     await asyncio.sleep(0.2)
     assert det.threshold == 0.0
+
+    await nc.drain()
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)
+
+
+async def test_interaction_mode_trigger_refused_without_wake_detector(nats_server):
+    """Flipping agent.interaction_mode=trigger when the mic has no
+    wake_detector attached must be refused — otherwise the agent silently
+    degrades to RMS-only gating (the original wake-word-bypass bug)."""
+    from lafufu_agent.trigger import InteractionMode
+
+    class _MicNoDetector:
+        def __init__(self):
+            self.wake_detector = None
+
+        def listen_once(self):
+            return ""
+
+    mic = _MicNoDetector()
+
+    svc = AgentService(
+        mic=mic,
+        ollama=FakeOllama(),
+        piper=FakePiper(),
+        nats_url=nats_server,
+        wake_detector=None,
+        interaction_mode=InteractionMode.CONTINUOUS,
+    )
+    assert svc._interaction_mode == InteractionMode.CONTINUOUS
+
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.5)
+
+    nc = await nats.connect(nats_server)
+    await publish_model(
+        nc,
+        f"{topics.CONFIG_CHANGED}.agent.interaction_mode",
+        schemas.ConfigChanged(key="agent.interaction_mode", value="trigger", source="test"),
+    )
+    await asyncio.sleep(0.3)
+
+    # The safety guard must have refused the flip.
+    assert svc._interaction_mode == InteractionMode.CONTINUOUS
 
     await nc.drain()
     svc._shutdown.set()

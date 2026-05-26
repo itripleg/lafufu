@@ -111,7 +111,7 @@ DEFAULTS: list[tuple[str, str, str, str]] = [
         "agent.wakeword.model",
         "assets/wakeword/lafufu.onnx",
         "str",
-        "openwakeword model name (one of the bundled defaults, e.g. 'hey_jarvis_v0.1') or a path to a custom .onnx (resolved relative to the agent's working directory).",
+        "openwakeword model name (one of the bundled defaults, e.g. 'hey_jarvis_v0.1') or a path to a custom .onnx. Relative paths are resolved against the lafufu workspace root (the directory containing pyproject.toml + packages/), not the agent's current working directory.",
     ),
     (
         "agent.wakeword.threshold",

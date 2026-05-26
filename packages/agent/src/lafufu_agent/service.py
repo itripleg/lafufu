@@ -509,6 +509,21 @@ class AgentService(BaseService):
         except ValueError:
             self.log.warning("agent.interaction_mode.bad_value value=%r", msg.value)
             return
+        # Refuse trigger mode without a wake-word-gated mic — otherwise
+        # _trigger_session's wait_for_onset silently falls back to RMS gating
+        # and the operator thinks wake-word is on while it's effectively
+        # bypassed. Mirrors the on_startup hard-fail so snapshot replay can't
+        # sneak the agent into a broken trigger mode.
+        if new_mode == InteractionMode.TRIGGER and (
+            getattr(self._mic, "wake_detector", None) is None
+        ):
+            self.log.warning(
+                "agent.interaction_mode=trigger requested but no wake_detector is "
+                "attached — staying in %s. Check wakeword.load_failed logs and "
+                "agent.wakeword.enabled in the admin UI.",
+                self._interaction_mode.value,
+            )
+            return
         if new_mode != self._interaction_mode:
             self.log.info(
                 "agent.interaction_mode.set value=%s from=%s",
