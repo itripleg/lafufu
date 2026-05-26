@@ -1,4 +1,4 @@
-import { Component, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { Component, createEffect, createMemo, createSignal, onCleanup, onMount, Show } from "solid-js";
 import { NatsWs } from "../shared/nats_ws";
 import { api } from "../shared/api";
 import { applyDragDelta, axisMid, type DraggableAxis, type ServoRanges } from "./head_drag";
@@ -180,8 +180,28 @@ const Pet: Component = () => {
           transition: dragging() ? "none" : "transform 0.3s ease-out",
           "user-select": "none",
           "pointer-events": "none",
+          // Faintly dim the pet while we have no servo config yet. Without
+          // this cue, the first touch silently no-ops while config loads
+          // and the user thinks the page is dead. The text below also
+          // surfaces the loading state.
+          opacity: config() ? 1 : 0.55,
         }}
       />
+      <Show when={!config()}>
+        <div
+          style={{
+            position: "absolute",
+            bottom: "8vh",
+            "font-family": "ui-monospace, monospace",
+            "font-size": "0.85rem",
+            color: "rgba(220,200,170,0.55)",
+            "letter-spacing": "0.04em",
+            "pointer-events": "none",
+          }}
+        >
+          connecting…
+        </div>
+      </Show>
     </div>
   );
 };

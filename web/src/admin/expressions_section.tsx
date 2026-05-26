@@ -54,12 +54,12 @@ const PLAYBACK: ExpressionDTO["playback"][] = ["once", "loop", "shuffle", "rando
 const DEFAULT_RW = { intensity: 1.0, speed: 1.0, pause_chance: 0.30 };
 
 export const ExpressionsSection: Component<{ nats: NatsWs }> = (props) => {
-  const expressions = createReactiveResource(
+  const [expressions, refetchExpressions] = createReactiveResource(
     async () => (await api.listExpressions()).items,
     ["expressions.changed"],
     props.nats,
   );
-  const frames = createReactiveResource(
+  const [frames] = createReactiveResource(
     async () => (await api.listFrames()).items,
     ["frames.changed"],
     props.nats,
@@ -92,10 +92,15 @@ export const ExpressionsSection: Component<{ nats: NatsWs }> = (props) => {
   const onNew = async () => {
     const name = window.prompt("expression name:");
     if (!name) return;
+    const trimmed = name.trim();
     try {
-      await api.createExpression({ name: name.trim(), steps: [] });
+      await api.createExpression({ name: trimmed, steps: [] });
+      // Wait for the server-truth list before selecting so the editor panel
+      // doesn't flash empty (NATS-driven refetch alone races the JS await).
+      await refetchExpressions();
       setLocalEdits(null);
-      setSelectedName(name.trim());
+      setSelectedName(trimmed);
+      toast.ok(`created ${trimmed}`);
     } catch (e: unknown) {
       toast.err("create failed", (e as Error)?.message ?? String(e));
     }
@@ -115,6 +120,9 @@ export const ExpressionsSection: Component<{ nats: NatsWs }> = (props) => {
         emotion: e.emotion,
         description: e.description,
       });
+      // Drive the refetch before clearing localEdits, otherwise the panel
+      // briefly reverts to the pre-save server state.
+      await refetchExpressions();
       setLocalEdits(null);
       toast.ok(`saved ${e.name}`);
     } catch (err: unknown) {
@@ -136,10 +144,13 @@ export const ExpressionsSection: Component<{ nats: NatsWs }> = (props) => {
     const e = selectedEff();
     if (!e) return;
     if (!window.confirm(`Delete expression "${e.name}"?`)) return;
+    const name = e.name;
     try {
-      await api.deleteExpression(e.name);
+      await api.deleteExpression(name);
+      await refetchExpressions();
       setLocalEdits(null);
       setSelectedName(null);
+      toast.ok(`deleted ${name}`);
     } catch (err: unknown) {
       toast.err("delete failed", (err as Error)?.message ?? String(err));
     }
@@ -151,7 +162,7 @@ export const ExpressionsSection: Component<{ nats: NatsWs }> = (props) => {
     if (!window.confirm(`Reset "${e.name}" to factory defaults? Your edits will be lost.`)) return;
     try {
       await api.resetExpression(e.name);
-      // expressions.changed publish will refetch automatically; clear local edits
+      await refetchExpressions();
       setLocalEdits(null);
       toast.ok(`reset ${e.name}`);
     } catch (err: unknown) {
