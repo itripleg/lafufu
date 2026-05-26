@@ -55,6 +55,7 @@ def main() -> int:
     # When --model is a file path, openwakeword keys scores by the file's stem
     # (e.g. assets/wakeword/lafufu.onnx → "lafufu"). Built-in names key as-is.
     from pathlib import Path as _P
+
     score_key = _P(args.model).stem if _P(args.model).suffix in (".onnx", ".tflite") else args.model
 
     p = pyaudio.PyAudio()
