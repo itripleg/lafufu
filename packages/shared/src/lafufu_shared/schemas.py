@@ -10,7 +10,11 @@ from pydantic import BaseModel, Field
 
 # ----- Enums (literal unions) -----
 
-Emotion = Literal["happy", "sad", "angry", "surprised", "neutral", "agree", "disagree"]
+# Emotion was previously a closed Literal type. The expression registry
+# (control's DB) is now the validity check — see resolve_emotion_to_play_intent.
+# Keeping `Emotion` as `str` lets the LLM emit any name without a Pydantic
+# crash; unknown names get logged + no-op'd downstream.
+Emotion = str
 ServiceName = Literal["agent", "animator", "printer", "control"]
 ServoName = Literal["head_lr", "head_ud", "eye", "jaw", "brow"]
 GestureName = Literal["nod_yes", "nod_no", "look_around"]

@@ -6,6 +6,7 @@ via the manual end-to-end walkthrough."""
 from lafufu_control.animation.seed import seed_animations
 from lafufu_control.db import create_engine_for_path, init_db
 from lafufu_control.service import resolve_emotion_to_play_intent
+from lafufu_shared.schemas import AgentReply
 
 
 def test_known_emotion_resolves_to_play_intent(tmp_path):
@@ -32,3 +33,11 @@ def test_empty_emotion_returns_none(tmp_path):
     seed_animations(engine)
     assert resolve_emotion_to_play_intent(engine, emotion="") is None
     assert resolve_emotion_to_play_intent(engine, emotion=None) is None
+
+
+def test_unknown_emotion_does_not_crash_agent_reply():
+    """Regression: Emotion was Literal[...] so an unknown name from the LLM
+    raised a Pydantic ValidationError before reaching the DB lookup.
+    Widening to str means the schema accepts any name; the DB is the gate."""
+    reply = AgentReply(emotion="zzz_unknown", text="hello", source="llm")
+    assert reply.emotion == "zzz_unknown"
