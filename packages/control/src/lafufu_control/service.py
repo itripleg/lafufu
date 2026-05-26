@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import time
 from datetime import UTC, datetime
 
@@ -20,6 +21,8 @@ from .models.chat import ChatMessage
 from .models.expression import Expression
 from .models.frame import Frame
 from .models.setting import Setting
+
+_log = logging.getLogger(__name__)
 
 
 async def _publish_idle_expression(engine, nats_client) -> None:
@@ -59,11 +62,22 @@ def resolve_emotion_to_play_intent(engine, emotion: str | None) -> dict | None:
             return None
         need = list(required_frame_names(e))
         frames = {f.name: f for f in s.exec(select(Frame).where(Frame.name.in_(need))).all()}
-        if any(n not in frames for n in need):
+        missing = [n for n in need if n not in frames]
+        if missing:
+            _log.warning(
+                "expression.broken.missing_frames name=%r missing=%s",
+                name,
+                missing,
+            )
             return None
         try:
             return compile_expression(e, frames).model_dump()
         except Exception:
+            _log.warning(
+                "expression.broken.compile_error name=%r — DB row exists but compile failed",
+                name,
+                exc_info=True,
+            )
             return None
 
 
@@ -126,9 +140,26 @@ class ControlService(BaseService):
         loop = asyncio.get_running_loop()
 
         def publish_sync(subject: str, payload: dict) -> None:
-            """Schedule a publish from the synchronous FastAPI handler thread."""
+            """Schedule a publish from the synchronous FastAPI handler thread.
+
+            NATS publish is fire-and-forget; if the broker is down the coroutine
+            raises and the Future stores the exception. Without an explicit
+            done-callback the failure would garbage-collect silently and the
+            HTTP handler still returns 2xx. Log on failure so a dropped intent
+            is visible in the journal."""
             data = json.dumps(payload).encode("utf-8")
-            asyncio.run_coroutine_threadsafe(self.nats.publish(subject, data), loop)
+            fut = asyncio.run_coroutine_threadsafe(self.nats.publish(subject, data), loop)
+
+            def _on_done(f):
+                exc = f.exception()
+                if exc is not None:
+                    _log.warning(
+                        "nats.publish_sync.failed subject=%s error=%s",
+                        subject,
+                        exc,
+                    )
+
+            fut.add_done_callback(_on_done)
 
         self._app = create_app(engine=engine, nats_publish=publish_sync, api_token=self._api_token)
         self._app.state.service_status = {}
