@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { applyDragDelta, axisMid, clamp } from "../src/pet/head_drag";
-import { SERVO_RANGES } from "../src/pet/pet_scene";
+import { SERVO_RANGES } from "../src/pet/servo_ranges";
 
 describe("clamp", () => {
   it("returns the value when within range", () => {

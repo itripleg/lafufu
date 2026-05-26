@@ -5,7 +5,7 @@
  * can be unit-tested without three.js or the DOM. `SERVO_RANGES` is the single
  * source of truth for the servo bounds — imported, not duplicated.
  */
-import { SERVO_RANGES } from "./pet_scene";
+import { SERVO_RANGES } from "./servo_ranges";
 
 /** Servos the /pet page lets the user drag directly. */
 export type DraggableAxis = "head_lr" | "head_ud" | "eye" | "jaw";
