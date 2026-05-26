@@ -308,8 +308,8 @@ export function createPetScene(container: HTMLElement): PetScene {
     }
 
     // Apply head yaw/pitch
-    head.rotation.y = signed(cur.head_lr, SERVO_RANGES.head_lr) * -0.45;
-    head.rotation.x = signed(cur.head_ud, SERVO_RANGES.head_ud) * 0.32;
+    head.rotation.y = signed(cur.head_lr, SERVO_RANGES.head_lr) * 0.45;
+    head.rotation.x = signed(cur.head_ud, SERVO_RANGES.head_ud) * -0.32;
 
     // Eyes: shared x offset from `eye` servo. Vertical look from brow position.
     const eyeOff = signed(cur.eye, SERVO_RANGES.eye) * 0.06;
