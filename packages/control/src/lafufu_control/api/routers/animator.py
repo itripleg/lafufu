@@ -1,15 +1,18 @@
 """Admin → animator intent proxy."""
 
+import contextlib
 import json
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
+from lafufu_animator import pose as _pose
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from ...animation.compile import compile_expression, required_frame_names
 from ...animation.seed import apply_expression_seed, apply_frame_seed
 from ...models import Expression, Frame
+from ...models.setting import Setting
 
 router = APIRouter()
 
@@ -295,6 +298,28 @@ def _expression_steps_json(body: ExpressionBody) -> str:
         cfg = body.random_walk_config or RandomWalkConfigBody()
         return json.dumps(cfg.model_dump())
     return json.dumps([st.model_dump(exclude_none=True) for st in body.steps])
+
+
+@router.get("/config")
+def get_animator_config(req: Request):
+    """Servo config for the frontend: ranges (CLAMP), factory idle positions,
+    and any operator overrides from the settings table."""
+    ranges = {k: list(v) for k, v in _pose.CLAMP.items()}
+    idle_defaults = {
+        "head_lr": _pose.HEAD_IDLE_LR_DXL,
+        "head_ud": _pose.HEAD_IDLE_UD_DXL,
+        "eye": _pose.EYE_IDLE_DXL,
+        "jaw": _pose.MOUTH_CLOSE_DXL,
+        "brow": _pose.BROW_IDLE_DXL,
+    }
+    overrides: dict[str, int] = {}
+    with Session(req.app.state.engine) as s:
+        for servo in ("head_lr", "head_ud", "eye", "jaw", "brow"):
+            row = s.get(Setting, f"animator.{servo}.default")
+            if row is not None:
+                with contextlib.suppress(TypeError, ValueError):
+                    overrides[servo] = int(row.value)
+    return {"ranges": ranges, "idle_defaults": idle_defaults, "idle_overrides": overrides}
 
 
 @router.get("/expressions")
