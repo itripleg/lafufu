@@ -250,8 +250,6 @@ export const api = {
     req("DELETE", `/animator/expressions/${encodeURIComponent(name)}`),
   playExpression: (name: string) =>
     req("POST", `/animator/expressions/${encodeURIComponent(name)}/play`),
-  activateExpression: (name: string) =>
-    req("POST", `/animator/expressions/${encodeURIComponent(name)}/activate`),
 
   // Reset built-ins
   resetExpression: (name: string) =>
