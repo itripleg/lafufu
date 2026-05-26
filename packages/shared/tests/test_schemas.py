@@ -9,9 +9,14 @@ def test_agent_reply_valid():
     assert r.emotion == "happy"
 
 
-def test_agent_reply_invalid_emotion():
-    with pytest.raises(ValidationError):
-        schemas.AgentReply(text="hi", emotion="confused")
+def test_agent_reply_accepts_any_emotion_string():
+    """Emotion was widened from Literal[...] to str when the expression registry
+    became the validity check (see PR #20). Any string is a valid emotion at
+    the schema layer; unknown names get logged + skipped by the resolver."""
+    r = schemas.AgentReply(text="hi", emotion="confused")
+    assert r.emotion == "confused"
+    r2 = schemas.AgentReply(text="hi", emotion="my_custom_pose")
+    assert r2.emotion == "my_custom_pose"
 
 
 def test_animator_pose_round_trip():

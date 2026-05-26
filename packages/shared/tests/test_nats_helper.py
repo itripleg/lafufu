@@ -56,7 +56,10 @@ async def test_subscribe_drops_invalid_payload(nats_server, caplog):
 
     await nats_helper.subscribe_model(nc, "test.bad", schemas.AgentReply, handler)
     await nc.publish("test.bad", b"not json")
-    await nc.publish("test.bad", b'{"text":"x","emotion":"not_a_valid_emotion"}')
+    # `emotion` is now `str` (PR #20 — registry is the validity check), so a
+    # nonsense emotion name no longer fails schema. Test schema-level dropping
+    # with a missing required field instead.
+    await nc.publish("test.bad", b'{"emotion":"happy"}')  # missing required "text"
     await asyncio.sleep(0.1)
     await nc.drain()
     assert got == []
