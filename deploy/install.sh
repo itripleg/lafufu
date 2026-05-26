@@ -81,6 +81,15 @@ mkdir -p /etc/nats
 cp deploy/nats/nats-server.production.conf /etc/nats/nats-server.conf
 chown root:root /etc/nats/nats-server.conf
 
+# 9a. sudoers fragment — lets the lafufu user restart services + read logs
+# without a password (required by the admin "restart service" + "view logs"
+# buttons in the control UI). Mode 0440 + visudo syntax check is the standard
+# pattern for /etc/sudoers.d/ drops.
+install -m 0440 -o root -g root \
+    "$REPO_DIR/deploy/sudoers/lafufu-services" \
+    /etc/sudoers.d/lafufu-services
+visudo -c -f /etc/sudoers.d/lafufu-services
+
 # 9. systemd units
 cp deploy/systemd/nats.service /etc/systemd/system/
 cp deploy/systemd/lafufu-*.service /etc/systemd/system/

@@ -46,7 +46,15 @@ class FrameBody(BaseModel):
 
 @router.post("/preview", status_code=202)
 def preview(body: PreviewBody, req: Request):
-    req.app.state.nats_publish("animator.intent.preview", body.model_dump())
+    clamped = _pose.clamp_dxl(body.name, body.position)
+    if clamped != body.position:
+        _log.warning(
+            "animator.preview.clamped servo=%s original=%d clamped=%d",
+            body.name,
+            body.position,
+            clamped,
+        )
+    req.app.state.nats_publish("animator.intent.preview", {"name": body.name, "position": clamped})
     return {"ok": True}
 
 
@@ -65,10 +73,19 @@ class SetPoseBody(BaseModel):
 
 @router.post("/set_pose", status_code=202)
 def set_pose(body: SetPoseBody, req: Request):
-    req.app.state.nats_publish(
-        "animator.intent.set_pose",
-        {"pose": body.model_dump()},
-    )
+    raw = body.model_dump()
+    clamped_pose: dict[str, int] = {}
+    for servo, value in raw.items():
+        c = _pose.clamp_dxl(servo, value)
+        if c != value:
+            _log.warning(
+                "animator.set_pose.clamped servo=%s original=%d clamped=%d",
+                servo,
+                value,
+                c,
+            )
+        clamped_pose[servo] = c
+    req.app.state.nats_publish("animator.intent.set_pose", {"pose": clamped_pose})
     return {"ok": True}
 
 

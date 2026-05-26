@@ -7,6 +7,10 @@ Description=Lafufu Animator (servos + lipsync)
 After=nats.service lafufu-control.service
 Wants=nats.service
 PartOf=lafufu.target
+# StartLimit* must live in [Unit] on modern systemd; in [Service] they are
+# silently ignored (the directives are parsed but have no effect).
+StartLimitBurst=5
+StartLimitIntervalSec=60
 
 [Service]
 Type=simple
@@ -18,8 +22,6 @@ Environment=LAFUFU_DATA_DIR=/var/lafufu
 ExecStart=/srv/lafufu/.venv/bin/python -m lafufu_animator
 Restart=on-failure
 RestartSec=5s
-StartLimitBurst=5
-StartLimitIntervalSec=60
 TimeoutStopSec=10s
 
 [Install]

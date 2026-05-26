@@ -28,6 +28,9 @@ class WsBridge:
         self._ws_patterns: dict[WebSocket, set[str]] = {}
         # pattern → set of websockets
         self._pattern_listeners: dict[str, set[WebSocket]] = {}
+        # Serialises _add_sub / _remove_sub so the check-then-act ref-count
+        # update is atomic across the subscribe/unsubscribe await.
+        self._ref_lock = asyncio.Lock()
 
     def mount(self, app: FastAPI) -> None:
         bridge = self
@@ -61,7 +64,7 @@ class WsBridge:
                                 await bridge._add_sub(ws, t)
                         elif op == "unsub":
                             for t in topics:
-                                bridge._remove_sub(ws, t)
+                                await bridge._remove_sub(ws, t)
                     except Exception as e:
                         log.warning("ws.op_error op=%s error=%s", op, e)
             except WebSocketDisconnect:
@@ -70,7 +73,7 @@ class WsBridge:
                 log.warning("ws.error error=%s", e)
             finally:
                 for t in list(bridge._ws_patterns.get(ws, set())):
-                    bridge._remove_sub(ws, t)
+                    await bridge._remove_sub(ws, t)
                 bridge._ws_patterns.pop(ws, None)
 
         # Insert the WS route before any catch-all Mount (e.g. StaticFiles at "/")
@@ -83,41 +86,38 @@ class WsBridge:
         app.routes.insert(mount_idx, ws_route)
 
     async def _add_sub(self, ws: WebSocket, pattern: str) -> None:
-        self._ws_patterns[ws].add(pattern)
-        self._pattern_listeners.setdefault(pattern, set()).add(ws)
-        if pattern in self._subs:
-            existing_sub, count = self._subs[pattern]
-            self._subs[pattern] = (existing_sub, count + 1)
-            return
+        async with self._ref_lock:
+            self._ws_patterns[ws].add(pattern)
+            self._pattern_listeners.setdefault(pattern, set()).add(ws)
+            if pattern in self._subs:
+                existing_sub, count = self._subs[pattern]
+                self._subs[pattern] = (existing_sub, count + 1)
+                return
 
-        # First subscriber for this pattern — open NATS sub
-        async def cb(msg):
-            await self._fanout(pattern, msg.subject, msg.data)
+            # First subscriber for this pattern — open NATS sub
+            async def cb(msg):
+                await self._fanout(pattern, msg.subject, msg.data)
 
-        sub = await self.nats.subscribe(pattern, cb=cb)
-        self._subs[pattern] = (sub, 1)
+            sub = await self.nats.subscribe(pattern, cb=cb)
+            self._subs[pattern] = (sub, 1)
 
-    def _remove_sub(self, ws: WebSocket, pattern: str) -> None:
-        listeners = self._pattern_listeners.get(pattern)
-        if listeners is not None:
-            listeners.discard(ws)
-        self._ws_patterns.get(ws, set()).discard(pattern)
-        if pattern in self._subs:
-            sub, count = self._subs[pattern]
-            count -= 1
-            if count <= 0:
-                # Schedule the unsubscribe — sub.unsubscribe() is a coroutine.
-                # get_running_loop() avoids the deprecated get_event_loop()
-                # warning and raises cleanly if called outside an async ctx.
-                try:
-                    asyncio.get_running_loop().create_task(sub.unsubscribe())
-                except RuntimeError:
-                    # No running loop (test teardown / sync caller) — best
-                    # effort: just drop the bookkeeping; NATS will collect.
-                    log.debug("ws.unsub.no_loop pattern=%s", pattern)
-                del self._subs[pattern]
-            else:
-                self._subs[pattern] = (sub, count)
+    async def _remove_sub(self, ws: WebSocket, pattern: str) -> None:
+        async with self._ref_lock:
+            listeners = self._pattern_listeners.get(pattern)
+            if listeners is not None:
+                listeners.discard(ws)
+            self._ws_patterns.get(ws, set()).discard(pattern)
+            if pattern in self._subs:
+                sub, count = self._subs[pattern]
+                count -= 1
+                if count <= 0:
+                    # Unsubscribe while holding the lock so no concurrent
+                    # _add_sub can re-enter between the del and the network call.
+                    with contextlib.suppress(Exception):
+                        await sub.unsubscribe()
+                    del self._subs[pattern]
+                else:
+                    self._subs[pattern] = (sub, count)
 
     async def _fanout(self, pattern: str, subject: str, data: bytes) -> None:
         try:
