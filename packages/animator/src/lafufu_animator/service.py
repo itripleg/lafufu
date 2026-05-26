@@ -68,9 +68,6 @@ class AnimatorService(BaseService):
         self._last_rms_ts = 0.0
         self._last_intent_mono = 0.0  # monotonic timestamp of last intent/preview/reply
         self.idle_animation_enabled = True  # toggleable via settings (Phase 0 default: on)
-        # CONCERN: idle_animation_enabled is now a no-op — the new keyframe player loop
-        # treats idle as just-another-expression. The field and subscriber are kept alive
-        # so config snapshot replay does not break, but the value is unused by the loop.
 
         # Single active KeyframePlayer (None when no expression is playing).
         # Idle fallback: when _active_player is done/None and _idle_payload is
@@ -157,13 +154,6 @@ class AnimatorService(BaseService):
             schemas.AgentTtsRms,
             self._on_tts_rms,
         )
-        await nats_helper.subscribe_model(
-            self.nats,
-            topics.AGENT_REPLY,
-            schemas.AgentReply,
-            self._on_agent_reply,
-        )
-
         # Per-servo idle defaults — operator-tunable via admin sliders.
         # When a value arrives, store it AND update target_pose so the servo
         # eases to the new center immediately.
@@ -403,14 +393,6 @@ class AnimatorService(BaseService):
             now_ms=int(time.monotonic() * 1000),
         )
         self._active_expression_name = msg.name
-
-    async def _on_agent_reply(self, subject: str, msg: schemas.AgentReply) -> None:
-        """Reply triggers lipsync; the agent emits a separate play_expression
-        intent for the emotion. We don't synthesise it here anymore."""
-        # CONCERN: _on_agent_reply no longer maps emotion → expression.
-        # The agent now needs to publish play_expression itself with a
-        # pre-resolved AnimatorIntentPlayExpression payload.
-        self._last_intent_mono = time.monotonic()
 
     async def _on_tts_rms(self, subject: str, msg: schemas.AgentTtsRms) -> None:
         # Drive the jaw via the attack/release envelope. mouth_target is already

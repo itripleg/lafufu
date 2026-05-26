@@ -30,7 +30,7 @@ async def _publish_idle_expression(engine, nats_client) -> None:
     external play_expression publish.
     """
     with Session(engine) as s:
-        e = s.exec(select(Expression).where(Expression.emotion == "idle")).first()
+        e = s.get(Expression, "idle")
         if e is None:
             return  # No idle seeded yet (fresh, unseeded DB)
         need = list(required_frame_names(e))
@@ -39,6 +39,32 @@ async def _publish_idle_expression(engine, nats_client) -> None:
             return  # Broken seed — don't crash, just skip
         payload = compile_expression(e, frames)
     await nats_helper.publish_model(nats_client, topics.ANIMATOR_INTENT_PLAY_EXPRESSION, payload)
+
+
+def resolve_emotion_to_play_intent(engine, emotion: str | None) -> dict | None:
+    """Return the AnimatorIntentPlayExpression payload (as a dict) for the
+    expression named `emotion`, or None if the name is empty/unknown/broken.
+    Pure: caller is responsible for publishing the result on NATS.
+
+    "Broken" includes: missing referenced frame rows, malformed steps_json,
+    or any pydantic validation error during compile. Returning None for all
+    broken cases lets the caller log a single 'unknown' warning instead of
+    surfacing a stack trace from the NATS wrapper for a corrupted row."""
+    name = (emotion or "").strip()
+    if not name:
+        return None
+    with Session(engine) as s:
+        e = s.get(Expression, name)
+        if e is None:
+            return None
+        need = list(required_frame_names(e))
+        frames = {f.name: f for f in s.exec(select(Frame).where(Frame.name.in_(need))).all()}
+        if any(n not in frames for n in need):
+            return None
+        try:
+            return compile_expression(e, frames).model_dump()
+        except Exception:
+            return None
 
 
 def _decode_setting_value(raw: str, value_type: str):
@@ -195,6 +221,16 @@ class ControlService(BaseService):
                 source=msg.source,
                 reply_delay_ms=delay_ms,
             )
+            payload = resolve_emotion_to_play_intent(engine, msg.emotion)
+            if payload is None:
+                if (msg.emotion or "").strip():
+                    self.log.warning(
+                        "agent.reply emotion=%r not found in expression registry; skipping pose",
+                        msg.emotion,
+                    )
+                return
+            data = json.dumps(payload).encode("utf-8")
+            await self.nats.publish(topics.ANIMATOR_INTENT_PLAY_EXPRESSION, data)
 
         await nats_helper.subscribe_model(
             self.nats,

@@ -1,14 +1,18 @@
 """Admin → animator intent proxy."""
 
+import contextlib
 import json
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
+from lafufu_animator import pose as _pose
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from ...animation.compile import compile_expression, required_frame_names
+from ...animation.seed import apply_expression_seed, apply_frame_seed
 from ...models import Expression, Frame
+from ...models.setting import Setting
 
 router = APIRouter()
 
@@ -110,6 +114,7 @@ def _f2d(f: Frame) -> dict:
         "brow": f.brow,
         "image": f.image,
         "description": f.description,
+        "is_builtin": f.is_builtin,
     }
 
 
@@ -144,7 +149,9 @@ def create_frame(body: FrameBody, req: Request):
         s.add(f)
         s.commit()
         s.refresh(f)
-        return _f2d(f)
+        out = _f2d(f)
+    req.app.state.nats_publish("frames.changed", {"kind": "create", "name": body.name})
+    return out
 
 
 @router.put("/frames/{name}")
@@ -165,7 +172,9 @@ def update_frame(name: str, body: FrameBody, req: Request):
         s.add(f)
         s.commit()
         s.refresh(f)
-        return _f2d(f)
+        out = _f2d(f)
+    req.app.state.nats_publish("frames.changed", {"kind": "update", "name": name})
+    return out
 
 
 @router.delete("/frames/{name}", status_code=204)
@@ -174,6 +183,14 @@ def delete_frame(name: str, req: Request):
         f = s.get(Frame, name)
         if f is None:
             return None  # idempotent
+        if f.is_builtin:
+            raise HTTPException(
+                400,
+                detail={
+                    "error_code": "is_builtin",
+                    "message": f"frame {name!r} is a built-in and cannot be deleted; reset it instead",
+                },
+            )
         # Refuse if any expression references this frame — otherwise /play would
         # 409 on the orphan reference later. Scan via LIKE on the JSON column;
         # cheap given the table size.
@@ -197,6 +214,7 @@ def delete_frame(name: str, req: Request):
             )
         s.delete(f)
         s.commit()
+    req.app.state.nats_publish("frames.changed", {"kind": "delete", "name": name})
     return None
 
 
@@ -270,6 +288,7 @@ def _e2d(e: Expression) -> dict:
         "random_walk_config": rwc,
         "emotion": e.emotion,
         "description": e.description,
+        "is_builtin": e.is_builtin,
     }
 
 
@@ -279,6 +298,28 @@ def _expression_steps_json(body: ExpressionBody) -> str:
         cfg = body.random_walk_config or RandomWalkConfigBody()
         return json.dumps(cfg.model_dump())
     return json.dumps([st.model_dump(exclude_none=True) for st in body.steps])
+
+
+@router.get("/config")
+def get_animator_config(req: Request):
+    """Servo config for the frontend: ranges (CLAMP), factory idle positions,
+    and any operator overrides from the settings table."""
+    ranges = {k: list(v) for k, v in _pose.CLAMP.items()}
+    idle_defaults = {
+        "head_lr": _pose.HEAD_IDLE_LR_DXL,
+        "head_ud": _pose.HEAD_IDLE_UD_DXL,
+        "eye": _pose.EYE_IDLE_DXL,
+        "jaw": _pose.MOUTH_CLOSE_DXL,
+        "brow": _pose.BROW_IDLE_DXL,
+    }
+    overrides: dict[str, int] = {}
+    with Session(req.app.state.engine) as s:
+        for servo in ("head_lr", "head_ud", "eye", "jaw", "brow"):
+            row = s.get(Setting, f"animator.{servo}.default")
+            if row is not None:
+                with contextlib.suppress(TypeError, ValueError):
+                    overrides[servo] = int(row.value)
+    return {"ranges": ranges, "idle_defaults": idle_defaults, "idle_overrides": overrides}
 
 
 @router.get("/expressions")
@@ -314,7 +355,9 @@ def create_expression(body: ExpressionBody, req: Request):
         s.add(e)
         s.commit()
         s.refresh(e)
-        return _e2d(e)
+        out = _e2d(e)
+    req.app.state.nats_publish("expressions.changed", {"kind": "create", "name": body.name})
+    return out
 
 
 @router.put("/expressions/{name}")
@@ -336,7 +379,9 @@ def update_expression(name: str, body: ExpressionBody, req: Request):
         s.add(e)
         s.commit()
         s.refresh(e)
-        return _e2d(e)
+        out = _e2d(e)
+    req.app.state.nats_publish("expressions.changed", {"kind": "update", "name": name})
+    return out
 
 
 @router.delete("/expressions/{name}", status_code=204)
@@ -345,6 +390,14 @@ def delete_expression(name: str, req: Request):
         e = s.get(Expression, name)
         if e is None:
             return None  # idempotent
+        if e.is_builtin:
+            raise HTTPException(
+                400,
+                detail={
+                    "error_code": "is_builtin",
+                    "message": f"expression {name!r} is a built-in and cannot be deleted; reset it instead",
+                },
+            )
         # Refuse if this expression is bound to an emotion — the agent service
         # (and idle bootstrap) rely on emotion → expression resolution; deleting
         # a bound expression silently orphans those code paths. Operator must
@@ -364,6 +417,7 @@ def delete_expression(name: str, req: Request):
             )
         s.delete(e)
         s.commit()
+    req.app.state.nats_publish("expressions.changed", {"kind": "delete", "name": name})
     return None
 
 
@@ -420,3 +474,51 @@ def activate_expression(name: str, req: Request):
         s.commit()
         emotion = e.emotion  # capture before session closes
     return {"ok": True, "name": name, "emotion": emotion}
+
+
+@router.post("/expressions/{name}/reset")
+def reset_expression(name: str, req: Request):
+    with Session(req.app.state.engine) as s:
+        e = s.get(Expression, name)
+        if e is None:
+            raise HTTPException(
+                404, detail={"error_code": "not_found", "message": f"no expression {name!r}"}
+            )
+        if not e.is_builtin:
+            raise HTTPException(
+                400,
+                detail={
+                    "error_code": "not_builtin",
+                    "message": f"expression {name!r} is not a built-in and cannot be reset",
+                },
+            )
+        apply_expression_seed(s, name)
+        s.commit()
+        e = s.get(Expression, name)
+        out = _e2d(e)
+    req.app.state.nats_publish("expressions.changed", {"kind": "reset", "name": name})
+    return out
+
+
+@router.post("/frames/{name}/reset")
+def reset_frame(name: str, req: Request):
+    with Session(req.app.state.engine) as s:
+        f = s.get(Frame, name)
+        if f is None:
+            raise HTTPException(
+                404, detail={"error_code": "not_found", "message": f"no frame {name!r}"}
+            )
+        if not f.is_builtin:
+            raise HTTPException(
+                400,
+                detail={
+                    "error_code": "not_builtin",
+                    "message": f"frame {name!r} is not a built-in and cannot be reset",
+                },
+            )
+        apply_frame_seed(s, name)
+        s.commit()
+        f = s.get(Frame, name)
+        out = _f2d(f)
+    req.app.state.nats_publish("frames.changed", {"kind": "reset", "name": name})
+    return out

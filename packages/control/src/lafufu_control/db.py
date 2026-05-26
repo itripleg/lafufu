@@ -24,9 +24,18 @@ def create_engine_for_path(path: str):
 
 
 def init_db(engine) -> None:
-    from .models import behavior, chat, expression, plugin, setting  # noqa: F401
+    from .models import behavior, chat, expression, frame, plugin, setting  # noqa: F401
 
     SQLModel.metadata.create_all(engine)
+    # Additive migrations for existing on-disk DBs.
+    with engine.connect() as conn:
+        for table in ("frame", "expression"):
+            cols = {row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})")}
+            if "is_builtin" not in cols:
+                conn.exec_driver_sql(
+                    f"ALTER TABLE {table} ADD COLUMN is_builtin INTEGER NOT NULL DEFAULT 0"
+                )
+        conn.commit()
 
 
 def get_session(engine) -> Generator[Session]:

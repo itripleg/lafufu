@@ -80,6 +80,7 @@ export type FrameDTO = {
   brow: number;
   image: string | null;
   description: string | null;
+  is_builtin: boolean;
 };
 
 export type ExpressionStepDTO = {
@@ -105,6 +106,7 @@ export type ExpressionDTO = {
   random_walk_config: RandomWalkConfig | null;
   emotion: string | null;
   description: string | null;
+  is_builtin: boolean;
 };
 
 export type ImageBucket = "letterheads" | "sprites";
@@ -250,4 +252,24 @@ export const api = {
     req("POST", `/animator/expressions/${encodeURIComponent(name)}/play`),
   activateExpression: (name: string) =>
     req("POST", `/animator/expressions/${encodeURIComponent(name)}/activate`),
+
+  // Reset built-ins
+  resetExpression: (name: string) =>
+    req<ExpressionDTO>(
+      "POST",
+      `/animator/expressions/${encodeURIComponent(name)}/reset`,
+    ),
+  resetFrame: (name: string) =>
+    req<FrameDTO>(
+      "POST",
+      `/animator/frames/${encodeURIComponent(name)}/reset`,
+    ),
+
+  // Servo config
+  getAnimatorConfig: () =>
+    req<{
+      ranges: Record<string, readonly [number, number]>;
+      idle_defaults: Record<string, number>;
+      idle_overrides: Record<string, number>;
+    }>("GET", "/animator/config"),
 };

@@ -1,7 +1,6 @@
 import {
   Component,
   createMemo,
-  createResource,
   createSignal,
   For,
   Show,
@@ -20,6 +19,8 @@ import {
   type FrameDTO,
 } from "../shared/api";
 import { toast } from "../shared/toast";
+import type { NatsWs } from "../shared/nats_ws";
+import { createReactiveResource } from "../shared/reactive_resource";
 
 const SortableStep: Component<{
   id: string;
@@ -51,22 +52,18 @@ const SortableStep: Component<{
 
 const PLAYBACK: ExpressionDTO["playback"][] = ["once", "loop", "shuffle", "random_walk"];
 const DEFAULT_RW = { intensity: 1.0, speed: 1.0, pause_chance: 0.30 };
-const EMOTIONS = [
-  "idle",
-  "agree",
-  "disagree",
-  "happy",
-  "sad",
-  "angry",
-  "surprised",
-  "neutral",
-] as const;
 
-export const ExpressionsSection: Component = () => {
-  const [expressions, { refetch: refetchExpr }] = createResource(async () =>
-    (await api.listExpressions()).items,
+export const ExpressionsSection: Component<{ nats: NatsWs }> = (props) => {
+  const expressions = createReactiveResource(
+    async () => (await api.listExpressions()).items,
+    ["expressions.changed"],
+    props.nats,
   );
-  const [frames] = createResource(async () => (await api.listFrames()).items);
+  const frames = createReactiveResource(
+    async () => (await api.listFrames()).items,
+    ["frames.changed"],
+    props.nats,
+  );
   const [selectedName, setSelectedName] = createSignal<string | null>(null);
 
   // Local override layer: while a fresh resource fetch is in-flight or
@@ -97,7 +94,6 @@ export const ExpressionsSection: Component = () => {
     if (!name) return;
     try {
       await api.createExpression({ name: name.trim(), steps: [] });
-      await refetchExpr();
       setLocalEdits(null);
       setSelectedName(name.trim());
     } catch (e: unknown) {
@@ -119,7 +115,6 @@ export const ExpressionsSection: Component = () => {
         emotion: e.emotion,
         description: e.description,
       });
-      await refetchExpr();
       setLocalEdits(null);
       toast.ok(`saved ${e.name}`);
     } catch (err: unknown) {
@@ -143,11 +138,24 @@ export const ExpressionsSection: Component = () => {
     if (!window.confirm(`Delete expression "${e.name}"?`)) return;
     try {
       await api.deleteExpression(e.name);
-      await refetchExpr();
       setLocalEdits(null);
       setSelectedName(null);
     } catch (err: unknown) {
       toast.err("delete failed", (err as Error)?.message ?? String(err));
+    }
+  };
+
+  const onReset = async () => {
+    const e = selectedEff();
+    if (!e) return;
+    if (!window.confirm(`Reset "${e.name}" to factory defaults? Your edits will be lost.`)) return;
+    try {
+      await api.resetExpression(e.name);
+      // expressions.changed publish will refetch automatically; clear local edits
+      setLocalEdits(null);
+      toast.ok(`reset ${e.name}`);
+    } catch (err: unknown) {
+      toast.err("reset failed", (err as Error)?.message ?? String(err));
     }
   };
 
@@ -191,7 +199,12 @@ export const ExpressionsSection: Component = () => {
                   selectedName() === e.name ? "bg-amber-500/20 text-amber-200" : ""
                 }`}
               >
-                <div class="font-mono">{e.name}</div>
+                <div class="font-mono">
+                  {e.name}
+                  <Show when={e.is_builtin}>
+                    <span class="ml-2 text-xs text-stone-500">(builtin)</span>
+                  </Show>
+                </div>
                 <div class="text-xs text-stone-400">
                   {e.playback} · {e.steps.length} step(s)
                   {e.emotion ? ` · ${e.emotion}` : ""}
@@ -229,13 +242,24 @@ export const ExpressionsSection: Component = () => {
                   >
                     Save
                   </button>
-                  <button
-                    type="button"
-                    onClick={onDelete}
-                    class="px-3 py-1 border border-red-800 text-red-300 rounded hover:bg-red-900/30 ml-auto"
-                  >
-                    Delete
-                  </button>
+                  <Show when={e().is_builtin}>
+                    <button
+                      type="button"
+                      onClick={onReset}
+                      class="px-3 py-1 border border-blue-700 text-blue-300 rounded hover:bg-blue-900/30 ml-auto"
+                    >
+                      Reset to defaults
+                    </button>
+                  </Show>
+                  <Show when={!e().is_builtin}>
+                    <button
+                      type="button"
+                      onClick={onDelete}
+                      class="px-3 py-1 border border-red-800 text-red-300 rounded hover:bg-red-900/30 ml-auto"
+                    >
+                      Delete
+                    </button>
+                  </Show>
                 </div>
 
                 <div class="flex gap-3 items-center text-sm">
@@ -265,7 +289,9 @@ export const ExpressionsSection: Component = () => {
                       class="bg-stone-800 border border-stone-600 rounded px-1 py-0.5"
                     >
                       <option value="">(none)</option>
-                      <For each={EMOTIONS}>{(m) => <option value={m}>{m}</option>}</For>
+                      <For each={expressions() ?? []}>
+                        {(x) => <option value={x.name}>{x.name}</option>}
+                      </For>
                     </select>
                   </label>
                 </div>

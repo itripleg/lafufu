@@ -1,12 +1,13 @@
 """Seed the eight built-in expressions and their referenced frames.
 
-Idempotent: if any Frame or Expression already exists, this function no-ops.
-First call inserts 15 frames + 8 expressions wired to the canonical emotions.
+Per-row idempotent: inserts missing seed rows and backfills is_builtin on
+pre-existing seed-named rows. Never clobbers user edits on other fields.
+15 frames + 8 expressions wired to the canonical emotions.
 """
 
 import json
 
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from ..models.expression import Expression
 from ..models.frame import Frame
@@ -84,15 +85,16 @@ IDLE_RANDOM_WALK_CONFIG = {"intensity": 1.0, "speed": 1.0, "pause_chance": 0.30}
 
 
 def seed_animations(engine) -> None:
-    """Insert SEED_FRAMES and SEED_EXPRESSIONS if neither table has any rows."""
+    """Per-row upsert: insert missing seed rows, backfill is_builtin on
+    pre-existing seed-named rows. Never clobbers user edits."""
     with Session(engine) as s:
-        has_frames = s.exec(select(Frame).limit(1)).first() is not None
-        has_expressions = s.exec(select(Expression).limit(1)).first() is not None
-        if has_frames or has_expressions:
-            return
-
         for name, pose in SEED_FRAMES.items():
-            s.add(Frame(name=name, **pose))
+            existing = s.get(Frame, name)
+            if existing is None:
+                s.add(Frame(name=name, is_builtin=True, **pose))
+            elif not existing.is_builtin:
+                existing.is_builtin = True
+                s.add(existing)
         for (
             name,
             playback,
@@ -102,19 +104,77 @@ def seed_animations(engine) -> None:
             frame_names,
             emotion,
         ) in SEED_EXPRESSIONS:
-            if playback == "random_walk":
-                steps_json = json.dumps(IDLE_RANDOM_WALK_CONFIG)
-            else:
-                steps_json = json.dumps([{"frame": n} for n in frame_names])
-            s.add(
-                Expression(
-                    name=name,
-                    playback=playback,
-                    default_duration_ms=dur_ms,
-                    default_delay_ms=delay_ms,
-                    default_easing=easing,
-                    steps_json=steps_json,
-                    emotion=emotion,
+            existing = s.get(Expression, name)
+            if existing is None:
+                if playback == "random_walk":
+                    steps_json = json.dumps(IDLE_RANDOM_WALK_CONFIG)
+                else:
+                    steps_json = json.dumps([{"frame": n} for n in frame_names])
+                s.add(
+                    Expression(
+                        name=name,
+                        playback=playback,
+                        default_duration_ms=dur_ms,
+                        default_delay_ms=delay_ms,
+                        default_easing=easing,
+                        steps_json=steps_json,
+                        emotion=emotion,
+                        is_builtin=True,
+                    )
                 )
-            )
+            elif not existing.is_builtin:
+                existing.is_builtin = True
+                s.add(existing)
         s.commit()
+
+
+def apply_frame_seed(s: Session, name: str) -> Frame:
+    """Overwrite an existing Frame row from its SEED_FRAMES entry. Caller
+    holds the session open; commit is the caller's responsibility."""
+    pose = SEED_FRAMES.get(name)
+    if pose is None:
+        raise KeyError(f"no seed for frame {name!r}")
+    f = s.get(Frame, name)
+    if f is None:
+        f = Frame(name=name, is_builtin=True, **pose)
+        s.add(f)
+        return f
+    for k, v in pose.items():
+        setattr(f, k, v)
+    f.is_builtin = True
+    s.add(f)
+    return f
+
+
+def apply_expression_seed(s: Session, name: str) -> Expression:
+    """Overwrite an existing Expression row from its SEED_EXPRESSIONS entry.
+    Caller holds the session open; commit is the caller's responsibility."""
+    seed = next((row for row in SEED_EXPRESSIONS if row[0] == name), None)
+    if seed is None:
+        raise KeyError(f"no seed for expression {name!r}")
+    _, playback, dur_ms, delay_ms, easing, frame_names, emotion = seed
+    if playback == "random_walk":
+        steps_json = json.dumps(IDLE_RANDOM_WALK_CONFIG)
+    else:
+        steps_json = json.dumps([{"frame": n} for n in frame_names])
+    e = s.get(Expression, name)
+    if e is None:
+        e = Expression(name=name, is_builtin=True)
+        s.add(e)
+    e.playback = playback
+    e.default_duration_ms = dur_ms
+    e.default_delay_ms = delay_ms
+    e.default_easing = easing
+    e.steps_json = steps_json
+    e.emotion = emotion
+    e.is_builtin = True
+    s.add(e)
+    return e
+
+
+def is_builtin_frame_name(name: str) -> bool:
+    return name in SEED_FRAMES
+
+
+def is_builtin_expression_name(name: str) -> bool:
+    return any(row[0] == name for row in SEED_EXPRESSIONS)

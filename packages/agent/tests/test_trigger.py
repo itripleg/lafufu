@@ -132,9 +132,11 @@ class TestTriggerConfigFromEnv:
         with pytest.raises(ValueError, match="LAFUFU_TRIGGER_PRINT"):
             TriggerConfig.from_env({"LAFUFU_TRIGGER_PRINT": "always"})
 
-    def test_invalid_emotion_rejected(self) -> None:
-        with pytest.raises(ValueError, match="LAFUFU_TRIGGER_EMOTION"):
-            TriggerConfig.from_env({"LAFUFU_TRIGGER_EMOTION": "drunk"})
+    def test_unknown_emotion_accepted_passthrough(self) -> None:
+        """Any string is now accepted — the control plane's DB lookup is the
+        validity check, not a hardcoded set in trigger.py."""
+        cfg = TriggerConfig.from_env({"LAFUFU_TRIGGER_EMOTION": "drunk"})
+        assert cfg.emotion == "drunk"
 
     @pytest.mark.parametrize(
         "emotion", ["happy", "sad", "angry", "surprised", "neutral", "agree", "disagree"]

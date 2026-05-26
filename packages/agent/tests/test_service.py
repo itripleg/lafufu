@@ -783,11 +783,13 @@ async def test_trigger_subscribers_mutate_config(nats_server):
     await push("agent.trigger.print_prompt", "Want it on paper?")
     assert svc._trigger.print_prompt == "Want it on paper?"
 
-    # Invalid values are rejected (logged + ignored) — config stays at last good value
+    # Invalid values for rounds/print_mode are rejected (logged + ignored) —
+    # config stays at last good value. Emotion is open-set now (DB lookup is
+    # the validity check) so any string is accepted live.
     await push("agent.trigger.rounds", "0")
     assert svc._trigger.rounds == 3
     await push("agent.trigger.emotion", "drunk")
-    assert svc._trigger.emotion == "happy"
+    assert svc._trigger.emotion == "drunk"
     await push("agent.trigger.print_mode", "always")
     assert svc._trigger.print_mode == "auto"
 
