@@ -17,24 +17,27 @@ _SERVOS = ("head_lr", "head_ud", "eye", "jaw", "brow")
 
 # Per-servo motion tuning. ``smooth_time`` ≈ how long a move takes to settle;
 # ``max_speed`` is a hard velocity cap in DXL ticks/second. The head is slowest
-# for a calm, deliberate feel. The jaw is near-passthrough: the lipsync envelope
-# (LipsyncEnvelope) already shapes its motion, so a second smoothing stage here
-# only blurs syllable onsets — its smooth_time is kept tiny and its max_speed
-# high enough that the max_change clamp never binds across the jaw's range.
-# These shape the *commanded* motion — TUNE the feel on real hardware.
+# for a calm, deliberate feel. The jaw is a true passthrough: the lipsync
+# envelope (LipsyncEnvelope) already shapes the motion at the attack/release
+# the operator picks — a second smoothing stage here just blurs syllable
+# attacks and makes the mouth look lazy on rapid speech. We use a tiny
+# smooth_time so smooth_damp's exp coefficient collapses to ~0 (output ≈
+# target) and a max_speed large enough that max_change = smooth_time *
+# max_speed exceeds the jaw's full 217-tick range — otherwise the clamp would
+# silently rate-limit big steps (e.g. the watchdog snapping to MOUTH_CLOSE).
 DEFAULT_SMOOTH_TIMES: dict[str, float] = {
     "head_lr": 0.26,
     "head_ud": 0.26,
     "eye": 0.16,
     "brow": 0.14,
-    "jaw": 0.025,
+    "jaw": 0.001,
 }
 DEFAULT_MAX_SPEEDS: dict[str, float] = {
     "head_lr": 1100.0,
     "head_ud": 1100.0,
     "eye": 700.0,
     "brow": 420.0,
-    "jaw": 12000.0,
+    "jaw": 240000.0,
 }
 
 
