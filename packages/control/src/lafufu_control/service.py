@@ -44,7 +44,12 @@ async def _publish_idle_expression(engine, nats_client) -> None:
 def resolve_emotion_to_play_intent(engine, emotion: str | None) -> dict | None:
     """Return the AnimatorIntentPlayExpression payload (as a dict) for the
     expression named `emotion`, or None if the name is empty/unknown/broken.
-    Pure: caller is responsible for publishing the result on NATS."""
+    Pure: caller is responsible for publishing the result on NATS.
+
+    "Broken" includes: missing referenced frame rows, malformed steps_json,
+    or any pydantic validation error during compile. Returning None for all
+    broken cases lets the caller log a single 'unknown' warning instead of
+    surfacing a stack trace from the NATS wrapper for a corrupted row."""
     name = (emotion or "").strip()
     if not name:
         return None
@@ -56,7 +61,10 @@ def resolve_emotion_to_play_intent(engine, emotion: str | None) -> dict | None:
         frames = {f.name: f for f in s.exec(select(Frame).where(Frame.name.in_(need))).all()}
         if any(n not in frames for n in need):
             return None
-        return compile_expression(e, frames).model_dump()
+        try:
+            return compile_expression(e, frames).model_dump()
+        except Exception:
+            return None
 
 
 def _decode_setting_value(raw: str, value_type: str):
