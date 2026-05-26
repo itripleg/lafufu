@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from ...animation.compile import compile_expression, required_frame_names
+from ...animation.seed import apply_expression_seed, apply_frame_seed
 from ...models import Expression, Frame
 
 router = APIRouter()
@@ -420,3 +421,47 @@ def activate_expression(name: str, req: Request):
         s.commit()
         emotion = e.emotion  # capture before session closes
     return {"ok": True, "name": name, "emotion": emotion}
+
+
+@router.post("/expressions/{name}/reset")
+def reset_expression(name: str, req: Request):
+    with Session(req.app.state.engine) as s:
+        e = s.get(Expression, name)
+        if e is None:
+            raise HTTPException(
+                404, detail={"error_code": "not_found", "message": f"no expression {name!r}"}
+            )
+        if not e.is_builtin:
+            raise HTTPException(
+                400,
+                detail={
+                    "error_code": "not_builtin",
+                    "message": f"expression {name!r} is not a built-in and cannot be reset",
+                },
+            )
+        apply_expression_seed(s, name)
+        s.commit()
+        e = s.get(Expression, name)
+        return _e2d(e)
+
+
+@router.post("/frames/{name}/reset")
+def reset_frame(name: str, req: Request):
+    with Session(req.app.state.engine) as s:
+        f = s.get(Frame, name)
+        if f is None:
+            raise HTTPException(
+                404, detail={"error_code": "not_found", "message": f"no frame {name!r}"}
+            )
+        if not f.is_builtin:
+            raise HTTPException(
+                400,
+                detail={
+                    "error_code": "not_builtin",
+                    "message": f"frame {name!r} is not a built-in and cannot be reset",
+                },
+            )
+        apply_frame_seed(s, name)
+        s.commit()
+        f = s.get(Frame, name)
+        return _f2d(f)
