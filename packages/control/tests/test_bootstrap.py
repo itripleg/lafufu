@@ -82,3 +82,74 @@ def test_reseed_is_idempotent(tmp_path):
     with Session(engine) as s:
         row = s.exec(select(Setting).where(Setting.key == "agent.interaction_mode")).one()
         assert row.value == "trigger"
+
+
+def _seed_old_wakeword_rows(engine, *, enabled: str, model: str) -> None:
+    """Helper: simulate a Pi bootstrapped before the trained model shipped
+    by inserting the pre-PR wakeword rows directly, BEFORE running the new
+    seed_default_settings (which would otherwise insert the new defaults)."""
+    with Session(engine) as session:
+        session.add(Setting(key="agent.wakeword.enabled", value=enabled, value_type="bool"))
+        session.add(Setting(key="agent.wakeword.model", value=model, value_type="str"))
+        session.commit()
+
+
+def test_wakeword_lafufu_v1_migration_upgrades_pre_pr_defaults(tmp_path):
+    """Existing Pi with pre-PR wakeword defaults gets flipped to the trained
+    lafufu model, and the migration flag row is written."""
+    engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}")
+    init_db(engine)
+    _seed_old_wakeword_rows(engine, enabled="false", model="hey_jarvis_v0.1")
+
+    seed_default_settings(engine)
+
+    with Session(engine) as session:
+        rows = {r.key: r.value for r in session.exec(select(Setting)).all()}
+    assert rows["agent.wakeword.enabled"] == "true"
+    assert rows["agent.wakeword.model"] == "assets/wakeword/lafufu.onnx"
+    assert rows["bootstrap.migrations.wakeword_lafufu_v1"] == "1"
+
+
+def test_wakeword_lafufu_v1_migration_preserves_operator_overrides(tmp_path):
+    """If the operator already changed either wakeword setting to a non-pre-PR
+    value, the migration must leave those rows alone but still record its flag."""
+    engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}")
+    init_db(engine)
+    # Operator already flipped enabled and picked a custom model.
+    _seed_old_wakeword_rows(engine, enabled="true", model="hey_mycroft_v0.1")
+
+    seed_default_settings(engine)
+
+    with Session(engine) as session:
+        rows = {r.key: r.value for r in session.exec(select(Setting)).all()}
+    assert rows["agent.wakeword.enabled"] == "true"
+    assert rows["agent.wakeword.model"] == "hey_mycroft_v0.1"
+    assert rows["bootstrap.migrations.wakeword_lafufu_v1"] == "1"
+
+
+def test_wakeword_lafufu_v1_migration_is_idempotent(tmp_path):
+    """Second run must no-op even if rows have been manually reset to pre-PR
+    values in between - the flag short-circuits the migration."""
+    engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}")
+    init_db(engine)
+    _seed_old_wakeword_rows(engine, enabled="false", model="hey_jarvis_v0.1")
+
+    seed_default_settings(engine)  # first run flips values and writes flag
+
+    # Operator manually reverts to the old values (e.g. to test something).
+    with Session(engine) as session:
+        en = session.exec(select(Setting).where(Setting.key == "agent.wakeword.enabled")).one()
+        en.value = "false"
+        session.add(en)
+        mo = session.exec(select(Setting).where(Setting.key == "agent.wakeword.model")).one()
+        mo.value = "hey_jarvis_v0.1"
+        session.add(mo)
+        session.commit()
+
+    seed_default_settings(engine)  # second run: flag is set, must no-op
+
+    with Session(engine) as session:
+        rows = {r.key: r.value for r in session.exec(select(Setting)).all()}
+    assert rows["agent.wakeword.enabled"] == "false"
+    assert rows["agent.wakeword.model"] == "hey_jarvis_v0.1"
+    assert rows["bootstrap.migrations.wakeword_lafufu_v1"] == "1"

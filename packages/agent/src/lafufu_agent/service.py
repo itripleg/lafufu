@@ -111,8 +111,11 @@ class AgentService(BaseService):
             getattr(self._mic, "wake_detector", None) is None
         ):
             raise RuntimeError(
-                "interaction_mode=trigger requires a wake-word-gated mic; "
-                "set LAFUFU_WAKEWORD_ENABLED=1 and configure LAFUFU_WAKEWORD_MODEL."
+                "interaction_mode=trigger requires a wake-word-gated mic, but no "
+                "wake_detector was attached. Check the agent's startup log for "
+                "`wakeword.load_failed`, verify `agent.wakeword.model` points at a "
+                "loadable openwakeword model, and re-run `uv sync` if `openwakeword` "
+                "itself is missing."
             )
 
         await self._publish_state("warming")
@@ -536,7 +539,7 @@ class AgentService(BaseService):
         if self._wake_detector_factory is None:
             self.log.warning(
                 "agent.wakeword.model.set ignored — no detector factory configured "
-                "(set LAFUFU_WAKEWORD_ENABLED=1 + restart to enable wakeword)"
+                "(openwakeword not importable at startup; re-run `uv sync` and restart)"
             )
             return
         new_name = str(msg.value).strip()
@@ -586,7 +589,7 @@ class AgentService(BaseService):
         if enabled and self._wake_detector is None:
             self.log.warning(
                 "agent.wakeword.enabled=true but no detector was constructed at startup — "
-                "set LAFUFU_WAKEWORD_ENABLED=1 in the service env and restart to import the dep"
+                "check the startup log for `wakeword.load_failed`, then restart the agent"
             )
             return
 

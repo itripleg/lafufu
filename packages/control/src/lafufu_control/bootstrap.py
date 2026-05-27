@@ -289,3 +289,43 @@ def seed_default_settings(engine) -> None:
             log.info("settings.seeded count=%d", inserted)
         else:
             log.info("settings.bootstrap.no_new_settings")
+
+    _migrate_wakeword_lafufu_v1(engine)
+
+
+def _migrate_wakeword_lafufu_v1(engine) -> None:
+    """One-time: flip the wakeword defaults to the trained-lafufu values
+    on installs that were bootstrapped before the trained model shipped.
+
+    Only updates rows whose CURRENT value still matches the pre-PR default,
+    so any operator override stays untouched. A flag row records that the
+    migration has run so subsequent boots no-op.
+    """
+    flag_key = "bootstrap.migrations.wakeword_lafufu_v1"
+    pairs = [
+        ("agent.wakeword.enabled", "false", "true"),
+        ("agent.wakeword.model", "hey_jarvis_v0.1", "assets/wakeword/lafufu.onnx"),
+    ]
+    with Session(engine) as s:
+        if s.exec(select(Setting).where(Setting.key == flag_key)).first() is not None:
+            return
+        updated = []
+        for key, old_value, new_value in pairs:
+            row = s.exec(select(Setting).where(Setting.key == key)).first()
+            if row is not None and row.value == old_value:
+                row.value = new_value
+                s.add(row)
+                updated.append(key)
+        s.add(
+            Setting(
+                key=flag_key,
+                value="1",
+                value_type="str",
+                description="Flag - migration that flipped agent.wakeword.* defaults to the trained lafufu model. Do not delete.",
+            )
+        )
+        s.commit()
+        if updated:
+            log.info("bootstrap.migration.wakeword_lafufu_v1.applied keys=%s", updated)
+        else:
+            log.info("bootstrap.migration.wakeword_lafufu_v1.flag_only (no eligible rows)")

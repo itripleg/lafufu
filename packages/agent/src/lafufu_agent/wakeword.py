@@ -1,7 +1,14 @@
 """Wake-word detector that gates Whisper.
 
 Wraps openwakeword so the mic loop can ignore everything until someone says
-the keyword. Optional dependency — install with `uv sync --extra wakeword`.
+the keyword. `openwakeword` is a required dep of `lafufu-agent`, but this
+module does NOT eagerly import it — only `OpenWakeWordDetector.load()` does.
+That's load-bearing: `__main__.py` does `from .wakeword import ...` and then
+calls `has_openwakeword()` as a degrade-to-RMS feature flag. If a future
+refactor hoists `from openwakeword.model import Model` to the top of this
+module, the import will raise on hosts where openwakeword is missing/corrupt
+BEFORE the guard runs — and the "wakeword.dep_missing → fall back to RMS"
+contract in __main__.py silently breaks. Keep openwakeword imports lazy.
 """
 
 from __future__ import annotations
