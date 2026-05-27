@@ -27,6 +27,20 @@ class FakeMicForService:
         return self.transcripts.pop(0)
 
 
+class _StubDetector:
+    """Minimal duck-type wake detector for tests: has feed/reset/threshold
+    so it passes the service's runtime duck-type guard.
+    """
+
+    threshold = 0.5
+
+    def feed(self, _data) -> float:
+        return 0.0
+
+    def reset(self) -> None:
+        pass
+
+
 async def test_text_message_intent_triggers_pipeline(nats_server):
     """When agent receives agent.intent.text_message, run pipeline as if mic heard it."""
     svc = AgentService(
@@ -722,7 +736,9 @@ async def test_interaction_mode_setting_swaps_field(nats_server):
     # the swap would be (correctly) refused. The companion test
     # test_interaction_mode_trigger_refused_without_wake_detector covers the
     # refusal path; this one is asserting the field-swap mechanic.
-    svc._mic.wake_detector = object()
+    # Use _StubDetector (duck-type fed/reset/threshold) so the guard's runtime
+    # duck-type check accepts the attached detector.
+    svc._mic.wake_detector = _StubDetector()
 
     nc = await nats.connect(nats_server)
     await publish_model(

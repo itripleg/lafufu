@@ -16,8 +16,9 @@ and the SolidJS admin UI. No Pi required. Pi deployment is unaffected.
 ## One-time setup
 
 ```powershell
-# 1. Sync workspace + the optional wakeword extra
-uv sync --all-packages --all-extras
+# 1. Sync workspace (openwakeword is in the agent's required deps now —
+#    no extras flag needed)
+uv sync --all-packages
 
 # 2. Bring up NATS + Ollama (downloads qwen2.5:1.5b on first run, ~1 GB)
 ./scripts/dev-up.ps1

@@ -401,6 +401,78 @@ class _AplayPlayer:
         self._proc = None
 
 
+def _build_wake_detector_or_none():
+    """Construct (make_wake_detector_factory, wake_detector) for main().
+
+    Two layers of degrade-gracefully behavior:
+
+      1. The `from .wakeword import ...` itself is wrapped in try/except
+         ImportError so a broken numpy ABI / corrupt wakeword.py / future
+         syntax mistake doesn't crash the agent BEFORE the rest of the
+         pipeline boots — we want to fall back to RMS-based onset, the same
+         degraded mode `has_openwakeword() == False` already produces.
+
+      2. `OpenWakeWordDetector.load()` failing (missing asset, openwakeword
+         can't find the model) is caught and logged with a remediation
+         pointer (admin UI setting + `uv sync`). The factory is kept around
+         so the admin UI's live-swap can try a different model later.
+
+    Returns (None, None) on import failure or when openwakeword isn't
+    installed. Returns (factory, None) when the dep is present but the
+    initial load failed. Returns (factory, detector) on full success.
+    """
+    log = logging.getLogger(__name__)
+
+    try:
+        from .wakeword import OpenWakeWordDetector, has_openwakeword, resolve_model_ref
+    except ImportError as e:
+        log.warning(
+            "wakeword.module_import_failed error=%s — falling back to RMS-based "
+            "onset. The lafufu_agent.wakeword module failed to import; check "
+            "numpy/openwakeword install integrity and re-run `uv sync`.",
+            e,
+        )
+        return None, None
+
+    if not has_openwakeword():
+        log.warning(
+            "wakeword.dep_missing — `openwakeword` not importable; falling back "
+            "to RMS-based onset. Re-run `uv sync`."
+        )
+        return None, None
+
+    def make_wake_detector(name: str, threshold: float):
+        resolved = resolve_model_ref(name)
+        d = OpenWakeWordDetector(model_name=resolved, threshold=threshold)
+        d.load()
+        return d
+
+    model_env = os.environ.get("LAFUFU_WAKEWORD_MODEL") or "assets/wakeword/lafufu.onnx"
+    threshold_raw = os.environ.get("LAFUFU_WAKEWORD_THRESHOLD", "0.5")
+    try:
+        threshold_env = float(threshold_raw)
+    except (TypeError, ValueError):
+        log.warning("LAFUFU_WAKEWORD_THRESHOLD=%r is not a number; using 0.5", threshold_raw)
+        threshold_env = 0.5
+
+    try:
+        wake_detector = make_wake_detector(model_env, threshold_env)
+    except Exception as e:
+        log.warning(
+            "wakeword.load_failed model=%s error=%s — falling back to RMS-based onset. "
+            "Check the asset exists, that agent.wakeword.model in the admin UI points "
+            "at a loadable openwakeword model, or re-run `uv sync` if openwakeword "
+            "itself is missing.",
+            model_env,
+            e,
+        )
+        wake_detector = None
+        # Keep make_wake_detector defined — the live-swap path can still try
+        # other models later via _on_config_wakeword_model.
+
+    return make_wake_detector, wake_detector
+
+
 def main() -> None:
     from .stt import make_stt
 
@@ -459,43 +531,10 @@ def main() -> None:
     # a missing/corrupt install degrades to RMS-based onset instead of crashing
     # the agent before the rest of the pipeline even starts. The admin UI's
     # agent.wakeword.enabled setting controls live attachment to the mic.
-    from .wakeword import OpenWakeWordDetector, has_openwakeword, resolve_model_ref
-
-    make_wake_detector = None
-    wake_detector = None
-    if not has_openwakeword():
-        logging.getLogger(__name__).warning(
-            "wakeword.dep_missing — `openwakeword` not importable; falling back "
-            "to RMS-based onset. Re-run `uv sync`."
-        )
-    else:
-
-        def make_wake_detector(name: str, threshold: float):
-            resolved = resolve_model_ref(name)
-            d = OpenWakeWordDetector(model_name=resolved, threshold=threshold)
-            d.load()
-            return d
-
-        model_env = os.environ.get("LAFUFU_WAKEWORD_MODEL") or "assets/wakeword/lafufu.onnx"
-        threshold_raw = os.environ.get("LAFUFU_WAKEWORD_THRESHOLD", "0.5")
-        try:
-            threshold_env = float(threshold_raw)
-        except (TypeError, ValueError):
-            logging.getLogger(__name__).warning(
-                "LAFUFU_WAKEWORD_THRESHOLD=%r is not a number; using 0.5", threshold_raw
-            )
-            threshold_env = 0.5
-        try:
-            wake_detector = make_wake_detector(model_env, threshold_env)
-        except Exception as e:
-            logging.getLogger(__name__).warning(
-                "wakeword.load_failed model=%s error=%s — falling back to RMS-based onset",
-                model_env,
-                e,
-            )
-            wake_detector = None
-            # Keep make_wake_detector defined — the live-swap path can still try
-            # other models later via _on_config_wakeword_model.
+    # _build_wake_detector_or_none also wraps the `from .wakeword import ...`
+    # itself so a broken module-level import (corrupt numpy ABI, etc.) doesn't
+    # bypass the degrade-to-RMS contract.
+    make_wake_detector, wake_detector = _build_wake_detector_or_none()
 
     mic = RealMic(stt=stt, wake_detector=wake_detector)
     player = make_player(piper.sample_rate)
@@ -517,8 +556,8 @@ def main() -> None:
         player_factory=make_player,
         interaction_mode=interaction_mode,
         trigger_config=trigger_config,
-        wake_detector=wake_detector,  # may be None if env disabled
-        wake_detector_factory=make_wake_detector,  # None when wakeword not enabled
+        wake_detector=wake_detector,  # None when openwakeword missing or model load failed
+        wake_detector_factory=make_wake_detector,  # None when openwakeword missing/corrupt
     )
 
     asyncio.run(svc.run())

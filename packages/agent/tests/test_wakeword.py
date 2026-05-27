@@ -260,6 +260,80 @@ def test_resolve_model_ref_onnx_suffix_treated_as_path():
     assert Path(resolved).is_absolute()
 
 
+def test_resolve_model_ref_handles_cross_platform_absolute_paths():
+    """`Path('/srv/lafufu/...').is_absolute()` is False on Windows;
+    `Path('C:\\\\foo').is_absolute()` is False on POSIX. A cross-platform DB
+    share (or an operator who works on both OSes) would silently misroute,
+    prepending the workspace root to what's already an absolute path. Treat
+    POSIX root paths AND drive-letter paths as absolute regardless of host OS."""
+    from lafufu_agent.wakeword import resolve_model_ref
+
+    # POSIX-style absolute path — should pass through unchanged even on Windows.
+    posix_abs = "/srv/lafufu/wake.onnx"
+    assert resolve_model_ref(posix_abs) == posix_abs
+
+    # Backslash-rooted UNC-ish path — also unchanged.
+    backslash_abs = "\\srv\\lafufu\\wake.onnx"
+    assert resolve_model_ref(backslash_abs) == backslash_abs
+
+    # Windows-style drive-letter absolute path — should pass through unchanged
+    # even on POSIX (where Path.is_absolute() would return False for it).
+    win_abs = "C:\\models\\wake.onnx"
+    assert resolve_model_ref(win_abs) == win_abs
+
+    # Forward-slash drive-letter (msys/git-bash style) — also absolute.
+    win_abs_fwd = "D:/models/wake.onnx"
+    assert resolve_model_ref(win_abs_fwd) == win_abs_fwd
+
+
+def test_resolve_model_ref_strips_whitespace(tmp_path):
+    """Env-var / copy-paste leaves leading/trailing whitespace that breaks
+    Path(...).is_absolute() and routes the value down the wrong branch. Strip
+    once at the top so all downstream branches see a clean value."""
+    from pathlib import Path
+
+    from lafufu_agent.wakeword import resolve_model_ref
+
+    # Bundled name with surrounding whitespace → strip, no path resolution.
+    assert resolve_model_ref("  hey_jarvis_v0.1  ") == "hey_jarvis_v0.1"
+
+    # Relative .onnx path with whitespace → strip, then resolve to absolute.
+    resolved = resolve_model_ref("  assets/wakeword/lafufu.onnx  ")
+    p = Path(resolved)
+    assert p.is_absolute(), f"expected absolute path, got {resolved!r}"
+    assert p.name == "lafufu.onnx"
+
+    # Whitespace-only is effectively empty.
+    assert resolve_model_ref("   ") == ""
+
+
+def test_resolve_model_ref_warns_when_no_workspace_root_found(tmp_path, caplog):
+    """If the walk-up can't find a pyproject.toml+packages/ marker (e.g. wheel
+    install in site-packages), the function silently returned the value
+    unchanged — reproducing the pre-fix breakage. Now it MUST log a warning so
+    operators can diagnose 'why is the model file not found' without strace."""
+    import logging
+
+    from lafufu_agent.wakeword import resolve_model_ref
+
+    # Simulate the module living somewhere with no workspace ancestor.
+    orphan_start = tmp_path / "deeply" / "nested" / "wakeword.py"
+    orphan_start.parent.mkdir(parents=True)
+    orphan_start.write_text("# fake")
+
+    with caplog.at_level(logging.WARNING, logger="lafufu_agent.wakeword"):
+        result = resolve_model_ref("assets/wakeword/lafufu.onnx", walk_start=orphan_start)
+
+    # Contract: return value unchanged...
+    assert result == "assets/wakeword/lafufu.onnx"
+    # ...AND emit a warning mentioning the value so operators can diagnose.
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert warnings, "expected a WARNING log when workspace root not found"
+    msg = warnings[-1].getMessage()
+    assert "assets/wakeword/lafufu.onnx" in msg
+    assert "workspace" in msg.lower()
+
+
 # ---------- load-failure degrade contract (iter-1 try/except in __main__.py) -
 
 
@@ -290,5 +364,10 @@ def test_load_raises_on_unknown_bundled_name(monkeypatch):
     from lafufu_agent.wakeword import OpenWakeWordDetector
 
     det = OpenWakeWordDetector(model_name="this_definitely_does_not_exist")
-    with pytest.raises(ValueError, match="Could not find pretrained model"):
+    # Match is intentionally loose: the contract under test is "load raises
+    # ValueError on a bad model identifier", NOT a specific copy string. An
+    # upstream openwakeword git-pin bump that reformats the message would
+    # break a stricter regex even though the contract still holds. Accept
+    # any of the plausible phrasings.
+    with pytest.raises(ValueError, match=r"(?i)pretrained model|not found|unknown"):
         det.load()

@@ -1,5 +1,7 @@
 """Bootstrap default-settings seeding."""
 
+import logging
+
 from lafufu_animator.pose import (
     BROW_IDLE_DXL,
     EYE_IDLE_DXL,
@@ -7,9 +9,11 @@ from lafufu_animator.pose import (
     HEAD_IDLE_UD_DXL,
     MOUTH_CLOSE_DXL,
 )
+from lafufu_control import bootstrap as bootstrap_mod
 from lafufu_control.bootstrap import seed_default_settings
 from lafufu_control.db import init_db
 from lafufu_control.models.setting import Setting
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, create_engine, select
 
 
@@ -153,3 +157,64 @@ def test_wakeword_lafufu_v1_migration_is_idempotent(tmp_path):
     assert rows["agent.wakeword.enabled"] == "false"
     assert rows["agent.wakeword.model"] == "hey_jarvis_v0.1"
     assert rows["bootstrap.migrations.wakeword_lafufu_v1"] == "1"
+
+
+def test_wakeword_lafufu_v1_migration_handles_concurrent_race(tmp_path, monkeypatch):
+    """Two control processes bootstrapping in parallel will both pass the
+    flag-row absence check, both update rows, and both try to INSERT the flag.
+    The loser's commit raises sqlite3.IntegrityError. The migration must catch
+    that and no-op rather than crashing the control process."""
+    engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}")
+    init_db(engine)
+    _seed_old_wakeword_rows(engine, enabled="false", model="hey_jarvis_v0.1")
+
+    # Simulate a competing process that has already inserted the flag row by
+    # the time our s.commit() lands: monkeypatch Session.commit so the FIRST
+    # call inside the migration raises IntegrityError once, mimicking the
+    # race-loser's commit. The migration must catch it and not propagate.
+    real_commit = Session.commit
+    raised = {"done": False}
+
+    def flaky_commit(self):
+        if not raised["done"]:
+            raised["done"] = True
+            raise IntegrityError("simulated race", params=None, orig=Exception("UNIQUE"))
+        return real_commit(self)
+
+    monkeypatch.setattr(Session, "commit", flaky_commit)
+
+    # Must not raise.
+    bootstrap_mod._migrate_wakeword_lafufu_v1(engine)
+
+
+def test_wakeword_lafufu_v1_migration_logs_skipped_overrides(tmp_path, caplog):
+    """If a wakeword row exists but its value doesn't match the pre-PR default
+    (operator override or typo), the migration leaves it alone — but it must
+    emit a log breadcrumb so the operator can find their typo."""
+    engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}")
+    init_db(engine)
+    # Typo: missing the "_v0.1" suffix. Migration should NOT touch this row,
+    # and it should log that it was skipped.
+    _seed_old_wakeword_rows(engine, enabled="false", model="hey_jarvis")
+
+    with caplog.at_level(logging.INFO, logger="lafufu_control.bootstrap"):
+        seed_default_settings(engine)
+
+    # The row was preserved (current behavior).
+    with Session(engine) as session:
+        rows = {r.key: r.value for r in session.exec(select(Setting)).all()}
+    assert rows["agent.wakeword.model"] == "hey_jarvis"
+
+    # New behavior: a "skipped" log record names the key AND its current value
+    # so an operator grepping for "skipped" can spot the typo.
+    skipped_records = [
+        r
+        for r in caplog.records
+        if "skipped" in r.getMessage().lower() and "wakeword_lafufu_v1" in r.getMessage()
+    ]
+    assert skipped_records, (
+        f"expected a wakeword_lafufu_v1 skipped log, got: {[r.getMessage() for r in caplog.records]}"
+    )
+    joined = " ".join(r.getMessage() for r in skipped_records)
+    assert "agent.wakeword.model" in joined
+    assert "hey_jarvis" in joined

@@ -12,6 +12,16 @@ from ...models.setting import Setting
 
 router = APIRouter()
 
+# Keys with these prefixes are internal bookkeeping (e.g. one-shot bootstrap
+# migration markers) and must not be visible or mutable via the admin API.
+# The rows still exist in the DB — they're just hidden from CRUD endpoints so
+# operators can't accidentally edit or delete them and re-trigger migrations.
+INTERNAL_KEY_PREFIXES: tuple[str, ...] = ("bootstrap.",)
+
+
+def is_internal_key(key: str) -> bool:
+    return any(key.startswith(p) for p in INTERNAL_KEY_PREFIXES)
+
 
 class SettingIn(BaseModel):
     value: Any
@@ -53,11 +63,15 @@ def list_defaults():
 def list_settings(req: Request):
     with Session(req.app.state.engine) as s:
         rows = s.exec(select(Setting)).all()
-        return [SettingOut(**r.model_dump()) for r in rows]
+        return [SettingOut(**r.model_dump()) for r in rows if not is_internal_key(r.key)]
 
 
 @router.get("/{key}", response_model=SettingOut)
 def get_setting(key: str, req: Request):
+    if is_internal_key(key):
+        raise HTTPException(
+            404, detail={"error_code": "not_found", "message": f"setting {key} not found"}
+        )
     with Session(req.app.state.engine) as s:
         row = s.get(Setting, key)
         if not row:
@@ -69,6 +83,10 @@ def get_setting(key: str, req: Request):
 
 @router.put("/{key}", response_model=SettingOut)
 def put_setting(key: str, body: SettingIn, req: Request):
+    if is_internal_key(key):
+        raise HTTPException(
+            404, detail={"error_code": "not_found", "message": f"setting {key} not found"}
+        )
     encoded = _encode(body.value, body.value_type)
     with Session(req.app.state.engine) as s:
         row = s.get(Setting, key)
@@ -89,6 +107,10 @@ def put_setting(key: str, body: SettingIn, req: Request):
 
 @router.patch("/{key}", response_model=SettingOut)
 def patch_setting(key: str, body: SettingIn, req: Request):
+    if is_internal_key(key):
+        raise HTTPException(
+            404, detail={"error_code": "not_found", "message": f"setting {key} not found"}
+        )
     with Session(req.app.state.engine) as s:
         row = s.get(Setting, key)
         if not row:
@@ -110,6 +132,8 @@ def patch_setting(key: str, body: SettingIn, req: Request):
 
 @router.delete("/{key}", status_code=204)
 def delete_setting(key: str, req: Request):
+    if is_internal_key(key):
+        raise HTTPException(404)
     with Session(req.app.state.engine) as s:
         row = s.get(Setting, key)
         if not row:

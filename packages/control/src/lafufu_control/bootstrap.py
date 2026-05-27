@@ -7,6 +7,7 @@ Existing values are never overwritten.
 import logging
 
 from lafufu_shared.prompts import DEFAULT_SYSTEM_PROMPT
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from .models.setting import Setting
@@ -309,13 +310,18 @@ def _migrate_wakeword_lafufu_v1(engine) -> None:
     with Session(engine) as s:
         if s.exec(select(Setting).where(Setting.key == flag_key)).first() is not None:
             return
-        updated = []
+        updated: list[str] = []
+        skipped: list[tuple[str, str]] = []
         for key, old_value, new_value in pairs:
             row = s.exec(select(Setting).where(Setting.key == key)).first()
-            if row is not None and row.value == old_value:
+            if row is None:
+                continue
+            if row.value == old_value:
                 row.value = new_value
                 s.add(row)
                 updated.append(key)
+            else:
+                skipped.append((key, row.value))
         s.add(
             Setting(
                 key=flag_key,
@@ -324,8 +330,23 @@ def _migrate_wakeword_lafufu_v1(engine) -> None:
                 description="Flag - migration that flipped agent.wakeword.* defaults to the trained lafufu model. Do not delete.",
             )
         )
-        s.commit()
+        try:
+            s.commit()
+        except IntegrityError:
+            # Parallel control process beat us to inserting the flag row. The
+            # winner's migration already ran; we just no-op so the loser
+            # doesn't crash the control service on boot.
+            s.rollback()
+            log.info(
+                "bootstrap.migration.wakeword_lafufu_v1.race_caught — another control instance migrated; no-op"
+            )
+            return
         if updated:
             log.info("bootstrap.migration.wakeword_lafufu_v1.applied keys=%s", updated)
         else:
             log.info("bootstrap.migration.wakeword_lafufu_v1.flag_only (no eligible rows)")
+        if skipped:
+            log.info(
+                "bootstrap.migration.wakeword_lafufu_v1.skipped keys=%s — values don't match pre-PR defaults (operator override or typo)",
+                skipped,
+            )
