@@ -198,3 +198,97 @@ def test_wait_for_onset_falls_back_to_rms_when_no_detector():
 
     assert started is True
     assert len(pre_roll) >= 1
+
+
+# ---------- resolve_model_ref unit tests (iter-1 hardening) ----------
+
+
+def test_resolve_model_ref_empty_returns_empty():
+    """Empty input round-trips to '' so the caller can pick a default."""
+    from lafufu_agent.wakeword import resolve_model_ref
+
+    assert resolve_model_ref("") == ""
+
+
+def test_resolve_model_ref_absolute_path_unchanged(tmp_path):
+    """Absolute paths must pass through unchanged."""
+    from lafufu_agent.wakeword import resolve_model_ref
+
+    abs_path = str(tmp_path / "wake.onnx")
+    assert resolve_model_ref(abs_path) == abs_path
+
+
+def test_resolve_model_ref_bundled_name_unchanged():
+    """Bundled openwakeword names (no separator, no .onnx/.tflite suffix) must
+    pass through so openwakeword resolves them via its own resources dir."""
+    from lafufu_agent.wakeword import resolve_model_ref
+
+    assert resolve_model_ref("hey_jarvis_v0.1") == "hey_jarvis_v0.1"
+    assert resolve_model_ref("alexa_v0.1") == "alexa_v0.1"
+
+
+def test_resolve_model_ref_relative_path_anchors_to_workspace_root():
+    """The whole point of the helper: relative paths must resolve against the
+    lafufu workspace root (directory with pyproject.toml + packages/), NOT
+    the agent's CWD. Without this, launching from any directory other than
+    the repo root crashed the agent at startup."""
+    from pathlib import Path
+
+    from lafufu_agent.wakeword import resolve_model_ref
+
+    resolved = resolve_model_ref("assets/wakeword/lafufu.onnx")
+    p = Path(resolved)
+    assert p.is_absolute(), f"expected absolute path, got {resolved!r}"
+    assert p.name == "lafufu.onnx"
+    # Walk up — the workspace root is whichever ancestor has pyproject.toml.
+    workspace = next(
+        (anc for anc in p.parents if (anc / "pyproject.toml").is_file()),
+        None,
+    )
+    assert workspace is not None, f"no pyproject.toml above {resolved!r}"
+    assert (workspace / "packages").is_dir()
+
+
+def test_resolve_model_ref_onnx_suffix_treated_as_path():
+    """A bare filename ending in .onnx counts as a path — bundled openwakeword
+    names never carry that suffix, so it's an unambiguous path signal."""
+    from pathlib import Path
+
+    from lafufu_agent.wakeword import resolve_model_ref
+
+    resolved = resolve_model_ref("custom.onnx")
+    assert Path(resolved).is_absolute()
+
+
+# ---------- load-failure degrade contract (iter-1 try/except in __main__.py) -
+
+
+def test_load_raises_on_unknown_bundled_name(monkeypatch):
+    """The try/except wrapping make_wake_detector() in __main__.py degrades
+    to RMS-onset on Exception. That contract requires load() to RAISE when
+    given a bad model identifier rather than silently succeeding with a
+    do-nothing detector — otherwise wake-word would silently bypass on a
+    typo. Same goes for the live-swap factory in service.py."""
+    # Use a fake openwakeword Model that raises on bad names, matching the
+    # real openwakeword.Model behavior. We use the fake so the test stays
+    # fast and doesn't require the actual dep to be installed.
+    import types
+
+    class _RaisingModel:
+        def __init__(self, wakeword_models, inference_framework):
+            raise ValueError(
+                f"Could not find pretrained model for model name '{wakeword_models[0]}'"
+            )
+
+    fake_pkg = types.ModuleType("openwakeword")
+    fake_model_mod = types.ModuleType("openwakeword.model")
+    fake_model_mod.Model = _RaisingModel
+    fake_pkg.model = fake_model_mod
+    monkeypatch.setitem(sys.modules, "openwakeword", fake_pkg)
+    monkeypatch.setitem(sys.modules, "openwakeword.model", fake_model_mod)
+
+    from lafufu_agent.wakeword import OpenWakeWordDetector
+
+    det = OpenWakeWordDetector(model_name="this_definitely_does_not_exist")
+    with pytest.raises(ValueError, match="Could not find pretrained model"):
+        det.load()
