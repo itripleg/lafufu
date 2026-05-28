@@ -58,7 +58,25 @@ def bridge_server(nats_server):
                 app = create_app(engine=engine, nats_publish=lambda s, p: None)
 
                 nc = await nats.connect(nats_server)
-                bridge = WsBridge(nc)
+                # Inject a permissive set so the integration tests can use
+                # synthetic subjects (test.*) without polluting the production
+                # allow-list.  The allow-list check is exercised separately in
+                # test_ws_subscribe_allowlist_rejects_unlisted_pattern, which
+                # uses patterns that ARE in this set (agent.reply) alongside
+                # one that is NOT (secret.>).
+                bridge = WsBridge(
+                    nc,
+                    allowed_patterns=frozenset(
+                        {
+                            "test.echo",
+                            "test.lazy",
+                            "test.bad",
+                            "test.resilience",
+                            # real pattern used by the allow-list test
+                            "agent.reply",
+                        }
+                    ),
+                )
                 bridge.mount(app)
                 bridge_ref.append(bridge)
 
@@ -175,3 +193,29 @@ def test_ws_bad_client_frame_does_not_kill_session(bridge_server):
     msg = json.loads(raw)
     assert msg["topic"] == "test.resilience"
     assert msg["payload"] == {"ok": True}
+
+
+def test_ws_subscribe_allowlist_rejects_unlisted_pattern(bridge_server):
+    """Subscribing to a pattern not in the allow-list must NOT create a NATS
+    subscription.  The WS session must survive the rejection and remain
+    usable for subsequent allowed subscriptions."""
+    bridge_ref, publish = bridge_server
+    bridge = bridge_ref[0]
+
+    with ws_connect(f"ws://127.0.0.1:{_PORT}/ws") as ws:
+        # Attempt to subscribe to a wildcard firehose that is NOT in the list.
+        ws.send(json.dumps({"op": "sub", "topics": ["secret.>"]}))
+        time.sleep(0.1)
+        # No NATS subscription should have been created.
+        assert bridge.nats_sub_count("secret.>") == 0
+
+        # Session stays open — an allowed pattern still works.
+        ws.send(json.dumps({"op": "sub", "topics": ["agent.reply"]}))
+        time.sleep(0.1)
+        assert bridge.nats_sub_count("agent.reply") == 1
+        publish("agent.reply", b'{"text": "hello"}')
+        raw = ws.recv(timeout=2)
+
+    msg = json.loads(raw)
+    assert msg["topic"] == "agent.reply"
+    assert msg["payload"] == {"text": "hello"}

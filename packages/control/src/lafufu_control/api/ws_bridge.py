@@ -18,10 +18,51 @@ from .auth import ws_authorized
 
 log = logging.getLogger(__name__)
 
+# Patterns the SPA is known to subscribe to.  Any browser-supplied pattern
+# not in this set (or not starting with an allowed prefix) is rejected so a
+# curious-but-authed client cannot read arbitrary bus traffic.
+#
+# Prefix rule: all "config.changed.*" subjects are allowed as a family —
+# use_servo_config.ts subscribes to individual animator.<servo>.default keys,
+# and settings panels may add more in the future.
+#
+# The ">" firehose is intentionally included: system_pulse.tsx uses it, and
+# access is gated by the shared-token auth layer that guards the WS endpoint.
+ALLOWED_WS_PATTERNS: frozenset[str] = frozenset(
+    {
+        # agent status / dialogue (face.tsx, chat_log.tsx)
+        "agent.state.*",
+        "agent.reply",
+        "agent.transcript",
+        "agent.tts.rms",
+        # animator (pet.tsx)
+        "animator.pose",
+        # system health (service_status.tsx, admin.tsx)
+        "system.heartbeat.*",
+        "*.state.*",
+        "system.service.*",
+        # firehose used by system_pulse.tsx — gated by token auth
+        ">",
+        # image / expression / frame library invalidation
+        "expressions.changed",
+        "frames.changed",
+        # config change notifications — whole family allowed by prefix check below
+        # (individual entries would be config.changed.animator.<servo>.default)
+    }
+)
+
+# Prefixes that implicitly allow any pattern that starts with them.
+_ALLOWED_PREFIXES: tuple[str, ...] = ("config.changed.",)
+
 
 class WsBridge:
-    def __init__(self, nats_client) -> None:
+    def __init__(self, nats_client, *, allowed_patterns: frozenset[str] | None = None) -> None:
         self.nats = nats_client
+        # Production default: the curated SPA allow-list.  Tests that use
+        # synthetic subject names (test.echo, x.y, …) pass their own set.
+        self._allowed: frozenset[str] = (
+            allowed_patterns if allowed_patterns is not None else ALLOWED_WS_PATTERNS
+        )
         # pattern → (NatsSubscription, ref_count)
         self._subs: dict[str, tuple[NatsSubscription, int]] = {}
         # connected websockets → set of patterns they care about
@@ -85,7 +126,16 @@ class WsBridge:
         )
         app.routes.insert(mount_idx, ws_route)
 
+    def _pattern_allowed(self, pattern: str) -> bool:
+        """Return True if *pattern* is in the allow-list or matches an allowed prefix."""
+        if pattern in self._allowed:
+            return True
+        return any(pattern.startswith(pfx) for pfx in _ALLOWED_PREFIXES)
+
     async def _add_sub(self, ws: WebSocket, pattern: str) -> None:
+        if not self._pattern_allowed(pattern):
+            log.warning("ws.subscribe.rejected pattern=%s", pattern)
+            return
         async with self._ref_lock:
             self._ws_patterns[ws].add(pattern)
             self._pattern_listeners.setdefault(pattern, set()).add(ws)
