@@ -79,17 +79,32 @@ const imageUrlOf = (ref: string | null): string | null => {
   return api.imageFileUrl(bucket as "letterheads" | "sprites", kind, name);
 };
 
+/** Gallery render mode: image thumbnails (with base-image fallback) or the
+ *  raw pose-data block per frame. */
+type GalleryView = "thumb" | "data";
+
+/** Bundled fallback sprite — used as a frame's thumbnail when it has no image
+ *  of its own and the operator hasn't set animator.base_image. Resolves to
+ *  assets/images/sprites/base.png via the "default" kind. */
+const BASE_IMAGE_DEFAULT = "sprites/default/base.png";
+
 // ─────────────────────────────────────────────────────────────
 // Draggable: gallery frame (drag source — not in sortable list)
 // ─────────────────────────────────────────────────────────────
 const GalleryFrame: Component<{
   frame: FrameDTO;
   usageCount: number;
+  view: GalleryView;
+  /** Effective base-image ref shown when the frame has no image of its own. */
+  baseImage: string;
   onClick: () => void;
 }> = (props) => {
   const draggable = createDraggable(`gallery-${props.frame.name}`);
   const [hovered, setHovered] = createSignal(false);
-  const url = createMemo(() => imageUrlOf(props.frame.image));
+  // The frame's own image, falling back to the base image.
+  const url = createMemo(() => imageUrlOf(props.frame.image ?? props.baseImage));
+  // Show the thumbnail only in "thumb" view; "data" always shows the pose block.
+  const showThumb = createMemo(() => props.view === "thumb" && !!url());
   return (
     <div
       ref={draggable.ref}
@@ -115,7 +130,7 @@ const GalleryFrame: Component<{
       }}
     >
       <Show
-        when={url()}
+        when={showThumb()}
         fallback={
           <div
             class="f-mono"
@@ -183,7 +198,7 @@ const GalleryFrame: Component<{
           builtin
         </div>
       </Show>
-      <Show when={url()}>
+      <Show when={showThumb()}>
         <div
           class="f-mono"
           style={{
@@ -865,6 +880,40 @@ export const StudioSection: Component<{ nats: NatsWs }> = (props) => {
     lsGet<0 | 1 | 2>("studio/gallerySize", 1),
   );
   createEffect(() => { lsSet("studio/gallerySize", gallerySize()); });
+
+  // Gallery render mode — thumbnails (with base-image fallback) vs pose data.
+  const [galleryView, setGalleryView] = createSignal<GalleryView>(
+    lsGet<GalleryView>("studio/galleryView", "thumb"),
+  );
+  createEffect(() => { lsSet("studio/galleryView", galleryView()); });
+
+  // animator.base_image — the sprite shown as a thumbnail for any frame with no
+  // image of its own. Empty/unset falls back to the bundled default. Studio-only
+  // (no compositing, no runtime effect).
+  const [baseImage, setBaseImage] = createSignal<string | null>(null);
+  const [basePickerOpen, setBasePickerOpen] = createSignal(false);
+  const effectiveBase = createMemo(() => baseImage() ?? BASE_IMAGE_DEFAULT);
+  (async () => {
+    try {
+      const items = (await api.listSettings()) as Array<{ key: string; value: string }>;
+      const row = items.find((r) => r.key === "animator.base_image");
+      if (row) setBaseImage(row.value || null);
+    } catch {
+      /* settings load failure — keep the bundled default */
+    }
+  })();
+  const onPickBase = async (ref: string | null) => {
+    setBasePickerOpen(false);
+    const prev = baseImage();
+    setBaseImage(ref);
+    try {
+      await api.patchSetting("animator.base_image", { value: ref ?? "", value_type: "str" });
+      toast.ok(ref ? "base image updated" : "base image cleared");
+    } catch (e: unknown) {
+      setBaseImage(prev);  // revert on failure
+      toast.err("base image failed", (e as Error)?.message ?? String(e));
+    }
+  };
 
   const framesByName = createMemo<Map<string, FrameDTO>>(() => {
     const m = new Map<string, FrameDTO>();
@@ -1621,6 +1670,45 @@ export const StudioSection: Component<{ nats: NatsWs }> = (props) => {
               + snapshot current pose
             </button>
             <div style={{ flex: "1" }} />
+            {/* View mode: image thumbnails (with base fallback) vs pose data */}
+            <For each={["thumb", "data"] as const}>
+              {(v) => (
+                <button
+                  type="button"
+                  class={galleryView() === v ? "btn btn--primary btn--micro" : "btn btn--micro"}
+                  onClick={() => setGalleryView(v)}
+                >
+                  {v === "thumb" ? "thumbnails" : "data"}
+                </button>
+              )}
+            </For>
+            {/* Base image — fallback thumbnail for frames without their own */}
+            <button
+              type="button"
+              class="btn btn--micro"
+              onClick={() => setBasePickerOpen((o) => !o)}
+              title="Set the fallback image shown for frames without their own image"
+              style={{ display: "flex", "align-items": "center", gap: "6px" }}
+            >
+              <Show
+                when={imageUrlOf(effectiveBase())}
+                fallback={<span class="f-mono" style={{ "font-size": "9px", color: "var(--c-stone)" }}>none</span>}
+              >
+                <img
+                  src={imageUrlOf(effectiveBase())!}
+                  alt="base"
+                  style={{
+                    width: "18px",
+                    height: "18px",
+                    "object-fit": "contain",
+                    "image-rendering": "pixelated",
+                    "border-radius": "3px",
+                  }}
+                />
+              </Show>
+              base image
+            </button>
+            <div style={{ width: "1px", height: "18px", background: "var(--c-edge)" }} />
             <For each={["hide", "normal", "large"] as const}>
               {(label, i) => (
                 <button
@@ -1633,6 +1721,26 @@ export const StudioSection: Component<{ nats: NatsWs }> = (props) => {
               )}
             </For>
           </div>
+
+          {/* Base image picker — opens inline below the toggle bar */}
+          <Show when={basePickerOpen()}>
+            <div
+              style={{
+                padding: "12px 18px",
+                background: "var(--c-deep)",
+                "border-top": "1px solid var(--c-edge)",
+              }}
+            >
+              <div class="eyebrow" style={{ "margin-bottom": "8px" }}>
+                base image — shown for frames without their own image
+              </div>
+              <ImagePicker
+                bucket="sprites"
+                current={baseImage() ?? undefined}
+                onPick={onPickBase}
+              />
+            </div>
+          </Show>
 
           <Show when={gallerySize() > 0}>
             <div
@@ -1656,6 +1764,8 @@ export const StudioSection: Component<{ nats: NatsWs }> = (props) => {
                     <GalleryFrame
                       frame={f}
                       usageCount={frameUsage().get(f.name) ?? 0}
+                      view={galleryView()}
+                      baseImage={effectiveBase()}
                       onClick={() => openGalleryFrame(f.name)}
                     />
                   )}
