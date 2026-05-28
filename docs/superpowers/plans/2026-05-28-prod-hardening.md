@@ -481,3 +481,24 @@ git commit -m "ops: idempotent deploy.sh (dirty-tree guard + pull + sync + resta
 3. **Phase 5** is infra/docs — land anytime.
 
 Suggested: land Phases 2–4 + T11 today (no hardware), validate T1/T2 on the Pi tonight, do T10/T12 around the deploy.
+
+---
+
+## Follow-up T13 — mic-loop shutdown thread-join (from branch review)
+
+**Surfaced by the post-implementation code review of T3.** Not a blocker for the hardware-free merge; address before turnover.
+
+**Problem:** T3 made `agent on_shutdown` `await self._mic_loop_task` before `self._mic.close()`. But `_mic_loop` blocks in `await loop.run_in_executor(None, self._mic.wait_for_onset)` — cancelling the task delivers `CancelledError` at that await and marks the task done **immediately**, while the underlying threadpool thread running the blocking PyAudio read keeps going (a running thread can't be cancelled). So the `await` returns promptly and `mic.close()` can run **while the read thread is still live** (it closes the PyAudio stream out from under the in-flight `stream.read()`). The original T3 test took ~61 s precisely because the asyncio task finished instantly while the 60 s mock-sleep thread leaked to teardown — direct evidence the await does not join the OS thread.
+
+Two related defects:
+1. The await provides weaker protection than its intent — `mic.close()` still races the executor thread for the `RealMic` blocking-read path.
+2. `_on_config_auto_listen` (`agent/service.py:761-762`) cancels `_mic_loop_task` and nulls it **without awaiting**, so a toggle-off-then-shutdown skips the await entirely (and per #1 the await wouldn't fully help anyway).
+
+**Fix approach:** Make `RealMic` cooperate with cancellation instead of relying on the asyncio await:
+- Give `RealMic` a `threading.Event` stop flag its `wait_for_onset` / `record_until_silence` read loops check each chunk, so the executor thread exits promptly when shutdown begins.
+- Make `RealMic.close()` safe against a concurrent in-flight read (guard `self._stream` access; tolerate a read on a just-closed stream without an uncaught exception).
+- In `on_shutdown`, set the stop flag before/around the cancel so the thread is unwinding before `mic.close()`.
+- Fix the `_on_config_auto_listen` path to await (or rely on the stop flag) rather than blind-nulling the task.
+- Update `test_shutdown_awaits_mic_loop_before_closing_mic` to assert the *thread* has exited before `close()` (e.g. via a fake mic whose read loop honors the stop flag), since the current test only verifies asyncio-task ordering, not thread-join.
+
+**Scope note:** This is the agent voice path, not the DXL/servo hardware path (T1/T2). Real-world impact today is bounded (a possible shutdown-time error log / brief ghost thread, capped by systemd `TimeoutStopSec=15s`), which is why it's a follow-up rather than a merge blocker.
