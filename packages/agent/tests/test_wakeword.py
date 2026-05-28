@@ -171,6 +171,54 @@ def test_wait_for_onset_fires_on_wakeword_hit():
     assert detector.reset_calls == 1
 
 
+def test_wait_for_onset_snapshots_detector_against_mid_wait_detach():
+    """Finding #1 — a wait that starts wake-gated must STAY wake-gated even if
+    the operator detaches the detector (agent.wakeword.enabled=false) while the
+    wait is blocked. Without snapshotting, wait_for_onset re-reads
+    self.wake_detector per chunk; once it's None mid-wait the loop falls to RMS
+    and fires a session on plain speech the operator just tried to gate off.
+    """
+
+    class _DetachingDetector:
+        """Detaches itself from the mic on the FIRST feed (simulating an
+        operator toggling wakeword off mid-wait), then fires on the 3rd feed.
+        If the snapshot works, the detector keeps being fed past the detach
+        and fires via wake-gating (fed >= 3). If the per-chunk re-read bug is
+        present, feed is called once, self.wake_detector goes None, and the
+        loop falls to RMS — fed stays at 1.
+        """
+
+        threshold = 0.5
+
+        def __init__(self):
+            self.fed = 0
+            self.mic = None  # wired after mic construction
+
+        def feed(self, _data) -> float:
+            self.fed += 1
+            if self.mic is not None:
+                self.mic.wake_detector = None  # operator disables mid-wait
+            return 0.9 if self.fed >= 3 else 0.0
+
+        def reset(self) -> None:
+            pass
+
+    detector = _DetachingDetector()
+    stream = _StubStream([b"\x11\x22" * 320] * 6)
+    mic = _make_realmic_with_stub_stream(stream, wake_detector=detector)
+    detector.mic = mic  # let the detector detach itself mid-feed
+
+    started, _pre_roll = mic.wait_for_onset()
+
+    assert started is True
+    # The captured snapshot kept gating on the wake detector after it removed
+    # itself from the mic on feed #1 — so it was fed until it fired on #3.
+    assert detector.fed >= 3, (
+        f"expected wait to stay wake-gated via the entry snapshot (fed>=3); "
+        f"got fed={detector.fed} — per-chunk re-read fell back to RMS"
+    )
+
+
 def test_wait_for_onset_no_wakeword_hit_times_out():
     # Detector never crosses threshold — RealMic should give up after MAX_WAIT_S.
     # Use a small MAX_WAIT_S override so the test stays fast.

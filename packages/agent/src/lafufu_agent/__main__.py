@@ -172,20 +172,31 @@ class RealMic:
         voiced_chunks = 0
         waiting_chunks = 0
 
+        # Snapshot the detector + gating decision ONCE at entry. This wait can
+        # block for up to MAX_WAIT_S; if the operator toggles
+        # agent.wakeword.enabled mid-wait, self.wake_detector flips to None and
+        # a per-chunk re-read would silently switch this in-flight wait from
+        # wake-gating to RMS — firing a session on plain speech the operator
+        # just tried to gate off. Capturing once keeps a wait consistent with
+        # how it started; the toggle takes effect on the NEXT wait_for_onset
+        # call (where the mic loop's guard idles in a degraded state instead).
+        detector = self.wake_detector
+        use_wake = detector is not None and not force_rms
+
         while True:
             data = stream.read(eff_chunk, exception_on_overflow=False)
             pre_roll.append(data)
 
-            if self.wake_detector is not None and not force_rms:
+            if use_wake:
                 # Gate on wake-word: skip RMS heuristics, only fire when the
                 # detector's score crosses its threshold. Whisper stays idle
                 # the rest of the time.
                 chunk_16k = self._resample_for_wakeword(data)
-                score = self.wake_detector.feed(chunk_16k)
-                if score >= self.wake_detector.threshold:
+                score = detector.feed(chunk_16k)
+                if score >= detector.threshold:
                     # Drop the detector's internal buffer so the same wake
                     # audio doesn't immediately re-fire on the next listen.
-                    self.wake_detector.reset()
+                    detector.reset()
                     return True, list(pre_roll)
                 waiting_chunks += 1
                 if waiting_chunks > max_chunks_waiting:
