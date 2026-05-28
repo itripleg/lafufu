@@ -411,6 +411,33 @@ class _AplayPlayer:
         # call opens a fresh proc anyway.
         self._proc = None
 
+    def close(self) -> None:
+        """Hard stop for shutdown: terminate + reap the aplay proc so it doesn't orphan.
+
+        Distinct from end() (per-utterance graceful drain); close() is called
+        once from the agent's on_shutdown to kill any in-flight aplay.
+        """
+        if self._proc is None:
+            return
+        proc = self._proc
+        self._proc = None
+        try:
+            if proc.stdin is not None:
+                proc.stdin.close()
+        except (BrokenPipeError, ValueError):
+            pass
+        import contextlib
+
+        try:
+            proc.terminate()
+            proc.wait(timeout=1)
+        except self._subprocess.TimeoutExpired:
+            proc.kill()
+            with contextlib.suppress(Exception):
+                proc.wait(timeout=1)
+        except Exception:
+            pass
+
 
 def _build_wake_detector_or_none():
     """Construct (make_wake_detector_factory, wake_detector) for main().
