@@ -451,7 +451,11 @@ class _TriggerMic:
     """
 
     def __init__(self, num_user_inputs: int = 1):
-        self.wake_detector = object()  # truthy sentinel — passes trigger-mode validation
+        # Duck-compatible stub (callable .feed) so it passes the trigger-mode
+        # _has_usable_wake_detector guard. This mic drives wait_for_onset
+        # directly and never calls .feed itself, but the guard requires a real
+        # detector shape — a bare object() no longer suffices.
+        self.wake_detector = _StubDetector()
         self._max_inputs = num_user_inputs
         self._wake_fired = False
         self._inputs_served = 0
@@ -1022,24 +1026,59 @@ async def test_interaction_mode_trigger_refused_without_wake_detector(nats_serve
     await asyncio.wait_for(task, timeout=3)
 
 
-async def test_wakeword_disabled_in_trigger_mode_forces_continuous(nats_server):
-    """Finding #1 — snapshot-replay ordering race: when the agent is in TRIGGER
-    mode and `agent.wakeword.enabled=false` arrives, the handler must FIRST
-    force interaction_mode back to CONTINUOUS, THEN detach the detector. Without
-    this, a snapshot replay where interaction_mode=trigger lands before
-    wakeword.enabled=false leaves the agent in trigger mode with no detector —
-    silent RMS fallback.
-    """
+def test_has_usable_wake_detector_predicate(nats_server):
+    """The shared guard predicate: None and bare object() are unusable; a
+    stub with a callable .feed is usable. All three guard sites (on_startup,
+    interaction_mode config, mic loop) rely on this."""
     from lafufu_agent.trigger import InteractionMode
 
-    class _MicWithDetector:
+    class _Mic:
         def __init__(self):
             self.wake_detector = None
 
         def listen_once(self):
             return ""
 
-    mic = _MicWithDetector()
+    mic = _Mic()
+    svc = AgentService(
+        mic=mic,
+        ollama=FakeOllama(),
+        piper=FakePiper(),
+        nats_url=nats_server,
+        interaction_mode=InteractionMode.CONTINUOUS,
+    )
+
+    mic.wake_detector = None
+    assert svc._has_usable_wake_detector() is False
+
+    mic.wake_detector = object()  # no .feed
+    assert svc._has_usable_wake_detector() is False
+
+    mic.wake_detector = _StubDetector()  # callable .feed
+    assert svc._has_usable_wake_detector() is True
+
+
+async def test_wakeword_disable_then_reenable_in_trigger_mode_restores_gating(nats_server):
+    """Finding #1 (revised) — disabling wakeword while in TRIGGER mode must NOT
+    mutate interaction_mode. The mode stays honest to the operator's stored
+    intent; the mic loop refuses to run a trigger session without a usable
+    detector (idles in degraded) rather than silently RMS-falling-back. The
+    earlier force-revert-to-continuous was sticky: re-enabling wakeword
+    re-attached the detector but left the mode on CONTINUOUS, so the wake word
+    was attached-but-ignored. This test pins the no-sticky-divergence contract:
+    disable detaches, re-enable re-attaches, and the mode stays TRIGGER
+    throughout so gating actually resumes.
+    """
+    from lafufu_agent.trigger import InteractionMode
+
+    class _Mic:
+        def __init__(self):
+            self.wake_detector = None
+
+        def listen_once(self):
+            return ""
+
+    mic = _Mic()
     stub = _StubDetector()
     mic.wake_detector = stub
 
@@ -1055,20 +1094,31 @@ async def test_wakeword_disabled_in_trigger_mode_forces_continuous(nats_server):
     await asyncio.sleep(0.5)
 
     nc = await nats.connect(nats_server)
+
+    # Disable wakeword: detector detaches, but mode stays TRIGGER (honest).
     await publish_model(
         nc,
         f"{topics.CONFIG_CHANGED}.agent.wakeword.enabled",
         schemas.ConfigChanged(key="agent.wakeword.enabled", value="false", source="test"),
     )
     await asyncio.sleep(0.3)
-    await nc.drain()
-
-    # Mode was force-flipped back to continuous BEFORE the detector got
-    # detached — so the agent never sits in trigger-mode with no detector.
-    assert svc._interaction_mode == InteractionMode.CONTINUOUS, (
-        f"expected force-revert to CONTINUOUS; mode={svc._interaction_mode}"
+    assert svc._interaction_mode == InteractionMode.TRIGGER, (
+        f"mode must stay TRIGGER (no sticky revert); got {svc._interaction_mode}"
     )
     assert svc._mic.wake_detector is None, "detector should have been detached"
+
+    # Re-enable wakeword: detector re-attaches AND mode is still TRIGGER, so
+    # gating actually resumes — no attached-but-ignored divergence.
+    await publish_model(
+        nc,
+        f"{topics.CONFIG_CHANGED}.agent.wakeword.enabled",
+        schemas.ConfigChanged(key="agent.wakeword.enabled", value="true", source="test"),
+    )
+    await asyncio.sleep(0.3)
+    await nc.drain()
+
+    assert svc._interaction_mode == InteractionMode.TRIGGER
+    assert svc._mic.wake_detector is stub, "detector should be re-attached on re-enable"
 
     svc._shutdown.set()
     await asyncio.wait_for(task, timeout=3)
@@ -1190,6 +1240,9 @@ async def test_wakeword_enabled_publishes_state_event(nats_server):
     last = payloads[-1]
     assert "enabled" in last and isinstance(last["enabled"], bool)
     assert "attached" in last and isinstance(last["attached"], bool)
+    # Finding #2 — the event must carry interaction_mode so a UI can tell
+    # "attached and gating" from "attached but ignored in continuous mode".
+    assert "interaction_mode" in last and last["interaction_mode"] in ("continuous", "trigger")
     assert last["enabled"] is True
     assert last["attached"] is True
 
