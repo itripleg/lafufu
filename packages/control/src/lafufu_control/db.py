@@ -35,7 +35,14 @@ def check_schema_version(engine) -> None:
             )
             s.commit()
             return
-        stored = int(row.value)
+        try:
+            stored = int(row.value)
+        except (TypeError, ValueError):
+            raise RuntimeError(
+                f"DB schema_version row is corrupt (value={row.value!r}); cannot "
+                f"determine the schema version. Restore a backup from "
+                f"<data_dir>/backups/ or fix the row manually."
+            ) from None
     if stored < CURRENT_SCHEMA_VERSION:
         log.warning(
             "db.schema.outdated stored=%d code=%d — a manual migration may be "

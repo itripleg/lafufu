@@ -133,7 +133,10 @@ class ControlService(BaseService):
         engine = create_engine_for_path(str(settings.db_path()))
         self._engine = engine
         init_db(engine)
-        backup_db(str(settings.db_path()))
+        # backup copies the entire DB file (cost grows with data), so run it off
+        # the loop. init_db / check_schema_version / the seeds are schema-bounded
+        # and tiny, and this all runs pre-serving (before the heartbeat task).
+        await asyncio.to_thread(backup_db, str(settings.db_path()))
         check_schema_version(engine)
         seed_default_settings(engine)
         seed_animations(engine)

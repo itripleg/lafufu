@@ -89,6 +89,26 @@ def test_check_schema_version_refuses_when_db_newer(db):
         check_schema_version(db)
 
 
+def test_check_schema_version_raises_on_corrupt_value(db):
+    """A non-integer stored version must surface as a clear RuntimeError, not a
+    raw ValueError traceback — the guard exists to give a diagnosable signal."""
+    from lafufu_control.db import check_schema_version
+    from lafufu_control.models.setting import Setting
+    from sqlmodel import Session
+
+    with Session(db) as s:
+        s.add(
+            Setting(
+                key="bootstrap.schema_version",
+                value="not-an-int",
+                value_type="int",
+            )
+        )
+        s.commit()
+    with pytest.raises(RuntimeError):
+        check_schema_version(db)
+
+
 def test_backup_db_creates_rotating_copies(tmp_path):
     db = tmp_path / "db.sqlite"
     eng = create_engine_for_path(str(db))
