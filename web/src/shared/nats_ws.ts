@@ -1,13 +1,17 @@
 type Frame = { topic: string; payload: any };
 type Handler = (frame: Frame) => void;
+type ConnHandler = (connected: boolean) => void;
 
 export class NatsWs {
   private ws: WebSocket | null = null;
   private listeners = new Map<string, Set<Handler>>();
+  private connListeners = new Set<ConnHandler>();
   private reconnectDelay = 1000;
   private maxDelay = 30000;
   private url: string;
   private active = false;
+  /** True iff the underlying WS is currently in OPEN state. */
+  private opened = false;
 
   constructor(url: string = "/ws") {
     this.url = url;
@@ -22,6 +26,28 @@ export class NatsWs {
     this.active = false;
     this.ws?.close();
     this.ws = null;
+    this.notifyConn(false);
+  }
+
+  /** Returns true if the WebSocket is currently connected to the server. */
+  isConnected(): boolean {
+    return this.opened;
+  }
+
+  /** Subscribe to connection-state changes. Handler is called with the
+   *  current state immediately, then on every transition. */
+  onConnection(handler: ConnHandler): () => void {
+    this.connListeners.add(handler);
+    handler(this.opened);
+    return () => { this.connListeners.delete(handler); };
+  }
+
+  private notifyConn(connected: boolean): void {
+    if (this.opened === connected) return;
+    this.opened = connected;
+    this.connListeners.forEach((h) => {
+      try { h(connected); } catch { /* keep going */ }
+    });
   }
 
   private connect(): void {
@@ -35,6 +61,7 @@ export class NatsWs {
       if (topics.length > 0) {
         this.ws!.send(JSON.stringify({ op: "sub", topics }));
       }
+      this.notifyConn(true);
     };
     this.ws.onmessage = (ev) => {
       try {
@@ -50,6 +77,7 @@ export class NatsWs {
     };
     this.ws.onclose = () => {
       this.ws = null;
+      this.notifyConn(false);
       if (this.active) {
         setTimeout(() => this.connect(), this.reconnectDelay);
         this.reconnectDelay = Math.min(this.maxDelay, this.reconnectDelay * 2);
