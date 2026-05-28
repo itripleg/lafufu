@@ -20,7 +20,7 @@ from .db import create_engine_for_path, init_db
 from .models.chat import ChatMessage
 from .models.expression import Expression
 from .models.frame import Frame
-from .models.setting import Setting
+from .models.setting import Setting, is_internal_key
 
 _log = logging.getLogger(__name__)
 
@@ -329,6 +329,12 @@ class ControlService(BaseService):
         with Session(engine) as s:
             rows = list(s.exec(select(Setting)).all())
         for row in rows:
+            # Internal bookkeeping rows (migration flags) are not service config
+            # — no subscriber consumes them, and rebroadcasting would cross the
+            # WS bridge into the browser firehose. Skip them to match the
+            # settings API + snapshot, which also hide internal keys.
+            if is_internal_key(row.key):
+                continue
             payload = {
                 "key": row.key,
                 "value": _decode_setting_value(row.value, row.value_type),

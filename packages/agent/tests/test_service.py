@@ -1124,6 +1124,73 @@ async def test_wakeword_disable_then_reenable_in_trigger_mode_restores_gating(na
     await asyncio.wait_for(task, timeout=3)
 
 
+async def test_mic_loop_idles_degraded_when_trigger_mode_without_detector(nats_server):
+    """The mic-loop guard: in TRIGGER mode with no usable detector, the loop
+    must publish 'degraded' and must NOT run a trigger session (no silent RMS
+    fallback). Starts with a usable detector so on_startup passes, then detaches
+    it at runtime before starting the loop — covering the iter-6 _mic_loop
+    branch that prior reviews flagged as untested.
+    """
+    from lafufu_agent.trigger import InteractionMode, TriggerConfig
+
+    class _Mic:
+        def __init__(self):
+            self.wake_detector = _StubDetector()  # usable at startup
+            self.onset_calls = 0
+
+        def listen_once(self):
+            return ""
+
+        def wait_for_onset(self, force_rms: bool = False):
+            # Only reached if a trigger session runs — the guard must prevent
+            # this when no usable detector is attached.
+            self.onset_calls += 1
+            return False, []
+
+    mic = _Mic()
+    svc = AgentService(
+        mic=mic,
+        ollama=FakeOllama(),
+        piper=FakePiper(),
+        nats_url=nats_server,
+        wake_detector=mic.wake_detector,
+        interaction_mode=InteractionMode.TRIGGER,
+        trigger_config=TriggerConfig(
+            phrase="hi", emotion="neutral", rounds=1, print_mode="none", print_prompt="?"
+        ),
+    )
+
+    nc = await nats.connect(nats_server)
+    states: list[str] = []
+    system_replies: list[str] = []
+
+    async def on_state(msg):
+        states.append(msg.subject.split(".")[-1])
+
+    async def on_reply(msg):
+        r = schemas.AgentReply.model_validate_json(msg.data)
+        if r.source == "system":
+            system_replies.append(r.text)
+
+    await nc.subscribe(f"{topics.AGENT_STATE}.*", cb=on_state)
+    await nc.subscribe(topics.AGENT_REPLY, cb=on_reply)
+
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.3)
+    # Operator disables wakeword → detector detaches at runtime.
+    svc._mic.wake_detector = None
+    svc.start_mic_loop()
+    await asyncio.sleep(1.3)  # at least one degraded-publish + sleep cycle
+    await nc.drain()
+
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)
+
+    assert "degraded" in states, f"mic loop must publish 'degraded'; got {states}"
+    assert mic.onset_calls == 0, "no trigger session may run without a usable detector"
+    assert system_replies == [], "no opening phrase may be spoken without a detector"
+
+
 async def test_wakeword_model_swap_auto_attaches_when_enabled_after_startup_loadfail(nats_server):
     """Finding #3 — recovery footgun after startup load_failed. When the
     initial detector was None (startup wakeword.load_failed) but the operator

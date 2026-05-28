@@ -8,14 +8,13 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from ...bootstrap import DEFAULTS as BOOTSTRAP_DEFAULTS
-from ...models.setting import Setting
+from ...models.setting import Setting, is_internal_key
 
 router = APIRouter()
 
-# Keys with these prefixes are internal bookkeeping (e.g. one-shot bootstrap
-# migration markers) and must not be visible or mutable via the admin API.
-# The rows still exist in the DB — they're just hidden from CRUD endpoints so
-# operators can't accidentally edit or delete them and re-trigger migrations.
+# is_internal_key (defined on the Setting model so the snapshot router and the
+# config.changed rebroadcast share the same predicate) hides internal
+# bookkeeping rows from CRUD.
 #
 # Design note (422-vs-404 existence leak): PUT/PATCH below let FastAPI parse
 # the Pydantic `SettingIn` body BEFORE the `is_internal_key` check. That is
@@ -25,11 +24,6 @@ router = APIRouter()
 # code. Reordering existence-check-before-body-validation would re-open this
 # leak (internal→404 on garbage, unknown→422 on garbage). See
 # test_put_internal_key_does_not_leak_via_404_vs_422_split for the lock.
-INTERNAL_KEY_PREFIXES: tuple[str, ...] = ("bootstrap.",)
-
-
-def is_internal_key(key: str) -> bool:
-    return any(key.startswith(p) for p in INTERNAL_KEY_PREFIXES)
 
 
 class SettingIn(BaseModel):

@@ -177,9 +177,7 @@ class RealMic:
         # agent.wakeword.enabled mid-wait, self.wake_detector flips to None and
         # a per-chunk re-read would silently switch this in-flight wait from
         # wake-gating to RMS — firing a session on plain speech the operator
-        # just tried to gate off. Capturing once keeps a wait consistent with
-        # how it started; the toggle takes effect on the NEXT wait_for_onset
-        # call (where the mic loop's guard idles in a degraded state instead).
+        # just tried to gate off. The toggle takes effect on the NEXT call.
         detector = self.wake_detector
         use_wake = detector is not None and not force_rms
 
@@ -188,14 +186,10 @@ class RealMic:
             pre_roll.append(data)
 
             if use_wake:
-                # Gate on wake-word: skip RMS heuristics, only fire when the
-                # detector's score crosses its threshold. Whisper stays idle
-                # the rest of the time.
-                chunk_16k = self._resample_for_wakeword(data)
-                score = detector.feed(chunk_16k)
+                score = detector.feed(self._resample_for_wakeword(data))
                 if score >= detector.threshold:
-                    # Drop the detector's internal buffer so the same wake
-                    # audio doesn't immediately re-fire on the next listen.
+                    # Drop the detector's buffer so this wake audio doesn't
+                    # immediately re-fire on the next listen.
                     detector.reset()
                     return True, list(pre_roll)
                 waiting_chunks += 1
@@ -203,18 +197,15 @@ class RealMic:
                     return False, []
                 continue
 
-            rms = audio_rms_bytes(data)
-            loud = rms >= self.silence_threshold
+            loud = audio_rms_bytes(data) >= self.silence_threshold
             if loud:
                 voiced_chunks += 1
                 if voiced_chunks >= self.MIN_VOICED_CHUNKS:
-                    # Real speech — hand the pre-roll buffer to the recorder.
                     return True, list(pre_roll)
             else:
                 voiced_chunks = 0
                 waiting_chunks += 1
                 if waiting_chunks > max_chunks_waiting:
-                    # Gave up waiting — nothing said.
                     return False, []
 
     def record_until_silence(self, pre_roll: list[bytes]) -> "np.ndarray":  # noqa: F821
@@ -415,22 +406,17 @@ class _AplayPlayer:
 def _build_wake_detector_or_none():
     """Construct (make_wake_detector_factory, wake_detector) for main().
 
-    Two layers of degrade-gracefully behavior:
+    Degrades gracefully to RMS-based onset at two layers:
+      1. The `from .wakeword import ...` is wrapped so a broken module-level
+         import (corrupt numpy ABI, etc.) doesn't crash the agent before the
+         pipeline boots.
+      2. A failed initial `.load()` is caught and logged with remediation
+         hints; the factory is kept so the admin UI's live-swap can try a
+         different model later.
 
-      1. The `from .wakeword import ...` itself is wrapped in try/except
-         ImportError so a broken numpy ABI / corrupt wakeword.py / future
-         syntax mistake doesn't crash the agent BEFORE the rest of the
-         pipeline boots — we want to fall back to RMS-based onset, the same
-         degraded mode `has_openwakeword() == False` already produces.
-
-      2. `OpenWakeWordDetector.load()` failing (missing asset, openwakeword
-         can't find the model) is caught and logged with a remediation
-         pointer (admin UI setting + `uv sync`). The factory is kept around
-         so the admin UI's live-swap can try a different model later.
-
-    Returns (None, None) on import failure or when openwakeword isn't
-    installed. Returns (factory, None) when the dep is present but the
-    initial load failed. Returns (factory, detector) on full success.
+    Returns (None, None) on import failure or missing openwakeword,
+    (factory, None) when the dep is present but the initial load failed, and
+    (factory, detector) on full success.
     """
     log = logging.getLogger(__name__)
 
@@ -477,9 +463,9 @@ def _build_wake_detector_or_none():
             model_env,
             e,
         )
-        wake_detector = None
         # Keep make_wake_detector defined — the live-swap path can still try
         # other models later via _on_config_wakeword_model.
+        wake_detector = None
 
     return make_wake_detector, wake_detector
 
@@ -538,13 +524,9 @@ def main() -> None:
     piper = Piper(model_path=piper_model_path)
     piper.load()  # populate sample_rate from the .onnx config
 
-    # openwakeword is a required dep, but keep the has_openwakeword() guard so
-    # a missing/corrupt install degrades to RMS-based onset instead of crashing
-    # the agent before the rest of the pipeline even starts. The admin UI's
+    # Degrades to RMS-based onset if openwakeword is missing/corrupt or the
+    # model fails to load (see _build_wake_detector_or_none). The admin UI's
     # agent.wakeword.enabled setting controls live attachment to the mic.
-    # _build_wake_detector_or_none also wraps the `from .wakeword import ...`
-    # itself so a broken module-level import (corrupt numpy ABI, etc.) doesn't
-    # bypass the degrade-to-RMS contract.
     make_wake_detector, wake_detector = _build_wake_detector_or_none()
 
     mic = RealMic(stt=stt, wake_detector=wake_detector)

@@ -86,11 +86,40 @@ def test_list_settings_excludes_bootstrap_internal_keys(client_with_engine):
     assert "bootstrap.migrations.wakeword_lafufu_v1" not in keys
 
 
+def test_snapshot_excludes_bootstrap_internal_keys(client_with_engine):
+    """The /api/state/snapshot payload must hide internal bookkeeping rows too
+    — not just the settings CRUD API. Otherwise the migration flag leaks to the
+    browser via the seed snapshot even though GET /api/settings hides it."""
+    c, engine = client_with_engine
+    _insert(engine, "agent.silence_threshold", "1500", "int", "silence threshold ms")
+    _insert(engine, "bootstrap.migrations.wakeword_lafufu_v1", "1", "str", "x")
+    r = c.get("/api/state/snapshot")
+    assert r.status_code == 200
+    keys = [row["key"] for row in r.json()["settings"]]
+    assert "agent.silence_threshold" in keys
+    assert "bootstrap.migrations.wakeword_lafufu_v1" not in keys
+
+
 def test_get_setting_404s_for_bootstrap_internal_key(client_with_engine):
     c, engine = client_with_engine
     _insert(engine, "bootstrap.migrations.wakeword_lafufu_v1", "1", "str", "x")
     r = c.get("/api/settings/bootstrap.migrations.wakeword_lafufu_v1")
     assert r.status_code == 404
+
+
+def test_patch_setting_404s_for_bootstrap_internal_key(client_with_engine):
+    """PATCH parity with PUT — the iter-4 coverage left PATCH only indirectly
+    tested via the 422-vs-404 leak lock; pin the happy-path 404 + row-untouched."""
+    c, engine = client_with_engine
+    _insert(engine, "bootstrap.migrations.wakeword_lafufu_v1", "1", "str", "x")
+    r = c.patch(
+        "/api/settings/bootstrap.migrations.wakeword_lafufu_v1",
+        json={"value": "2"},
+    )
+    assert r.status_code == 404
+    with Session(engine) as s:
+        row = s.get(Setting, "bootstrap.migrations.wakeword_lafufu_v1")
+        assert row is not None and row.value == "1"
 
 
 def test_delete_setting_404s_for_bootstrap_internal_key(client_with_engine):
