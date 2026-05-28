@@ -1,7 +1,6 @@
 """AgentService: BaseService that runs the voice loop and accepts text intents."""
 
 import asyncio
-import contextlib
 import json
 import logging
 import subprocess
@@ -771,8 +770,12 @@ class AgentService(BaseService):
         await self._publish_state("shutdown")
         if self._mic_loop_task:
             self._mic_loop_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
+            try:
                 await self._mic_loop_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                self.log.warning("mic_loop.shutdown.unexpected error=%s", e)
         if hasattr(self._mic, "close"):
             try:
                 self._mic.close()

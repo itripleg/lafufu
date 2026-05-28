@@ -84,6 +84,7 @@ class FakeDxlBus:
 
     def enable_torque(self) -> None:
         self.torque_enabled_count += 1
+        self.torque_disabled = False
 
     def close(self) -> None:
         self.closed = True

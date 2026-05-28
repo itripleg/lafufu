@@ -1,4 +1,5 @@
 import asyncio
+import threading
 
 import nats
 import numpy as np
@@ -1415,6 +1416,7 @@ async def test_shutdown_awaits_mic_loop_before_closing_mic(nats_server):
     loop cannot race mic.close() (e.g. still in run_in_executor calling the mic
     after the fd is released).  Track the call order with a close_order list."""
     close_order: list[str] = []
+    release = threading.Event()
 
     class _OrderTrackingMic:
         """Records whether 'task_done' was appended before 'close'."""
@@ -1430,11 +1432,9 @@ async def test_shutdown_awaits_mic_loop_before_closing_mic(nats_server):
             close_order.append("close")
 
         def listen_once(self):
-            # Block long enough that the mic loop is still in flight when
-            # shutdown begins.
-            import time as _t
-
-            _t.sleep(60)
+            # Block until released by the test (safety cap: 5s).
+            # This keeps the mic loop in flight when shutdown begins.
+            release.wait(timeout=5)
             return ""
 
     mic = _OrderTrackingMic()
@@ -1459,6 +1459,8 @@ async def test_shutdown_awaits_mic_loop_before_closing_mic(nats_server):
 
     svc._shutdown.set()
     await asyncio.wait_for(task, timeout=3)
+    # Asyncio task is done; close_order is fully populated. Unblock the executor thread.
+    release.set()
 
     assert "close" in close_order, "mic.close() must be called on shutdown"
     assert "task_done" in close_order, (

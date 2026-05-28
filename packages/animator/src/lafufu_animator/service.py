@@ -19,6 +19,7 @@ class DxlBusProtocol(Protocol):
     def disable_torque(self) -> None: ...
     def configure_limits(self) -> None: ...
     def open(self) -> None: ...
+    def close(self) -> None: ...
 
 
 # RMS events arrive at the agent's fixed TTS chunk cadence (~40 ms). The lipsync
@@ -231,10 +232,14 @@ class AnimatorService(BaseService):
             t.cancel()
         # Await them so no task writes to the bus after we disable torque.
         await asyncio.gather(*tasks, return_exceptions=True)
-        with contextlib.suppress(Exception):
+        try:
             self._bus.disable_torque()
-        with contextlib.suppress(Exception):
+        except Exception as e:
+            self.log.warning("dxl.torque.disable_failed error=%s", e)
+        try:
             self._bus.close()
+        except Exception as e:
+            self.log.warning("dxl.close_failed error=%s", e)
 
     def _effective_idle_pose(self) -> schemas.AnimatorPose:
         """Idle pose with any operator-saved per-servo defaults applied."""
