@@ -70,6 +70,34 @@ const poseOfFrame = (f: FrameDTO): Pose => ({
   brow: f.brow,
 });
 
+// updateFrame / updateExpression are full-replace PUTs: the backend overwrites
+// every field from the body, and omitted fields fall back to schema defaults
+// (steps=[], emotion=null, image=null, …). So a partial body silently wipes the
+// fields it leaves out. These builders send the complete current object with a
+// patch merged in, matching what the Head tab already does.
+const frameUpdateBody = (f: FrameDTO, patch: Partial<FrameDTO>) => ({
+  head_lr: f.head_lr,
+  head_ud: f.head_ud,
+  eye: f.eye,
+  jaw: f.jaw,
+  brow: f.brow,
+  image: f.image,
+  description: f.description,
+  ...patch,
+});
+
+const exprUpdateBody = (e: ExpressionDTO, patch: Partial<ExpressionDTO>) => ({
+  playback: e.playback,
+  default_duration_ms: e.default_duration_ms,
+  default_delay_ms: e.default_delay_ms,
+  default_easing: e.default_easing,
+  steps: e.steps,
+  random_walk_config: e.random_walk_config,
+  emotion: e.emotion,
+  description: e.description,
+  ...patch,
+});
+
 const imageUrlOf = (ref: string | null): string | null => {
   if (!ref) return null;
   const parts = ref.split("/");
@@ -388,8 +416,7 @@ const FrameEditorModal: Component<{
   ranges: Record<keyof Pose, readonly [number, number]>;
   defaultDuration: number;
   defaultDelay: number;
-  onSavePose: (pose: Pose) => Promise<void>;
-  onSaveImage: (image: string | null) => Promise<void>;
+  onSaveFrame: (pose: Pose, image: string | null) => Promise<void>;
   onSaveStepTiming: (duration: number, delay: number) => Promise<void>;
   onRemoveStep: () => Promise<void>;
   onDeleteFrame: () => Promise<void>;
@@ -445,9 +472,10 @@ const FrameEditorModal: Component<{
   });
 
   const saveAll = async () => {
-    await props.onSavePose(pose());
+    // Save pose + image in a single full-body PUT so neither clobbers the other.
     const pending = pendingImage();
-    if (pending !== undefined) await props.onSaveImage(pending);
+    const image = pending !== undefined ? pending : props.frame.image;
+    await props.onSaveFrame(pose(), image);
     if (props.state.kind === "step") await props.onSaveStepTiming(duration(), delay());
     props.onClose();
   };
@@ -1021,7 +1049,7 @@ export const StudioSection: Component<{ nats: NatsWs }> = (props) => {
     if (!e) return;
     const next: ExpressionDTO["playback"] = e.playback === "loop" ? "once" : "loop";
     await apiCall(
-      () => api.updateExpression(e.name, { playback: next }),
+      () => api.updateExpression(e.name, exprUpdateBody(e, { playback: next })),
       "loop toggle",
     );
     await refetchExprs();
@@ -1031,7 +1059,7 @@ export const StudioSection: Component<{ nats: NatsWs }> = (props) => {
     const e = currentExpr();
     if (!e) return;
     await apiCall(
-      () => api.updateExpression(e.name, { steps }),
+      () => api.updateExpression(e.name, exprUpdateBody(e, { steps })),
       "save steps",
     );
     await refetchExprs();
@@ -1069,13 +1097,13 @@ export const StudioSection: Component<{ nats: NatsWs }> = (props) => {
     await persistSteps(next);
   };
 
-  const updateFramePose = async (frameName: string, pose: Pose) => {
-    await apiCall(() => api.updateFrame(frameName, pose), "save pose");
-    await refetchFrames();
-  };
-
-  const updateFrameImage = async (frameName: string, image: string | null) => {
-    await apiCall(() => api.updateFrame(frameName, { image }), "save image");
+  const saveFrame = async (frameName: string, pose: Pose, image: string | null) => {
+    const f = framesByName().get(frameName);
+    if (!f) return;
+    await apiCall(
+      () => api.updateFrame(frameName, frameUpdateBody(f, { ...pose, image })),
+      "save frame",
+    );
     await refetchFrames();
   };
 
@@ -1853,8 +1881,7 @@ export const StudioSection: Component<{ nats: NatsWs }> = (props) => {
               ranges={ranges()}
               defaultDuration={currentExpr()?.default_duration_ms ?? 200}
               defaultDelay={currentExpr()?.default_delay_ms ?? 0}
-              onSavePose={(pose) => updateFramePose(fr.name, pose)}
-              onSaveImage={(image) => updateFrameImage(fr.name, image)}
+              onSaveFrame={(pose, image) => saveFrame(fr.name, pose, image)}
               onSaveStepTiming={(d, dl) =>
                 m.kind === "step"
                   ? updateStepTiming(m.stepIndex, d, dl)
