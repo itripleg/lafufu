@@ -7,6 +7,11 @@ PartOf=lafufu.target
 [Service]
 Type=simple
 WorkingDirectory=/srv/lafufu
+# Runs as root (no User=/Group= set) because bluetoothctl adapter management
+# (power on/off, discoverable on/off, system-alias) issues privileged D-Bus
+# calls that are not available to unprivileged users. Switching to User=lafufu
+# would silently break IP broadcast: all bluetoothctl calls in the script
+# swallow errors with "|| true", so failures would go undetected.
 ExecStart=/bin/bash /srv/lafufu/deploy/lafufu-btcast.sh
 Restart=on-failure
 RestartSec=5s

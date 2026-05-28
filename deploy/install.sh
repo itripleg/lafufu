@@ -96,6 +96,12 @@ cp deploy/systemd/lafufu-*.service /etc/systemd/system/
 cp deploy/systemd/lafufu.target /etc/systemd/system/
 systemctl daemon-reload
 
+# 9c. journald size cap — keep SD-card log growth bounded (drop-in overrides
+# the global journald.conf SystemMaxUse).
+mkdir -p /etc/systemd/journald.conf.d
+cp deploy/systemd/journald-lafufu.conf /etc/systemd/journald.conf.d/journald-lafufu.conf
+systemctl restart systemd-journald
+
 # 9b. Bluetooth: stop the discoverable window from auto-expiring (0 = no
 #     timeout) so lafufu-btcast controls visibility itself — discoverable
 #     while online, hidden while offline.

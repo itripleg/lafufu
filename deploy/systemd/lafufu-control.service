@@ -26,6 +26,10 @@ Environment=LAFUFU_CONTROL_PORT=8080
 ExecStart=/srv/lafufu/.venv/bin/python -m lafufu_control
 Restart=on-failure
 RestartSec=5s
+# WatchdogSec is intentionally NOT set: it requires the service to call
+# sd_notify(WATCHDOG=1) periodically, which is not wired yet. Adding
+# WatchdogSec without that would make systemd kill a healthy service.
+TimeoutStopSec=15s
 
 [Install]
 WantedBy=lafufu.target
