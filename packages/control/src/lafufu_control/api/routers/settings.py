@@ -16,6 +16,15 @@ router = APIRouter()
 # migration markers) and must not be visible or mutable via the admin API.
 # The rows still exist in the DB — they're just hidden from CRUD endpoints so
 # operators can't accidentally edit or delete them and re-trigger migrations.
+#
+# Design note (422-vs-404 existence leak): PUT/PATCH below let FastAPI parse
+# the Pydantic `SettingIn` body BEFORE the `is_internal_key` check. That is
+# intentional: malformed bodies return 422 for BOTH internal and unknown
+# non-internal keys, so a prober sending garbage to `/api/settings/bootstrap.x`
+# can't distinguish "reserved prefix" from "unknown key" via the response
+# code. Reordering existence-check-before-body-validation would re-open this
+# leak (internal→404 on garbage, unknown→422 on garbage). See
+# test_put_internal_key_does_not_leak_via_404_vs_422_split for the lock.
 INTERNAL_KEY_PREFIXES: tuple[str, ...] = ("bootstrap.",)
 
 

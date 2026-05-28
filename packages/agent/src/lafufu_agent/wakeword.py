@@ -16,6 +16,7 @@ from __future__ import annotations
 import importlib.util
 import logging
 import re
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -32,8 +33,21 @@ def _looks_absolute_cross_platform(value: str) -> bool:
     ('/srv/...') are False under WindowsPath; drive-letter paths ('C:\\...')
     are False under PosixPath. A cross-platform DB share that puts a
     Windows-style path on a POSIX host (or vice versa) would otherwise get
-    silently misrouted into the workspace-root branch."""
-    return value.startswith("/") or value.startswith("\\") or bool(_DRIVE_LETTER_RE.match(value))
+    silently misrouted into the workspace-root branch.
+
+    A leading lone backslash ('\\foo') is the Windows "drive-relative root"
+    convention — it has no analog on POSIX, where '\\foo' is just a weird
+    character at the start of a relative filename. So we treat it as absolute
+    ONLY on Windows. Without the OS check, an operator who types `\\srv\\foo.onnx`
+    on Linux would skip the workspace-root walk and openwakeword would try to
+    load a literal-backslash filename from CWD, which fails opaquely."""
+    if value.startswith("/"):
+        return True
+    if _DRIVE_LETTER_RE.match(value):
+        return True
+    if value.startswith("\\") and sys.platform == "win32":
+        return True
+    return False
 
 
 def has_openwakeword() -> bool:
@@ -47,6 +61,11 @@ def resolve_model_ref(value: str, *, walk_start: Path | None = None) -> str:
     - Absolute path → returned unchanged.
     - Bundled name (no path separator AND not ending in .onnx/.tflite) → returned
       unchanged so openwakeword looks it up in its bundled-model directory.
+      NOTE: openwakeword's bundled identifiers are bare STEMS (e.g. "hey_jarvis_v0.1"),
+      never carrying a file extension. So a `.onnx` or `.tflite` suffix is treated
+      as a path signal — NOT a bundled-name signal. An operator who types
+      `my_custom.onnx` thinking it's a bundled name will get a workspace-root-prefixed
+      path back; use the bare stem if you actually mean a bundled identifier.
     - Relative path → resolved against the workspace root, located by walking up
       from `walk_start` (defaults to this module's __file__) until a directory
       containing BOTH pyproject.toml AND a 'packages' subdirectory is found. If

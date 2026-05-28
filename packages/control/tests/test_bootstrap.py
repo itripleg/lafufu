@@ -13,7 +13,7 @@ from lafufu_control import bootstrap as bootstrap_mod
 from lafufu_control.bootstrap import seed_default_settings
 from lafufu_control.db import init_db
 from lafufu_control.models.setting import Setting
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlmodel import Session, create_engine, select
 
 
@@ -185,6 +185,73 @@ def test_wakeword_lafufu_v1_migration_handles_concurrent_race(tmp_path, monkeypa
 
     # Must not raise.
     bootstrap_mod._migrate_wakeword_lafufu_v1(engine)
+
+
+def test_wakeword_lafufu_v1_migration_handles_operational_error(tmp_path, monkeypatch, caplog):
+    """Under SQLite WAL with busy_timeout, a concurrent-write conflict that
+    exceeds the timeout raises OperationalError("database is locked") — NOT
+    IntegrityError. The migration must catch THAT too and no-op so the
+    control service doesn't restart-loop the losing process."""
+    engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}")
+    init_db(engine)
+    _seed_old_wakeword_rows(engine, enabled="false", model="hey_jarvis_v0.1")
+
+    real_commit = Session.commit
+    raised = {"done": False}
+
+    def flaky_commit(self):
+        if not raised["done"]:
+            raised["done"] = True
+            raise OperationalError("(sqlite3.OperationalError) database is locked", None, None)
+        return real_commit(self)
+
+    monkeypatch.setattr(Session, "commit", flaky_commit)
+
+    with caplog.at_level(logging.INFO, logger="lafufu_control.bootstrap"):
+        # Must NOT raise.
+        bootstrap_mod._migrate_wakeword_lafufu_v1(engine)
+
+    race_records = [
+        r
+        for r in caplog.records
+        if "race_caught" in r.getMessage() and "wakeword_lafufu_v1" in r.getMessage()
+    ]
+    assert race_records, (
+        f"expected a race_caught log for the OperationalError path, got: "
+        f"{[r.getMessage() for r in caplog.records]}"
+    )
+
+
+def test_wakeword_lafufu_v1_migration_logs_skipped_even_on_race(tmp_path, monkeypatch, caplog):
+    """The `skipped` diagnostic must fire even when the commit hits the race
+    rollback path — otherwise an operator with a typo'd override row would
+    silently lose the breadcrumb that points at their typo."""
+    engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}")
+    init_db(engine)
+    # Typo: missing the "_v0.1" suffix on the model value.
+    _seed_old_wakeword_rows(engine, enabled="false", model="hey_jarvis")
+
+    real_commit = Session.commit
+    raised = {"done": False}
+
+    def flaky_commit(self):
+        if not raised["done"]:
+            raised["done"] = True
+            raise IntegrityError("simulated race", params=None, orig=Exception("UNIQUE"))
+        return real_commit(self)
+
+    monkeypatch.setattr(Session, "commit", flaky_commit)
+
+    with caplog.at_level(logging.INFO, logger="lafufu_control.bootstrap"):
+        bootstrap_mod._migrate_wakeword_lafufu_v1(engine)
+
+    messages = [r.getMessage() for r in caplog.records]
+    race_msg = " ".join(m for m in messages if "race_caught" in m)
+    skipped_msg = " ".join(m for m in messages if "skipped" in m.lower())
+    assert race_msg, f"expected race_caught log; got: {messages}"
+    assert skipped_msg, f"expected skipped log even under race path; got: {messages}"
+    assert "agent.wakeword.model" in skipped_msg
+    assert "hey_jarvis" in skipped_msg
 
 
 def test_wakeword_lafufu_v1_migration_logs_skipped_overrides(tmp_path, caplog):

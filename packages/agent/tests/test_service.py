@@ -1022,6 +1022,280 @@ async def test_interaction_mode_trigger_refused_without_wake_detector(nats_serve
     await asyncio.wait_for(task, timeout=3)
 
 
+async def test_wakeword_disabled_in_trigger_mode_forces_continuous(nats_server):
+    """Finding #1 — snapshot-replay ordering race: when the agent is in TRIGGER
+    mode and `agent.wakeword.enabled=false` arrives, the handler must FIRST
+    force interaction_mode back to CONTINUOUS, THEN detach the detector. Without
+    this, a snapshot replay where interaction_mode=trigger lands before
+    wakeword.enabled=false leaves the agent in trigger mode with no detector —
+    silent RMS fallback.
+    """
+    from lafufu_agent.trigger import InteractionMode
+
+    class _MicWithDetector:
+        def __init__(self):
+            self.wake_detector = None
+
+        def listen_once(self):
+            return ""
+
+    mic = _MicWithDetector()
+    stub = _StubDetector()
+    mic.wake_detector = stub
+
+    svc = AgentService(
+        mic=mic,
+        ollama=FakeOllama(),
+        piper=FakePiper(),
+        nats_url=nats_server,
+        wake_detector=stub,
+        interaction_mode=InteractionMode.TRIGGER,
+    )
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.5)
+
+    nc = await nats.connect(nats_server)
+    await publish_model(
+        nc,
+        f"{topics.CONFIG_CHANGED}.agent.wakeword.enabled",
+        schemas.ConfigChanged(key="agent.wakeword.enabled", value="false", source="test"),
+    )
+    await asyncio.sleep(0.3)
+    await nc.drain()
+
+    # Mode was force-flipped back to continuous BEFORE the detector got
+    # detached — so the agent never sits in trigger-mode with no detector.
+    assert svc._interaction_mode == InteractionMode.CONTINUOUS, (
+        f"expected force-revert to CONTINUOUS; mode={svc._interaction_mode}"
+    )
+    assert svc._mic.wake_detector is None, "detector should have been detached"
+
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)
+
+
+async def test_wakeword_model_swap_auto_attaches_when_enabled_after_startup_loadfail(nats_server):
+    """Finding #3 — recovery footgun after startup load_failed. When the
+    initial detector was None (startup wakeword.load_failed) but the operator
+    intended wakeword to be enabled, swapping the model must build the new
+    detector AND auto-attach it to the mic. Previously, `currently_attached`
+    was False (because `previous=None`), so the new detector was silently
+    orphaned even though the operator's swap implies "fix it and attach".
+    """
+
+    class _Detector:
+        def __init__(self, name, threshold):
+            self.model_name = name
+            self.threshold = threshold
+
+        def feed(self, _data) -> float:
+            return 0.0
+
+        def reset(self) -> None:
+            pass
+
+    class _Mic:
+        def __init__(self):
+            self.wake_detector = None
+
+        def listen_once(self):
+            return ""
+
+    mic = _Mic()
+
+    def detector_factory(name: str, threshold: float):
+        return _Detector(name, threshold)
+
+    svc = AgentService(
+        mic=mic,
+        ollama=FakeOllama(),
+        piper=FakePiper(),
+        nats_url=nats_server,
+        wake_detector=None,  # startup load_failed
+        wake_detector_factory=detector_factory,
+    )
+    # The operator's intent is "wakeword enabled" — this is the cached state
+    # that records whether enabled=true has been seen (defaults to True since
+    # the bootstrap default for agent.wakeword.enabled is true).
+    svc._wakeword_enabled_setting = True
+
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.5)
+
+    nc = await nats.connect(nats_server)
+    await publish_model(
+        nc,
+        f"{topics.CONFIG_CHANGED}.agent.wakeword.model",
+        schemas.ConfigChanged(key="agent.wakeword.model", value="alexa_v0.1", source="test"),
+    )
+    await asyncio.sleep(0.3)
+    await nc.drain()
+
+    assert svc._wake_detector is not None
+    assert svc._mic.wake_detector is not None, (
+        "model swap with enabled=true after startup load_failed must auto-attach"
+    )
+    assert svc._mic.wake_detector is svc._wake_detector
+
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)
+
+
+async def test_wakeword_enabled_publishes_state_event(nats_server):
+    """Finding #4 — silent enabled toggle when detector is None. The handler
+    must publish a state event on `agent.wakeword.state` for every transition,
+    including the bail-with-no-detector path, so the UI/operator has an
+    external signal of the actual attached state (not just journalctl).
+    """
+    import json
+
+    class _MicWithDetector:
+        def __init__(self):
+            self.wake_detector = None
+
+        def listen_once(self):
+            return ""
+
+    # Sub-test A: with a detector, enabling publishes attached=True.
+    mic = _MicWithDetector()
+    stub = _StubDetector()
+    svc = AgentService(
+        mic=mic,
+        ollama=FakeOllama(),
+        piper=FakePiper(),
+        nats_url=nats_server,
+        wake_detector=stub,
+    )
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.5)
+
+    nc = await nats.connect(nats_server)
+    payloads: list[dict] = []
+
+    async def on_state(msg):
+        payloads.append(json.loads(msg.data.decode("utf-8")))
+
+    # Literal topic string per Finding #4 fix (TODO: move to topics.py later).
+    await nc.subscribe("agent.wakeword.state", cb=on_state)
+
+    await publish_model(
+        nc,
+        f"{topics.CONFIG_CHANGED}.agent.wakeword.enabled",
+        schemas.ConfigChanged(key="agent.wakeword.enabled", value="true", source="test"),
+    )
+    await asyncio.sleep(0.3)
+    await nc.drain()
+
+    assert len(payloads) >= 1, "wakeword.state must be published on transition"
+    last = payloads[-1]
+    assert "enabled" in last and isinstance(last["enabled"], bool)
+    assert "attached" in last and isinstance(last["attached"], bool)
+    assert last["enabled"] is True
+    assert last["attached"] is True
+
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)
+
+
+async def test_wakeword_enabled_publishes_state_event_no_detector(nats_server):
+    """Sub-test B for Finding #4: when wake_detector is None, enabled=true
+    must STILL publish an event — with attached=False and a non-empty reason —
+    so the operator sees the discrepancy in the UI."""
+    import json
+
+    class _MicNoDetector:
+        def __init__(self):
+            self.wake_detector = None
+
+        def listen_once(self):
+            return ""
+
+    mic = _MicNoDetector()
+    svc = AgentService(
+        mic=mic,
+        ollama=FakeOllama(),
+        piper=FakePiper(),
+        nats_url=nats_server,
+        wake_detector=None,  # startup load_failed simulated
+    )
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.5)
+
+    nc = await nats.connect(nats_server)
+    payloads: list[dict] = []
+
+    async def on_state(msg):
+        payloads.append(json.loads(msg.data.decode("utf-8")))
+
+    await nc.subscribe("agent.wakeword.state", cb=on_state)
+
+    await publish_model(
+        nc,
+        f"{topics.CONFIG_CHANGED}.agent.wakeword.enabled",
+        schemas.ConfigChanged(key="agent.wakeword.enabled", value="true", source="test"),
+    )
+    await asyncio.sleep(0.3)
+    await nc.drain()
+
+    # The bail-with-no-detector path must still publish a state event so the
+    # UI can render a "wanted: on, actually: detached" warning.
+    relevant = [p for p in payloads if p.get("enabled") is True]
+    assert relevant, f"expected an enabled=true state event; got {payloads}"
+    bail = relevant[-1]
+    assert bail["attached"] is False, f"detector is None, must be attached=False; got {bail}"
+    assert bail.get("reason"), f"bail path must carry a non-empty reason; got {bail}"
+
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)
+
+
+async def test_interaction_mode_trigger_refused_with_non_callable_feed_attribute(nats_server):
+    """Finding #9 — duck-type guard. The trigger-mode guard tests `wake_detector
+    is not None`, but any non-None value passes — including `object()` which
+    has no `.feed`. A proper detector must duck-type as having a callable
+    `.feed`; otherwise the agent silently falls back to RMS gating.
+    """
+    from lafufu_agent.trigger import InteractionMode
+
+    class _MicWithBogusDetector:
+        def __init__(self):
+            self.wake_detector = object()  # non-None but no .feed
+
+        def listen_once(self):
+            return ""
+
+    mic = _MicWithBogusDetector()
+
+    svc = AgentService(
+        mic=mic,
+        ollama=FakeOllama(),
+        piper=FakePiper(),
+        nats_url=nats_server,
+        interaction_mode=InteractionMode.CONTINUOUS,
+    )
+    assert svc._interaction_mode == InteractionMode.CONTINUOUS
+
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.5)
+
+    nc = await nats.connect(nats_server)
+    await publish_model(
+        nc,
+        f"{topics.CONFIG_CHANGED}.agent.interaction_mode",
+        schemas.ConfigChanged(key="agent.interaction_mode", value="trigger", source="test"),
+    )
+    await asyncio.sleep(0.3)
+
+    # The stricter guard must reject the bare-object stand-in.
+    assert svc._interaction_mode == InteractionMode.CONTINUOUS, (
+        "guard must reject a non-None wake_detector that lacks a callable .feed"
+    )
+
+    await nc.drain()
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)
+
+
 async def test_rebuild_tts_closes_old_player(nats_server):
     """When voice swap produces a new player, the old one's close() must
     be called so PyAudio output streams don't leak on Windows/macOS."""

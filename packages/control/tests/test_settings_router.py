@@ -116,3 +116,59 @@ def test_put_setting_404s_for_bootstrap_internal_key(client_with_engine):
         row = s.get(Setting, "bootstrap.migrations.wakeword_lafufu_v1")
         assert row is not None
         assert row.value == "1"
+
+
+def test_put_internal_key_does_not_leak_via_404_vs_422_split(client):
+    """Lock the response shape for internal `bootstrap.*` keys so the
+    422-vs-404 differential a prober could exploit stays closed.
+
+    A PUT with a body that FAILS Pydantic validation must NOT return 422 for
+    an internal key while returning 404 for a non-existent non-internal key
+    (or vice versa). If those differed, a prober could send garbage to
+    `/api/settings/bootstrap.xxx`, observe 422, and infer the prefix is
+    real-but-protected.
+
+    The current design intentionally lets FastAPI parse the body first (so
+    422 fires for malformed input regardless of key existence), then returns
+    404 only for valid bodies aimed at unknown/internal keys. Both an
+    internal key and an unknown non-internal key produce 422 for invalid
+    bodies — so the prober can't distinguish them via the 422-vs-404 split.
+
+    This test pins that behavior so a future refactor that accidentally
+    reorders the existence check before body validation gets caught."""
+    invalid_bodies = [
+        "not-an-object",  # not a JSON object
+        '"a string"',  # JSON string, not an object
+        "123",  # JSON number
+        "[]",  # JSON array, not an object
+    ]
+    for raw in invalid_bodies:
+        r_internal = client.put(
+            "/api/settings/bootstrap.does_not_exist",
+            content=raw,
+            headers={"Content-Type": "application/json"},
+        )
+        r_unknown = client.put(
+            "/api/settings/agent.does_not_exist",
+            content=raw,
+            headers={"Content-Type": "application/json"},
+        )
+        assert r_internal.status_code == r_unknown.status_code, (
+            f"PUT 422-vs-404 leak for body {raw!r}: "
+            f"internal={r_internal.status_code} unknown={r_unknown.status_code}"
+        )
+        r_internal_patch = client.patch(
+            "/api/settings/bootstrap.does_not_exist",
+            content=raw,
+            headers={"Content-Type": "application/json"},
+        )
+        r_unknown_patch = client.patch(
+            "/api/settings/agent.does_not_exist",
+            content=raw,
+            headers={"Content-Type": "application/json"},
+        )
+        assert r_internal_patch.status_code == r_unknown_patch.status_code, (
+            f"PATCH 422-vs-404 leak for body {raw!r}: "
+            f"internal={r_internal_patch.status_code} "
+            f"unknown={r_unknown_patch.status_code}"
+        )

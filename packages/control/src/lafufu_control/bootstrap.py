@@ -7,7 +7,7 @@ Existing values are never overwritten.
 import logging
 
 from lafufu_shared.prompts import DEFAULT_SYSTEM_PROMPT
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlmodel import Session, select
 
 from .models.setting import Setting
@@ -330,23 +330,28 @@ def _migrate_wakeword_lafufu_v1(engine) -> None:
                 description="Flag - migration that flipped agent.wakeword.* defaults to the trained lafufu model. Do not delete.",
             )
         )
+        # Emit the `skipped` diagnostic BEFORE attempting commit so operators
+        # always see the breadcrumb pointing at their override/typo — even on
+        # the race-rollback path below where commit raises and we return early.
+        if skipped:
+            log.info(
+                "bootstrap.migration.wakeword_lafufu_v1.skipped keys=%s — values don't match pre-PR defaults (operator override or typo)",
+                skipped,
+            )
         try:
             s.commit()
-        except IntegrityError:
-            # Parallel control process beat us to inserting the flag row. The
-            # winner's migration already ran; we just no-op so the loser
-            # doesn't crash the control service on boot.
+        except (IntegrityError, OperationalError):
+            # Parallel control process beat us to inserting the flag row, OR
+            # SQLite's busy_timeout (WAL mode) expired waiting for the writer
+            # lock. Both look like "another instance is migrating right now";
+            # the winner's migration will have written/will write the flag, so
+            # we no-op rather than crashing the control service on boot.
             s.rollback()
             log.info(
-                "bootstrap.migration.wakeword_lafufu_v1.race_caught — another control instance migrated; no-op"
+                "bootstrap.migration.wakeword_lafufu_v1.race_caught — another control instance migrated or held the write lock; no-op"
             )
             return
         if updated:
             log.info("bootstrap.migration.wakeword_lafufu_v1.applied keys=%s", updated)
         else:
             log.info("bootstrap.migration.wakeword_lafufu_v1.flag_only (no eligible rows)")
-        if skipped:
-            log.info(
-                "bootstrap.migration.wakeword_lafufu_v1.skipped keys=%s — values don't match pre-PR defaults (operator override or typo)",
-                skipped,
-            )
