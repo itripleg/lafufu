@@ -36,3 +36,24 @@ def test_setting_key_unique(db):
         s.add(Setting(key="dup", value="b", value_type="str"))
         with pytest.raises(IntegrityError):
             s.commit()
+
+
+def test_backup_db_creates_rotating_copies(tmp_path):
+    db = tmp_path / "db.sqlite"
+    eng = create_engine_for_path(str(db))
+    init_db(eng)
+    from lafufu_control.db import backup_db
+
+    for _ in range(9):
+        backup_db(str(db), keep=7)
+    backups = sorted((tmp_path / "backups").glob("db-*.sqlite"))
+    assert 1 <= len(backups) <= 7, f"rotation must cap the count at 7; got {len(backups)}"
+    assert len(backups) == 7, f"9 distinct backups must prune to exactly keep=7; got {len(backups)}"
+    # A backup is a valid, openable SQLite file with the schema.
+    import sqlite3
+
+    con = sqlite3.connect(str(backups[-1]))
+    try:
+        assert con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    finally:
+        con.close()

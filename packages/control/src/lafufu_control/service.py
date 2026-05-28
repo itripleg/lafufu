@@ -16,7 +16,7 @@ from .animation.seed import seed_animations
 from .api.app import create_app
 from .api.ws_bridge import WsBridge
 from .bootstrap import seed_default_settings
-from .db import create_engine_for_path, init_db
+from .db import backup_db, create_engine_for_path, init_db
 from .models.chat import ChatMessage
 from .models.expression import Expression
 from .models.frame import Frame
@@ -133,6 +133,7 @@ class ControlService(BaseService):
         engine = create_engine_for_path(str(settings.db_path()))
         self._engine = engine
         init_db(engine)
+        backup_db(str(settings.db_path()))
         seed_default_settings(engine)
         seed_animations(engine)
         # Publish the idle expression so the animator can cache it as its fallback —
