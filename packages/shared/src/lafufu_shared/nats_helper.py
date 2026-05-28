@@ -14,6 +14,22 @@ log = logging.getLogger(__name__)
 _RETRY_DELAYS_S = (1, 2, 5, 10, 30)
 
 
+async def _on_disconnected() -> None:
+    log.warning("nats.disconnected")
+
+
+async def _on_reconnected() -> None:
+    log.info("nats.reconnected")
+
+
+async def _on_closed() -> None:
+    log.warning("nats.closed")
+
+
+async def _on_error(e: Exception) -> None:
+    log.warning("nats.error error=%s", e)
+
+
 async def connect_with_retry(
     url: str = "nats://localhost:4222", *, name: str = "lafufu-svc"
 ) -> NATS:
@@ -28,6 +44,10 @@ async def connect_with_retry(
                 max_reconnect_attempts=-1,
                 ping_interval=10,
                 max_outstanding_pings=3,
+                error_cb=_on_error,
+                disconnected_cb=_on_disconnected,
+                reconnected_cb=_on_reconnected,
+                closed_cb=_on_closed,
             )
             log.info("nats.connected name=%s url=%s", name, url)
             return client

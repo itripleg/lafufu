@@ -63,3 +63,21 @@ async def test_subscribe_drops_invalid_payload(nats_server, caplog):
     await asyncio.sleep(0.1)
     await nc.drain()
     assert got == []
+
+
+async def test_connect_wires_lifecycle_callbacks(monkeypatch):
+    captured: dict = {}
+
+    async def fake_connect(url, **kwargs):
+        captured.update(kwargs)
+
+        class _FakeClient:
+            pass
+
+        return _FakeClient()
+
+    monkeypatch.setattr(nats_helper.nats, "connect", fake_connect)
+    await nats_helper.connect_with_retry("nats://localhost:4222", name="t")
+    for cb in ("disconnected_cb", "reconnected_cb", "closed_cb", "error_cb"):
+        assert captured.get(cb) is not None, f"{cb} must be passed to nats.connect"
+        assert callable(captured[cb]), f"{cb} must be callable"
