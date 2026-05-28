@@ -174,3 +174,9 @@ def test_deleting_active_upload_falls_back_to_white(client):
     listing = client.get("/api/printer/letterheads").json()["items"]
     active = next(i for i in listing if i["active"])
     assert active["name"] == "white.png"
+
+
+def test_compose_rejects_overlong_text(client):
+    """POST /api/printer/compose with text > 4000 chars must return 422."""
+    r = client.post("/api/printer/compose", json={"text": "a" * 4001})
+    assert r.status_code == 422

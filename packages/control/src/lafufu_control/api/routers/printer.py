@@ -24,7 +24,7 @@ from lafufu_shared.paths import (
     printer_fonts_upload_dir,
     printer_uploads_dir,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..image_library import (
     atomic_write as _atomic_write,
@@ -370,7 +370,8 @@ def print_letterhead(req: Request):
 
 
 class ComposeReq(BaseModel):
-    text: str
+    # Matches DB column cap; prevents oversized PIL composite.
+    text: str = Field(max_length=4000)
     lucky_subway_stop: str | None = None
     lucky_numbers: list[int] | None = None
 

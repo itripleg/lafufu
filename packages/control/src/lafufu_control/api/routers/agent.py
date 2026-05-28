@@ -7,7 +7,7 @@ from typing import Literal
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 _EMOTIONS = Literal["happy", "sad", "angry", "surprised", "neutral", "agree", "disagree"]
 
@@ -191,11 +191,13 @@ async def list_whisper_models(_: Request):
 
 
 class TextMessageBody(BaseModel):
-    text: str
+    # Spoken/chat text is short; bound prevents oversized NATS payloads.
+    text: str = Field(max_length=2000)
 
 
 class SpeakTextBody(BaseModel):
-    text: str
+    # Spoken/chat text is short; bound prevents oversized NATS payloads.
+    text: str = Field(max_length=2000)
     emotion: _EMOTIONS = "neutral"
 
 
