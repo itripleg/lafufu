@@ -1461,9 +1461,11 @@ async def test_shutdown_awaits_mic_loop_before_closing_mic(nats_server):
     await asyncio.wait_for(task, timeout=3)
 
     assert "close" in close_order, "mic.close() must be called on shutdown"
-    if "task_done" in close_order:
-        task_idx = close_order.index("task_done")
-        close_idx = close_order.index("close")
-        assert task_idx < close_idx, (
-            f"mic_loop task must be done BEFORE mic.close(); order={close_order}"
-        )
+    assert "task_done" in close_order, (
+        f"mic_loop task must be awaited-done before mic.close(); order={close_order}"
+    )
+    task_idx = close_order.index("task_done")
+    close_idx = close_order.index("close")
+    assert task_idx < close_idx, (
+        f"mic_loop task must be done BEFORE mic.close(); order={close_order}"
+    )
