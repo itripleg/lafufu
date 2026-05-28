@@ -38,6 +38,57 @@ def test_setting_key_unique(db):
             s.commit()
 
 
+def test_check_schema_version_stamps_fresh_db(db, caplog):
+    from lafufu_control.db import CURRENT_SCHEMA_VERSION, check_schema_version
+    from lafufu_control.models.setting import Setting
+    from sqlmodel import Session
+
+    with caplog.at_level("WARNING"):
+        check_schema_version(db)
+    with Session(db) as s:
+        row = s.get(Setting, "bootstrap.schema_version")
+    assert row is not None
+    assert int(row.value) == CURRENT_SCHEMA_VERSION
+    assert "schema" not in caplog.text.lower()  # fresh stamp must NOT warn
+
+
+def test_check_schema_version_warns_when_db_older(db, caplog):
+    from lafufu_control.db import CURRENT_SCHEMA_VERSION, check_schema_version
+    from lafufu_control.models.setting import Setting
+    from sqlmodel import Session
+
+    with Session(db) as s:
+        s.add(
+            Setting(
+                key="bootstrap.schema_version",
+                value=str(CURRENT_SCHEMA_VERSION - 1),
+                value_type="int",
+            )
+        )
+        s.commit()
+    with caplog.at_level("WARNING"):
+        check_schema_version(db)  # must NOT raise
+    assert "schema" in caplog.text.lower()
+
+
+def test_check_schema_version_refuses_when_db_newer(db):
+    from lafufu_control.db import CURRENT_SCHEMA_VERSION, check_schema_version
+    from lafufu_control.models.setting import Setting
+    from sqlmodel import Session
+
+    with Session(db) as s:
+        s.add(
+            Setting(
+                key="bootstrap.schema_version",
+                value=str(CURRENT_SCHEMA_VERSION + 1),
+                value_type="int",
+            )
+        )
+        s.commit()
+    with pytest.raises(RuntimeError):
+        check_schema_version(db)
+
+
 def test_backup_db_creates_rotating_copies(tmp_path):
     db = tmp_path / "db.sqlite"
     eng = create_engine_for_path(str(db))

@@ -7,6 +7,50 @@ from sqlmodel import Session, SQLModel, create_engine
 
 log = logging.getLogger(__name__)
 
+CURRENT_SCHEMA_VERSION = 1
+_SCHEMA_VERSION_KEY = "bootstrap.schema_version"
+
+
+def check_schema_version(engine) -> None:
+    """Compare the code's CURRENT_SCHEMA_VERSION against the value stored in the
+    DB (Setting key ``bootstrap.schema_version``).
+
+    - absent  -> stamp current (fresh DB), no warning
+    - older   -> log a loud warning (DB is behind the code; manual migration needed)
+    - newer   -> raise RuntimeError (DB written by newer code; refuse to start)
+    """
+    from sqlmodel import Session
+
+    from .models.setting import Setting
+
+    with Session(engine) as s:
+        row = s.get(Setting, _SCHEMA_VERSION_KEY)
+        if row is None:
+            s.add(
+                Setting(
+                    key=_SCHEMA_VERSION_KEY,
+                    value=str(CURRENT_SCHEMA_VERSION),
+                    value_type="int",
+                )
+            )
+            s.commit()
+            return
+        stored = int(row.value)
+    if stored < CURRENT_SCHEMA_VERSION:
+        log.warning(
+            "db.schema.outdated stored=%d code=%d — a manual migration may be "
+            "needed; the startup backup is in <data_dir>/backups/",
+            stored,
+            CURRENT_SCHEMA_VERSION,
+        )
+    elif stored > CURRENT_SCHEMA_VERSION:
+        raise RuntimeError(
+            f"DB schema_version={stored} is NEWER than this code "
+            f"(CURRENT_SCHEMA_VERSION={CURRENT_SCHEMA_VERSION}). Refusing to start "
+            f"to avoid corrupting a database written by a newer release. Deploy "
+            f"matching code or restore an older backup."
+        )
+
 
 def create_engine_for_path(path: str):
     engine = create_engine(
