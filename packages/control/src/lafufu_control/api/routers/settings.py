@@ -1,7 +1,7 @@
 """Settings CRUD. PATCH/PUT publish `config.changed.<key>` to NATS."""
 
 import json
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
@@ -34,7 +34,7 @@ def is_internal_key(key: str) -> bool:
 
 class SettingIn(BaseModel):
     value: Any
-    value_type: str = "str"
+    value_type: Literal["str", "int", "float", "bool", "json"] = "str"
 
 
 class SettingOut(BaseModel):

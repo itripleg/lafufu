@@ -172,3 +172,14 @@ def test_put_internal_key_does_not_leak_via_404_vs_422_split(client):
             f"internal={r_internal_patch.status_code} "
             f"unknown={r_unknown_patch.status_code}"
         )
+
+
+def test_put_rejects_unknown_value_type(client):
+    r = client.put("/api/settings/agent.tts.speed", json={"value": 0.85, "value_type": "jsonn"})
+    assert r.status_code == 422, f"unknown value_type must be 422, got {r.status_code}"
+
+
+def test_put_accepts_known_value_types(client):
+    for vt in ("str", "int", "float", "bool", "json"):
+        r = client.put(f"/api/settings/k.{vt}", json={"value": "1", "value_type": vt})
+        assert r.status_code == 200, f"{vt} should be accepted, got {r.status_code}"

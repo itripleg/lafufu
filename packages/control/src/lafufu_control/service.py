@@ -330,8 +330,11 @@ class ControlService(BaseService):
         self._server = uvicorn.Server(config)
 
     async def _rebroadcast_all_settings(self, engine) -> None:
-        with Session(engine) as s:
-            rows = list(s.exec(select(Setting)).all())
+        def _read_rows():
+            with Session(engine) as s:
+                return list(s.exec(select(Setting)).all())
+
+        rows = await asyncio.to_thread(_read_rows)
         for row in rows:
             payload = {
                 "key": row.key,

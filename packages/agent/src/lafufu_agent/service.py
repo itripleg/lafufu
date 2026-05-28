@@ -359,7 +359,9 @@ class AgentService(BaseService):
         except (TypeError, ValueError):
             self.log.warning("speaker.volume.bad_value value=%r", msg.value)
             return
-        ok, detail = _set_alsa_volume(self._speaker_card, self._speaker_control, pct)
+        ok, detail = await asyncio.to_thread(
+            _set_alsa_volume, self._speaker_card, self._speaker_control, pct
+        )
         if ok:
             self.log.info("speaker.volume.set pct=%d", pct)
         else:
