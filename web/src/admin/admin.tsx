@@ -7,6 +7,7 @@ import { BodyPanel } from "./body_panel";
 import { ChatLog } from "./chat_log";
 import { ServiceStatus } from "./service_status";
 import { SettingsForm } from "./settings_form";
+import { StudioSection } from "./studio_section";
 import { SystemPulse } from "./system_pulse";
 
 /**
@@ -14,11 +15,12 @@ import { SystemPulse } from "./system_pulse";
  * developer) needs in a single pane. Layout is asymmetric on desktop and
  * stacks cleanly on mobile.
  */
-type AdminTab = "chat" | "body" | "settings" | "status";
+type AdminTab = "chat" | "body" | "studio" | "settings" | "status";
 
 const ADMIN_TABS: { id: AdminTab; label: string; accent: string }[] = [
   { id: "chat", label: "Chat", accent: "var(--c-moss)" },
   { id: "body", label: "Body", accent: "var(--c-iris)" },
+  { id: "studio", label: "Studio", accent: "var(--c-coral)" },
   { id: "settings", label: "Settings", accent: "var(--c-amber)" },
   { id: "status", label: "Status", accent: "var(--c-mauve)" },
 ];
@@ -279,6 +281,9 @@ const Admin: Component = () => {
         </div>
         <div style={{ display: tab() === "body" ? "block" : "none" }}>
           <BodyPanel nats={nats} />
+        </div>
+        <div style={{ display: tab() === "studio" ? "block" : "none" }}>
+          <StudioSection nats={nats} />
         </div>
         <div style={{ display: tab() === "settings" ? "block" : "none" }}>
           <SettingsForm onDraftCountChange={refreshDraftCount} />
