@@ -1408,3 +1408,62 @@ async def test_rebuild_tts_closes_old_player(nats_server):
 
     svc._shutdown.set()
     await asyncio.wait_for(task, timeout=3)
+
+
+async def test_shutdown_awaits_mic_loop_before_closing_mic(nats_server):
+    """on_shutdown must await _mic_loop_task before calling mic.close() so the
+    loop cannot race mic.close() (e.g. still in run_in_executor calling the mic
+    after the fd is released).  Track the call order with a close_order list."""
+    close_order: list[str] = []
+
+    class _OrderTrackingMic:
+        """Records whether 'task_done' was appended before 'close'."""
+
+        def __init__(self):
+            self._task_done = False
+
+        def mark_task_done(self):
+            self._task_done = True
+            close_order.append("task_done")
+
+        def close(self):
+            close_order.append("close")
+
+        def listen_once(self):
+            # Block long enough that the mic loop is still in flight when
+            # shutdown begins.
+            import time as _t
+
+            _t.sleep(60)
+            return ""
+
+    mic = _OrderTrackingMic()
+    svc = AgentService(
+        mic=mic,
+        ollama=FakeOllama(),
+        piper=FakePiper(),
+        nats_url=nats_server,
+    )
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.3)
+    # Start the mic loop so _mic_loop_task is non-None.
+    svc.start_mic_loop()
+    await asyncio.sleep(0.1)  # let the mic loop enter listen_once
+
+    # Patch: when the task is cancelled and the CancelledError propagates out of
+    # listen_once's run_in_executor call, mark task_done BEFORE close is called.
+    # We accomplish this by monkey-patching _mic_loop_task's done-callback after
+    # we know it exists.
+    assert svc._mic_loop_task is not None, "_mic_loop_task should be set after start_mic_loop()"
+    svc._mic_loop_task.add_done_callback(lambda _: mic.mark_task_done())
+
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)
+
+    assert "close" in close_order, "mic.close() must be called on shutdown"
+    if "task_done" in close_order:
+        task_idx = close_order.index("task_done")
+        close_idx = close_order.index("close")
+        assert task_idx < close_idx, (
+            f"mic_loop task must be done BEFORE mic.close(); order={close_order}"
+        )

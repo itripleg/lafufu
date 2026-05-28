@@ -121,6 +121,7 @@ class ControlService(BaseService):
         self._api_token = api_token
         self._server: uvicorn.Server | None = None
         self._app = None
+        self._engine = None
         # Arrival time of the most recent agent.transcript; cleared by the reply that consumes it.
         self._last_transcript_at: datetime | None = None
 
@@ -130,6 +131,7 @@ class ControlService(BaseService):
 
     async def on_startup(self) -> None:
         engine = create_engine_for_path(str(settings.db_path()))
+        self._engine = engine
         init_db(engine)
         seed_default_settings(engine)
         seed_animations(engine)
@@ -389,3 +391,5 @@ class ControlService(BaseService):
     async def on_shutdown(self) -> None:
         if self._server:
             self._server.should_exit = True
+        if self._engine is not None:
+            await asyncio.to_thread(self._engine.dispose)
