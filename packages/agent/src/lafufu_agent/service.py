@@ -1,6 +1,7 @@
 """AgentService: BaseService that runs the voice loop and accepts text intents."""
 
 import asyncio
+import json
 import logging
 import subprocess
 import time
@@ -98,21 +99,43 @@ class AgentService(BaseService):
         # Speaker mixer settings; updated live by config.changed.speaker.* subscribers.
         self._speaker_card = "USB"
         self._speaker_control = "PCM"
+        # Cached "operator wants wakeword enabled?" state. Defaults to True
+        # because the bootstrap default for agent.wakeword.enabled is true.
+        # Updated whenever _on_config_wakeword_enabled parses a value, and
+        # read by _on_config_wakeword_model so a model swap after a startup
+        # load_failed (where previous detector is None) can still auto-attach
+        # the freshly-built detector to the mic.
+        self._wakeword_enabled_setting: bool = True
 
     @property
     def nats_url(self) -> str:
         return self._nats_url or super().nats_url
+
+    def _has_usable_wake_detector(self) -> bool:
+        """True only if the mic has a detector that can actually gate audio.
+
+        A bare non-None value (e.g. object()) or a half-initialised stand-in
+        lacking a callable .feed is NOT usable — trigger mode would crash at
+        the first audio frame. Shared by the on_startup guard, the
+        interaction_mode config guard, and the mic loop so all three agree on
+        what counts as a real detector.
+        """
+        wd = getattr(self._mic, "wake_detector", None)
+        return wd is not None and callable(getattr(wd, "feed", None))
 
     async def on_startup(self) -> None:
         # Fail loud if trigger mode is requested without a wake-gated mic —
         # the loop would otherwise silently fall back to continuous-ish RMS,
         # which is not what was asked for.
         if self._interaction_mode == InteractionMode.TRIGGER and (
-            getattr(self._mic, "wake_detector", None) is None
+            not self._has_usable_wake_detector()
         ):
             raise RuntimeError(
-                "interaction_mode=trigger requires a wake-word-gated mic; "
-                "set LAFUFU_WAKEWORD_ENABLED=1 and configure LAFUFU_WAKEWORD_MODEL."
+                "interaction_mode=trigger requires a wake-word-gated mic, but no "
+                "wake_detector was attached. Check the agent's startup log for "
+                "`wakeword.load_failed`, verify `agent.wakeword.model` points at a "
+                "loadable openwakeword model, and re-run `uv sync` if `openwakeword` "
+                "itself is missing."
             )
 
         await self._publish_state("warming")
@@ -143,6 +166,20 @@ class AgentService(BaseService):
             self.nats, self._mic, self._ollama, self._piper, self._speaker_play
         )
         await self._publish_state("idle")
+        # Finding #4 — publish the initial wakeword wiring state so subscribers
+        # render the current "wanted vs. attached" view as soon as the agent
+        # is up. The cached enabled-setting defaults to True (matches the
+        # bootstrap default for agent.wakeword.enabled).
+        initial_attached = getattr(self._mic, "wake_detector", None) is not None
+        await self._publish_wakeword_state(
+            enabled=self._wakeword_enabled_setting,
+            attached=initial_attached,
+            reason=(
+                None
+                if initial_attached
+                else ("no_detector_at_startup" if self._wake_detector is None else "detached")
+            ),
+        )
 
         # Subscribe to text-message intent (headless input path — text → LLM → TTS)
         await nats_helper.subscribe_model(
@@ -509,6 +546,20 @@ class AgentService(BaseService):
         except ValueError:
             self.log.warning("agent.interaction_mode.bad_value value=%r", msg.value)
             return
+        # Refuse trigger mode without a usable wake-word-gated mic — otherwise
+        # _trigger_session's wait_for_onset silently falls back to RMS gating
+        # and the operator thinks wake-word is on while it's effectively
+        # bypassed. Mirrors the on_startup hard-fail (same _has_usable_wake_detector
+        # predicate) so snapshot replay can't sneak the agent into a broken
+        # trigger mode, and so a bare object() stand-in can't slip past.
+        if new_mode == InteractionMode.TRIGGER and not self._has_usable_wake_detector():
+            self.log.warning(
+                "agent.interaction_mode=trigger requested but no wake_detector is "
+                "attached — staying in %s. Check wakeword.load_failed logs and "
+                "agent.wakeword.enabled in the admin UI.",
+                self._interaction_mode.value,
+            )
+            return
         if new_mode != self._interaction_mode:
             self.log.info(
                 "agent.interaction_mode.set value=%s from=%s",
@@ -521,7 +572,7 @@ class AgentService(BaseService):
         if self._wake_detector_factory is None:
             self.log.warning(
                 "agent.wakeword.model.set ignored — no detector factory configured "
-                "(set LAFUFU_WAKEWORD_ENABLED=1 + restart to enable wakeword)"
+                "(openwakeword not importable at startup; re-run `uv sync` and restart)"
             )
             return
         new_name = str(msg.value).strip()
@@ -544,7 +595,13 @@ class AgentService(BaseService):
             previous is not None and getattr(self._mic, "wake_detector", None) is previous
         )
         self._wake_detector = new_detector
-        if currently_attached and hasattr(self._mic, "wake_detector"):
+        # Finding #3 — recovery footgun after startup load_failed. If the
+        # previous detector was None (load_failed at startup) but the operator
+        # intended wakeword enabled (cached in _wakeword_enabled_setting),
+        # `currently_attached` is False — yet the swap clearly means "fix it
+        # and use it". Extend the attach condition to cover that case.
+        should_attach = currently_attached or self._wakeword_enabled_setting
+        if should_attach and hasattr(self._mic, "wake_detector"):
             self._mic.wake_detector = new_detector
         self.log.info("agent.wakeword.model.set value=%s", new_name)
 
@@ -564,23 +621,80 @@ class AgentService(BaseService):
         self._wake_detector.threshold = clamped
         self.log.info("agent.wakeword.threshold.set value=%.3f", clamped)
 
+    async def _publish_wakeword_state(
+        self, *, enabled: bool, attached: bool, reason: str | None = None
+    ) -> None:
+        """Publish the current wakeword state so external listeners (admin UI,
+        operator dashboard) can render a "wanted vs. actually attached" view
+        instead of relying on journalctl. Called from _on_config_wakeword_enabled
+        on every transition (including the bail-with-no-detector path) and from
+        on_startup once initial wiring is settled.
+
+        TODO: move "agent.wakeword.state" to lafufu_shared/topics.py once we
+        confirm the payload shape against the admin UI. Kept as a literal here
+        so this fix stays in-package and doesn't pull a shared-schema change.
+        """
+        # interaction_mode is part of the payload because "attached" alone
+        # can't tell a subscriber whether the detector is actually GATING
+        # audio: in continuous mode an attached detector is ignored. A UI
+        # needs the mode to render "attached but not gating" honestly.
+        payload = {
+            "enabled": enabled,
+            "attached": attached,
+            "interaction_mode": self._interaction_mode.value,
+            "reason": reason,
+        }
+        await self.nats.publish("agent.wakeword.state", json.dumps(payload).encode("utf-8"))
+
     async def _on_config_wakeword_enabled(self, subject: str, msg: schemas.ConfigChanged) -> None:
         v = msg.value
         enabled = v.strip().lower() in ("true", "1", "yes", "on") if isinstance(v, str) else bool(v)
+        # Mirror parsed value into the cached "operator wants enabled?" flag so
+        # later events (e.g. a wakeword.model swap after a startup load_failed)
+        # know whether the operator's intent is enabled, even when the detector
+        # itself is currently None.
+        self._wakeword_enabled_setting = enabled
+
+        # NOTE: detaching the detector while interaction_mode==TRIGGER does NOT
+        # mutate the mode here. An earlier revision force-reverted to CONTINUOUS,
+        # but that was sticky: re-enabling wakeword re-attached the detector yet
+        # left the mode on CONTINUOUS, so the wake word was attached-but-ignored
+        # while the DB still said trigger. Instead, _mic_loop refuses to run a
+        # trigger session without a usable detector (it idles in a degraded
+        # state) — so TRIGGER + detached is safe AND self-corrects the instant
+        # the detector comes back. The mode stays honest to the operator's
+        # stored intent throughout.
 
         if enabled and self._wake_detector is None:
             self.log.warning(
                 "agent.wakeword.enabled=true but no detector was constructed at startup — "
-                "set LAFUFU_WAKEWORD_ENABLED=1 in the service env and restart to import the dep"
+                "check the startup log for `wakeword.load_failed`, then restart the agent"
+            )
+            await self._publish_wakeword_state(
+                enabled=True,
+                attached=False,
+                reason="no_detector_at_startup",
             )
             return
 
         if not hasattr(self._mic, "wake_detector"):
             self.log.warning("mic has no wake_detector attribute — ignoring wakeword toggle")
+            await self._publish_wakeword_state(
+                enabled=enabled,
+                attached=False,
+                reason="mic_lacks_wake_detector_attr",
+            )
             return
 
         self._mic.wake_detector = self._wake_detector if enabled else None
         self.log.info("agent.wakeword.enabled.set value=%s", enabled)
+        # Finding #4 — every transition produces an external state event so
+        # the admin UI can render "wanted vs. attached" without grep-ing logs.
+        await self._publish_wakeword_state(
+            enabled=enabled,
+            attached=self._mic.wake_detector is not None,
+            reason=None,
+        )
 
     async def _on_config_trigger_phrase(self, subject, msg: schemas.ConfigChanged) -> None:
         import dataclasses
@@ -705,6 +819,18 @@ class AgentService(BaseService):
         while not self._shutdown.is_set():
             try:
                 if self._interaction_mode == InteractionMode.TRIGGER:
+                    # Trigger mode REQUIRES a usable wake detector. If one isn't
+                    # attached (operator disabled it, or it load-failed at
+                    # startup), do NOT run a trigger session — wait_for_onset
+                    # would silently fall back to RMS gating, the exact bypass
+                    # this whole change set exists to prevent. Idle in a
+                    # degraded state instead; the loop self-corrects the moment
+                    # a detector is (re-)attached, and interaction_mode stays
+                    # honest to the operator's stored intent.
+                    if not self._has_usable_wake_detector():
+                        await self._publish_state("degraded")
+                        await asyncio.sleep(1.0)
+                        continue
                     await self._trigger_session()
                 else:
                     await self._voice_cycle_with_split_lock()

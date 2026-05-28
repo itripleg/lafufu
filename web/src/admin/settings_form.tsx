@@ -98,11 +98,14 @@ const DYNAMIC_OPTIONS: Record<string, () => Promise<OptionEntry[]>> = {
     "happy", "sad", "angry", "surprised", "neutral", "agree", "disagree",
   ],
   "agent.trigger.print_mode": async () => ["none", "auto", "ask"],
-  // openwakeword's bundled default models. When a custom hey_lafufu.onnx
-  // lands in assets/wakeword/ (per the training scaffold), this should
-  // switch to a /api/agent/wakeword-models endpoint that enumerates the
-  // directory like /voices does.
+  // The trained "hey lafufu" model ships in the repo at assets/wakeword/lafufu.onnx
+  // and is the bootstrap default. Other entries are openwakeword's bundled
+  // fallbacks. The agent's resolve_model_ref() anchors the relative path to the
+  // workspace root so this string works regardless of CWD. TODO: switch to a
+  // /api/agent/wakeword-models endpoint that enumerates assets/wakeword/*.onnx
+  // alongside the bundled names, like /voices does.
   "agent.wakeword.model": async () => [
+    { value: "assets/wakeword/lafufu.onnx", label: "hey lafufu (custom)" },
     "hey_jarvis_v0.1",
     "alexa_v0.1",
     "hey_mycroft_v0.1",
@@ -333,6 +336,13 @@ export const SettingsForm: Component<Props> = (props) => {
     if (fail === 0) toast.ok(`reset ${ok} setting${ok === 1 ? "" : "s"}`);
     else toast.warn(`reset ${ok}, failed ${fail}`);
   };
+
+  // Wrapping widgetFor in a Component breaks Solid's auto-memoization of
+  // `{widgetFor(row)}` inside JSX — without this, every keystroke triggers
+  // re-evaluation of the whole branch and remounts the input element, killing
+  // focus. The Component boundary makes the call a one-shot at mount and
+  // delegates further reactivity to per-attribute bindings.
+  const Widget = (props: { row: Row }) => widgetFor(props.row);
 
   const widgetFor = (row: Row) => {
     const opts = dynamicOptions()[row.key];
@@ -771,7 +781,7 @@ export const SettingsForm: Component<Props> = (props) => {
                 </div>
 
                 <div style={{ display: "flex", "align-items": "center", gap: "10px" }}>
-                  {widgetFor(row)}
+                  <Widget row={row} />
                 </div>
 
                 <Show when={row.description}>

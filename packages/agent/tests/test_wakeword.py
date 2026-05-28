@@ -171,6 +171,54 @@ def test_wait_for_onset_fires_on_wakeword_hit():
     assert detector.reset_calls == 1
 
 
+def test_wait_for_onset_snapshots_detector_against_mid_wait_detach():
+    """Finding #1 — a wait that starts wake-gated must STAY wake-gated even if
+    the operator detaches the detector (agent.wakeword.enabled=false) while the
+    wait is blocked. Without snapshotting, wait_for_onset re-reads
+    self.wake_detector per chunk; once it's None mid-wait the loop falls to RMS
+    and fires a session on plain speech the operator just tried to gate off.
+    """
+
+    class _DetachingDetector:
+        """Detaches itself from the mic on the FIRST feed (simulating an
+        operator toggling wakeword off mid-wait), then fires on the 3rd feed.
+        If the snapshot works, the detector keeps being fed past the detach
+        and fires via wake-gating (fed >= 3). If the per-chunk re-read bug is
+        present, feed is called once, self.wake_detector goes None, and the
+        loop falls to RMS — fed stays at 1.
+        """
+
+        threshold = 0.5
+
+        def __init__(self):
+            self.fed = 0
+            self.mic = None  # wired after mic construction
+
+        def feed(self, _data) -> float:
+            self.fed += 1
+            if self.mic is not None:
+                self.mic.wake_detector = None  # operator disables mid-wait
+            return 0.9 if self.fed >= 3 else 0.0
+
+        def reset(self) -> None:
+            pass
+
+    detector = _DetachingDetector()
+    stream = _StubStream([b"\x11\x22" * 320] * 6)
+    mic = _make_realmic_with_stub_stream(stream, wake_detector=detector)
+    detector.mic = mic  # let the detector detach itself mid-feed
+
+    started, _pre_roll = mic.wait_for_onset()
+
+    assert started is True
+    # The captured snapshot kept gating on the wake detector after it removed
+    # itself from the mic on feed #1 — so it was fed until it fired on #3.
+    assert detector.fed >= 3, (
+        f"expected wait to stay wake-gated via the entry snapshot (fed>=3); "
+        f"got fed={detector.fed} — per-chunk re-read fell back to RMS"
+    )
+
+
 def test_wait_for_onset_no_wakeword_hit_times_out():
     # Detector never crosses threshold — RealMic should give up after MAX_WAIT_S.
     # Use a small MAX_WAIT_S override so the test stays fast.
@@ -198,3 +246,303 @@ def test_wait_for_onset_falls_back_to_rms_when_no_detector():
 
     assert started is True
     assert len(pre_roll) >= 1
+
+
+# ---------- resolve_model_ref unit tests (iter-1 hardening) ----------
+
+
+def test_resolve_model_ref_empty_returns_empty():
+    """Empty input round-trips to '' so the caller can pick a default."""
+    from lafufu_agent.wakeword import resolve_model_ref
+
+    assert resolve_model_ref("") == ""
+
+
+def test_resolve_model_ref_absolute_path_unchanged(tmp_path):
+    """Absolute paths must pass through unchanged."""
+    from lafufu_agent.wakeword import resolve_model_ref
+
+    abs_path = str(tmp_path / "wake.onnx")
+    assert resolve_model_ref(abs_path) == abs_path
+
+
+def test_resolve_model_ref_bundled_name_unchanged():
+    """Bundled openwakeword names (no separator, no .onnx/.tflite suffix) must
+    pass through so openwakeword resolves them via its own resources dir."""
+    from lafufu_agent.wakeword import resolve_model_ref
+
+    assert resolve_model_ref("hey_jarvis_v0.1") == "hey_jarvis_v0.1"
+    assert resolve_model_ref("alexa_v0.1") == "alexa_v0.1"
+
+
+def test_resolve_model_ref_relative_path_anchors_to_workspace_root():
+    """The whole point of the helper: relative paths must resolve against the
+    lafufu workspace root (directory with pyproject.toml + packages/), NOT
+    the agent's CWD. Without this, launching from any directory other than
+    the repo root crashed the agent at startup."""
+    from pathlib import Path
+
+    from lafufu_agent.wakeword import resolve_model_ref
+
+    resolved = resolve_model_ref("assets/wakeword/lafufu.onnx")
+    p = Path(resolved)
+    assert p.is_absolute(), f"expected absolute path, got {resolved!r}"
+    assert p.name == "lafufu.onnx"
+    # Walk up — the workspace root is whichever ancestor has pyproject.toml.
+    workspace = next(
+        (anc for anc in p.parents if (anc / "pyproject.toml").is_file()),
+        None,
+    )
+    assert workspace is not None, f"no pyproject.toml above {resolved!r}"
+    assert (workspace / "packages").is_dir()
+
+
+def test_resolve_model_ref_onnx_suffix_treated_as_path():
+    """A bare filename ending in .onnx counts as a path — bundled openwakeword
+    names never carry that suffix, so it's an unambiguous path signal."""
+    from pathlib import Path
+
+    from lafufu_agent.wakeword import resolve_model_ref
+
+    resolved = resolve_model_ref("custom.onnx")
+    assert Path(resolved).is_absolute()
+
+
+def test_resolve_model_ref_docstring_clarifies_suffix_means_path():
+    """Lock-in regression guard for the resolve_model_ref docstring.
+
+    The function intentionally routes bare-filename `.onnx` / `.tflite` values
+    through the workspace-root walk rather than passing them to openwakeword
+    as bundled identifiers — openwakeword's bundled names are stems WITHOUT
+    extension, so a suffix is an unambiguous path signal, not a bundled-name
+    signal. Operators who type `my_custom.onnx` thinking it's a bundled name
+    get a workspace-root-prefixed path back, which is confusing without
+    explicit documentation. This test pins the docstring so future edits
+    keep that clarification."""
+    import inspect
+
+    from lafufu_agent.wakeword import resolve_model_ref
+
+    doc = inspect.getdoc(resolve_model_ref) or ""
+    lower = doc.lower()
+    # Docstring must explicitly note that .onnx / .tflite suffixes are
+    # treated as a PATH signal (not a bundled-name signal).
+    assert ".onnx" in lower, "docstring must mention .onnx suffix handling explicitly"
+    assert ".tflite" in lower, "docstring must mention .tflite suffix handling explicitly"
+    # The mention must explicitly contrast with the bundled-name lookup so
+    # operators don't assume .onnx files are bundled identifiers.
+    assert "bundled" in lower, (
+        "docstring must contrast suffix-handling with the bundled-name lookup "
+        "so operators don't type `my_custom.onnx` thinking it's a bundled name"
+    )
+    # The PATH-SIGNAL clarification has to be explicit. Look for a phrase
+    # that ties the suffix directly to the path-resolution branch. A bare
+    # "path" word elsewhere in the docstring (e.g. "Absolute path") doesn't
+    # satisfy the operator-clarity contract.
+    assert (
+        "path signal" in lower
+        or "treated as a path" in lower
+        or "counts as a path" in lower
+        or "interpreted as a path" in lower
+    ), (
+        "docstring must explicitly state that the .onnx/.tflite suffix "
+        "is a path signal (not a bundled-name signal). Found docstring:\n"
+        f"{doc!r}"
+    )
+
+
+def test_resolve_model_ref_handles_cross_platform_absolute_paths():
+    """`Path('/srv/lafufu/...').is_absolute()` is False on Windows;
+    `Path('C:\\\\foo').is_absolute()` is False on POSIX. A cross-platform DB
+    share (or an operator who works on both OSes) would silently misroute,
+    prepending the workspace root to what's already an absolute path. Treat
+    POSIX root paths AND drive-letter paths as absolute regardless of host OS."""
+    import sys
+
+    from lafufu_agent.wakeword import resolve_model_ref
+
+    # POSIX-style absolute path — should pass through unchanged even on Windows.
+    posix_abs = "/srv/lafufu/wake.onnx"
+    assert resolve_model_ref(posix_abs) == posix_abs
+
+    # Backslash-rooted path — on Windows this is "current-drive-relative root"
+    # (i.e. absolute), so it must pass through unchanged. On POSIX it has no
+    # such meaning, so the OS-specific behavior is tested in dedicated tests
+    # below (see test_resolve_model_ref_does_not_treat_lone_backslash_as_absolute_on_posix).
+    backslash_abs = "\\srv\\lafufu\\wake.onnx"
+    if sys.platform == "win32":
+        assert resolve_model_ref(backslash_abs) == backslash_abs
+
+    # Windows-style drive-letter absolute path — should pass through unchanged
+    # even on POSIX (where Path.is_absolute() would return False for it).
+    win_abs = "C:\\models\\wake.onnx"
+    assert resolve_model_ref(win_abs) == win_abs
+
+    # Forward-slash drive-letter (msys/git-bash style) — also absolute.
+    win_abs_fwd = "D:/models/wake.onnx"
+    assert resolve_model_ref(win_abs_fwd) == win_abs_fwd
+
+
+def test_resolve_model_ref_does_not_treat_lone_backslash_as_absolute_on_posix(
+    monkeypatch, tmp_path, caplog
+):
+    """On POSIX a leading backslash is just a weird character in a relative
+    path — NOT an absolute-on-current-drive marker (which is a Windows-only
+    convention). Previously `_looks_absolute_cross_platform` returned True
+    for any '\\\\foo' string regardless of host OS, so the value passed through
+    unchanged and openwakeword tried to load a literal-backslash filename from
+    CWD. Tighten the predicate: backslash-rooted absolute only when running
+    on Windows."""
+    import logging
+
+    from lafufu_agent import wakeword as wakeword_mod
+    from lafufu_agent.wakeword import resolve_model_ref
+
+    # Pretend we're on POSIX regardless of the host the test is running on.
+    monkeypatch.setattr(wakeword_mod.sys, "platform", "linux")
+
+    value = "\\srv\\foo.onnx"
+
+    # Drive the workspace-root walk through an orphan tmp dir so we deterministically
+    # hit the "no workspace marker" branch (a) without depending on the real repo
+    # layout and (b) so the result is the original value (NOT a workspace-prefixed
+    # path), proving we did NOT take the "absolute, pass through" shortcut — instead
+    # we took the relative-path branch, which is what the fix demands.
+    orphan_start = tmp_path / "deeply" / "nested" / "wakeword.py"
+    orphan_start.parent.mkdir(parents=True)
+    orphan_start.write_text("# fake")
+
+    with caplog.at_level(logging.WARNING, logger="lafufu_agent.wakeword"):
+        result = resolve_model_ref(value, walk_start=orphan_start)
+
+    # The relative-path branch was taken: walk-start ran, found nothing,
+    # logged a warning. Under the OLD (buggy) behavior the function would
+    # have short-circuited on _looks_absolute_cross_platform and returned
+    # WITHOUT emitting any warning.
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert warnings, (
+        "expected the value to be routed through the workspace-root walk "
+        "(and emit the 'no workspace root' warning) — instead it was treated "
+        "as absolute and short-circuited"
+    )
+    # Same fall-through path as the existing "no workspace root" test: value
+    # is returned unchanged after the warning. We don't require a transform
+    # here — just that the absolute-shortcut did NOT happen.
+    assert result == value
+
+
+def test_resolve_model_ref_strips_whitespace(tmp_path):
+    """Env-var / copy-paste leaves leading/trailing whitespace that breaks
+    Path(...).is_absolute() and routes the value down the wrong branch. Strip
+    once at the top so all downstream branches see a clean value."""
+    from pathlib import Path
+
+    from lafufu_agent.wakeword import resolve_model_ref
+
+    # Bundled name with surrounding whitespace → strip, no path resolution.
+    assert resolve_model_ref("  hey_jarvis_v0.1  ") == "hey_jarvis_v0.1"
+
+    # Relative .onnx path with whitespace → strip, then resolve to absolute.
+    resolved = resolve_model_ref("  assets/wakeword/lafufu.onnx  ")
+    p = Path(resolved)
+    assert p.is_absolute(), f"expected absolute path, got {resolved!r}"
+    assert p.name == "lafufu.onnx"
+
+    # Whitespace-only is effectively empty.
+    assert resolve_model_ref("   ") == ""
+
+
+def test_resolve_model_ref_warns_when_no_workspace_root_found(tmp_path, caplog):
+    """If the walk-up can't find a pyproject.toml+packages/ marker (e.g. wheel
+    install in site-packages), the function silently returned the value
+    unchanged — reproducing the pre-fix breakage. Now it MUST log a warning so
+    operators can diagnose 'why is the model file not found' without strace."""
+    import logging
+
+    from lafufu_agent.wakeword import resolve_model_ref
+
+    # Simulate the module living somewhere with no workspace ancestor.
+    orphan_start = tmp_path / "deeply" / "nested" / "wakeword.py"
+    orphan_start.parent.mkdir(parents=True)
+    orphan_start.write_text("# fake")
+
+    with caplog.at_level(logging.WARNING, logger="lafufu_agent.wakeword"):
+        result = resolve_model_ref("assets/wakeword/lafufu.onnx", walk_start=orphan_start)
+
+    # Contract: return value unchanged...
+    assert result == "assets/wakeword/lafufu.onnx"
+    # ...AND emit a warning mentioning the value so operators can diagnose.
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert warnings, "expected a WARNING log when workspace root not found"
+    msg = warnings[-1].getMessage()
+    assert "assets/wakeword/lafufu.onnx" in msg
+    assert "workspace" in msg.lower()
+
+
+def test_resolve_model_ref_workspace_root_miss_warning_contains_cwd_hint(tmp_path, caplog):
+    """Lock-in regression guard: the warning emitted when the workspace-root
+    walk fails MUST include a hint that openwakeword will try to load the value
+    against CWD. The agent might still boot successfully in an editable install
+    where CWD happens to be the repo root, so the warning has to give operators
+    enough breadcrumb to (a) understand why the warning is firing every boot
+    and (b) know that the system might still work. Without the CWD hint, a
+    future refactor could drop the guidance and produce mysterious noise."""
+    import logging
+
+    from lafufu_agent.wakeword import resolve_model_ref
+
+    orphan_start = tmp_path / "deeply" / "nested" / "wakeword.py"
+    orphan_start.parent.mkdir(parents=True)
+    orphan_start.write_text("# fake")
+
+    with caplog.at_level(logging.WARNING, logger="lafufu_agent.wakeword"):
+        resolve_model_ref("assets/wakeword/lafufu.onnx", walk_start=orphan_start)
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert warnings, "expected a WARNING log when workspace root not found"
+    msg = warnings[-1].getMessage()
+    # The hint MUST be present so operators reading the log can connect the
+    # warning to the actual resolution path openwakeword will attempt.
+    assert "CWD" in msg, (
+        f"expected the warning to mention CWD so operators know openwakeword "
+        f"will still try a CWD-relative load — got: {msg!r}"
+    )
+
+
+# ---------- load-failure degrade contract (iter-1 try/except in __main__.py) -
+
+
+def test_load_raises_on_unknown_bundled_name(monkeypatch):
+    """The try/except wrapping make_wake_detector() in __main__.py degrades
+    to RMS-onset on Exception. That contract requires load() to RAISE when
+    given a bad model identifier rather than silently succeeding with a
+    do-nothing detector — otherwise wake-word would silently bypass on a
+    typo. Same goes for the live-swap factory in service.py."""
+    # Use a fake openwakeword Model that raises on bad names, matching the
+    # real openwakeword.Model behavior. We use the fake so the test stays
+    # fast and doesn't require the actual dep to be installed.
+    import types
+
+    class _RaisingModel:
+        def __init__(self, wakeword_models, inference_framework):
+            raise ValueError(
+                f"Could not find pretrained model for model name '{wakeword_models[0]}'"
+            )
+
+    fake_pkg = types.ModuleType("openwakeword")
+    fake_model_mod = types.ModuleType("openwakeword.model")
+    fake_model_mod.Model = _RaisingModel
+    fake_pkg.model = fake_model_mod
+    monkeypatch.setitem(sys.modules, "openwakeword", fake_pkg)
+    monkeypatch.setitem(sys.modules, "openwakeword.model", fake_model_mod)
+
+    from lafufu_agent.wakeword import OpenWakeWordDetector
+
+    det = OpenWakeWordDetector(model_name="this_definitely_does_not_exist")
+    # Match is intentionally loose: the contract under test is "load raises
+    # ValueError on a bad model identifier", NOT a specific copy string. An
+    # upstream openwakeword git-pin bump that reformats the message would
+    # break a stricter regex even though the contract still holds. Accept
+    # any of the plausible phrasings.
+    with pytest.raises(ValueError, match=r"(?i)pretrained model|not found|unknown"):
+        det.load()

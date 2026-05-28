@@ -5,8 +5,9 @@ live confidence bar, and shouts "WAKE!" when the model crosses its threshold.
 Lets you sanity-check the openwakeword integration on a laptop before flashing
 the Pi.
 
-First-run setup:
-    uv sync --package lafufu-agent --extra wakeword
+First-run setup (openwakeword is now in the agent's required deps, so a plain
+sync is sufficient — no extras flag needed):
+    uv sync --all-packages
 
 Run it:
     uv run python scripts/demo_wakeword.py

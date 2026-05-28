@@ -631,13 +631,9 @@ dependencies = [
     { name = "httpx" },
     { name = "lafufu-shared" },
     { name = "openai-whisper" },
+    { name = "openwakeword" },
     { name = "piper-tts" },
     { name = "pyaudio" },
-]
-
-[package.optional-dependencies]
-wakeword = [
-    { name = "openwakeword" },
 ]
 
 [package.metadata]
@@ -647,11 +643,10 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "lafufu-shared", editable = "packages/shared" },
     { name = "openai-whisper", specifier = ">=20231117" },
-    { name = "openwakeword", marker = "extra == 'wakeword'", git = "https://github.com/dscripka/openWakeWord.git?rev=af923e1d" },
+    { name = "openwakeword", git = "https://github.com/dscripka/openWakeWord.git?rev=af923e1d" },
     { name = "piper-tts", specifier = ">=1.2" },
     { name = "pyaudio", specifier = ">=0.2.14" },
 ]
-provides-extras = ["wakeword"]
 
 [[package]]
 name = "lafufu-animator"

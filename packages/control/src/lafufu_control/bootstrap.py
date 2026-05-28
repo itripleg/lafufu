@@ -7,6 +7,7 @@ Existing values are never overwritten.
 import logging
 
 from lafufu_shared.prompts import DEFAULT_SYSTEM_PROMPT
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlmodel import Session, select
 
 from .models.setting import Setting
@@ -103,15 +104,15 @@ DEFAULTS: list[tuple[str, str, str, str]] = [
     ),
     (
         "agent.wakeword.enabled",
-        "false",
+        "true",
         "bool",
         "Whether the wake-word gate is active. When true, the mic ignores everything until the configured keyword fires (Whisper stays idle). Required for trigger mode.",
     ),
     (
         "agent.wakeword.model",
-        "hey_jarvis_v0.1",
+        "assets/wakeword/lafufu.onnx",
         "str",
-        "openwakeword model name (one of the bundled defaults, or a path to a custom .onnx).",
+        "openwakeword model name (one of the bundled defaults, e.g. 'hey_jarvis_v0.1') or a path to a custom .onnx. Relative paths are resolved against the lafufu workspace root (the directory containing pyproject.toml + packages/), not the agent's current working directory.",
     ),
     (
         "agent.wakeword.threshold",
@@ -289,3 +290,68 @@ def seed_default_settings(engine) -> None:
             log.info("settings.seeded count=%d", inserted)
         else:
             log.info("settings.bootstrap.no_new_settings")
+
+    _migrate_wakeword_lafufu_v1(engine)
+
+
+def _migrate_wakeword_lafufu_v1(engine) -> None:
+    """One-time: flip the wakeword defaults to the trained-lafufu values
+    on installs that were bootstrapped before the trained model shipped.
+
+    Only updates rows whose CURRENT value still matches the pre-PR default,
+    so any operator override stays untouched. A flag row records that the
+    migration has run so subsequent boots no-op.
+    """
+    flag_key = "bootstrap.migrations.wakeword_lafufu_v1"
+    pairs = [
+        ("agent.wakeword.enabled", "false", "true"),
+        ("agent.wakeword.model", "hey_jarvis_v0.1", "assets/wakeword/lafufu.onnx"),
+    ]
+    with Session(engine) as s:
+        if s.exec(select(Setting).where(Setting.key == flag_key)).first() is not None:
+            return
+        updated: list[str] = []
+        skipped: list[tuple[str, str]] = []
+        for key, old_value, new_value in pairs:
+            row = s.exec(select(Setting).where(Setting.key == key)).first()
+            if row is None:
+                continue
+            if row.value == old_value:
+                row.value = new_value
+                s.add(row)
+                updated.append(key)
+            else:
+                skipped.append((key, row.value))
+        s.add(
+            Setting(
+                key=flag_key,
+                value="1",
+                value_type="str",
+                description="Flag - migration that flipped agent.wakeword.* defaults to the trained lafufu model. Do not delete.",
+            )
+        )
+        # Emit the `skipped` diagnostic BEFORE attempting commit so operators
+        # always see the breadcrumb pointing at their override/typo — even on
+        # the race-rollback path below where commit raises and we return early.
+        if skipped:
+            log.info(
+                "bootstrap.migration.wakeword_lafufu_v1.skipped keys=%s — values don't match pre-PR defaults (operator override or typo)",
+                skipped,
+            )
+        try:
+            s.commit()
+        except (IntegrityError, OperationalError):
+            # Parallel control process beat us to inserting the flag row, OR
+            # SQLite's busy_timeout (WAL mode) expired waiting for the writer
+            # lock. Both look like "another instance is migrating right now";
+            # the winner's migration will have written/will write the flag, so
+            # we no-op rather than crashing the control service on boot.
+            s.rollback()
+            log.info(
+                "bootstrap.migration.wakeword_lafufu_v1.race_caught — another control instance migrated or held the write lock; no-op"
+            )
+            return
+        if updated:
+            log.info("bootstrap.migration.wakeword_lafufu_v1.applied keys=%s", updated)
+        else:
+            log.info("bootstrap.migration.wakeword_lafufu_v1.flag_only (no eligible rows)")

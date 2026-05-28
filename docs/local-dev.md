@@ -16,8 +16,9 @@ and the SolidJS admin UI. No Pi required. Pi deployment is unaffected.
 ## One-time setup
 
 ```powershell
-# 1. Sync workspace + the optional wakeword extra
-uv sync --all-packages --all-extras
+# 1. Sync workspace (openwakeword is in the agent's required deps now —
+#    no extras flag needed)
+uv sync --all-packages
 
 # 2. Bring up NATS + Ollama (downloads qwen2.5:1.5b on first run, ~1 GB)
 ./scripts/dev-up.ps1
@@ -49,8 +50,6 @@ Serves the API and WS bridge on http://localhost:8080.
 ### Terminal 3 — agent (the voice loop)
 ```powershell
 $env:LAFUFU_PIPER_MODEL    = "$(Resolve-Path .\models\en_US-amy-medium.onnx)"
-$env:LAFUFU_WAKEWORD_ENABLED = "1"
-$env:LAFUFU_WAKEWORD_MODEL   = "hey_jarvis_v0.1"
 $env:LAFUFU_INTERACTION_MODE = "trigger"
 $env:LAFUFU_TRIGGER_ROUNDS   = "2"
 $env:LAFUFU_TRIGGER_PHRASE   = "Tell me what troubles you, traveler."
@@ -59,9 +58,11 @@ $env:LAFUFU_LLM_MODEL        = "qwen2.5:1.5b"
 uv run python -m lafufu_agent
 ```
 
-`hey_jarvis_v0.1` is the openwakeword default until the custom
-`hey_lafufu.onnx` is trained on Maven's box. The `none` print mode skips
-the receipt printer intent (no printer locally).
+The wake word defaults to the trained `assets/wakeword/lafufu.onnx`
+(shipped in repo). Override with `$env:LAFUFU_WAKEWORD_MODEL` to use
+one of the openwakeword bundled defaults (e.g. `hey_jarvis_v0.1`) or
+point at a different `.onnx` path. The `none` print mode skips the
+receipt printer intent (no printer locally).
 
 ### Terminal 4 — Vite dev server (optional, for live reload)
 ```powershell
@@ -78,9 +79,10 @@ serves the built bundle from http://localhost:8080.
 1. Open the admin chat widget — http://localhost:5173/admin (or
    :8080/admin if you skipped Vite).
 2. Watch the agent log — `agent.state.idle` should appear after warmup.
-3. Say **"hey jarvis"** clearly into the mic. The agent transitions to
+3. Say **"hey lafufu"** clearly into the mic. The agent transitions to
    `speaking` and you should hear the opening phrase through your
-   speakers.
+   speakers. (If you set `LAFUFU_WAKEWORD_MODEL=hey_jarvis_v0.1`, say
+   "hey jarvis" instead.)
 4. Speak your first answer when the opening line ends. The widget should
    light up `transcribing` → `thinking` → `speaking` and the
    transcript + reply land in the chat history.
@@ -147,8 +149,6 @@ install via the bootstrap defaults. Once the rows exist, the env
 vars are ignored — change settings via the admin UI instead.
 
 Exceptions (always env-only):
-- `LAFUFU_WAKEWORD_ENABLED` — controls whether `openwakeword` is
-  imported at startup. Process-level decision; can't be a DB toggle.
 - `LAFUFU_INPUT_DEVICE_PREFER` / `_AVOID` — per-host hardware lists;
   surfacing them as DB settings would require multi-host config.
 - `LAFUFU_INPUT_DEVICE` — operator-level override; **always wins** over
