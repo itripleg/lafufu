@@ -3,7 +3,7 @@ import { NatsWs } from "../shared/nats_ws";
 import { Blob } from "../shared/blob";
 import { lsGet, lsKeys, lsRemovePrefix, lsSet } from "../shared/local_storage";
 import { toast } from "../shared/toast";
-import { BodyPanel } from "./body_panel";
+import { HeadPanel } from "./head_panel";
 import { ChatLog } from "./chat_log";
 import { ServiceStatus } from "./service_status";
 import { SettingsForm } from "./settings_form";
@@ -15,11 +15,11 @@ import { SystemPulse } from "./system_pulse";
  * developer) needs in a single pane. Layout is asymmetric on desktop and
  * stacks cleanly on mobile.
  */
-type AdminTab = "chat" | "body" | "studio" | "settings" | "status";
+type AdminTab = "chat" | "head" | "studio" | "settings" | "status";
 
 const ADMIN_TABS: { id: AdminTab; label: string; accent: string }[] = [
   { id: "chat", label: "Chat", accent: "var(--c-moss)" },
-  { id: "body", label: "Body", accent: "var(--c-iris)" },
+  { id: "head", label: "Head", accent: "var(--c-iris)" },
   { id: "studio", label: "Studio", accent: "var(--c-coral)" },
   { id: "settings", label: "Settings", accent: "var(--c-amber)" },
   { id: "status", label: "Status", accent: "var(--c-mauve)" },
@@ -29,7 +29,11 @@ const Admin: Component = () => {
   const nats = new NatsWs();
   const [draftCount, setDraftCount] = createSignal(0);
   const [connState, setConnState] = createSignal<"live" | "pending">("pending");
-  const [tab, setTab] = createSignal<AdminTab>(lsGet<AdminTab>("admin/tab", "chat"));
+  // Guard against a stale persisted tab id (e.g. the old "body") so a renamed
+  // tab can't leave the deck blank — fall back to chat if it's not a known tab.
+  const storedTab = lsGet<AdminTab>("admin/tab", "chat");
+  const initialTab: AdminTab = ADMIN_TABS.some((t) => t.id === storedTab) ? storedTab : "chat";
+  const [tab, setTab] = createSignal<AdminTab>(initialTab);
   const setActiveTab = (t: AdminTab) => { setTab(t); lsSet("admin/tab", t); };
 
   const refreshDraftCount = () => {
@@ -279,8 +283,8 @@ const Admin: Component = () => {
         <div style={{ display: tab() === "chat" ? "block" : "none" }}>
           <ChatLog nats={nats} />
         </div>
-        <div style={{ display: tab() === "body" ? "block" : "none" }}>
-          <BodyPanel nats={nats} />
+        <div style={{ display: tab() === "head" ? "block" : "none" }}>
+          <HeadPanel nats={nats} />
         </div>
         <div style={{ display: tab() === "studio" ? "block" : "none" }}>
           <StudioSection nats={nats} />
