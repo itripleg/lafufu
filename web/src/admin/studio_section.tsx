@@ -112,9 +112,8 @@ const imageUrlOf = (ref: string | null): string | null => {
 type GalleryView = "thumb" | "data";
 
 /** Bundled fallback sprite — used as a frame's thumbnail when it has no image
- *  of its own and the operator hasn't set animator.base_image. Resolves to
- *  assets/images/sprites/base.png via the "default" kind. */
-const BASE_IMAGE_DEFAULT = "sprites/default/base.png";
+ *  of its own and the operator hasn't set animator.base_image. */
+const BASE_IMAGE_DEFAULT = "sprites/default/idle_01.png";
 
 // ─────────────────────────────────────────────────────────────
 // Draggable: gallery frame (drag source — not in sortable list)
