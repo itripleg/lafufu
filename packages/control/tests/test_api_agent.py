@@ -111,3 +111,15 @@ def test_input_devices_enumerates_pyaudio():
     assert [d["name"] for d in devices] == ["auto", "0", "2"]
     assert devices[1]["label"] == "Microphone Array"
     assert devices[2]["label"] == "USB Mic"
+
+
+def test_text_message_rejects_overlong_text(client):
+    """POST /api/agent/text_message with text > 2000 chars must return 422."""
+    r = client.post("/api/agent/text_message", json={"text": "a" * 2001})
+    assert r.status_code == 422
+
+
+def test_speak_text_rejects_overlong_text(client):
+    """POST /api/agent/speak_text with text > 2000 chars must return 422."""
+    r = client.post("/api/agent/speak_text", json={"text": "a" * 2001})
+    assert r.status_code == 422

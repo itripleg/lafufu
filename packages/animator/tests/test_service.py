@@ -270,3 +270,37 @@ async def test_animator_caches_idle_payload_from_play_expression(running_animato
     assert svc._idle_payload is not None
     assert svc._idle_payload.name == "idle"
     assert svc._idle_payload.playback == "random_walk"
+
+
+async def test_shutdown_awaits_tasks_before_closing_bus(nats_server):
+    """On shutdown: all background tasks must be done, torque disabled, and
+    the bus closed — in that order — so no task can write to the bus after
+    torque-off (racy re-energize) and no serial FD is leaked."""
+    bus = FakeDxlBus()
+    servos = ("head_lr", "head_ud", "eye", "jaw", "brow")
+    fast_smooth = {name: 0.001 for name in servos}
+    fast_speeds = {name: 1e7 for name in servos}
+    svc = AnimatorService(
+        bus=bus,
+        nats_url=nats_server,
+        smooth_times=fast_smooth,
+        max_speeds=fast_speeds,
+        stepper_hz=200.0,
+    )
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.4)  # wait for service ready + background tasks started
+
+    # Trigger shutdown the same way existing tests do
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=2)
+
+    assert bus.closed is True, "DxlBus.close() must be called on shutdown"
+    assert bus.torque_disabled is True, "torque must be disabled on shutdown"
+    for t in (
+        svc._stepper_task,
+        svc._pose_publish_task,
+        svc._keyframe_player_task,
+        svc._lipsync_watchdog_task,
+        svc._idle_request_task,
+    ):
+        assert t is None or t.done(), f"background task {t!r} must be done after shutdown"

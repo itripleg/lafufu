@@ -45,6 +45,8 @@ class FakeDxlBus:
         self.torque_disabled_count = 0
         self.torque_enabled_count = 0
         self.limits_configured_count = 0
+        self.closed = False
+        self.torque_disabled = False
 
     def write(self, name: str, position: int) -> None:
         if not self._connected:
@@ -78,9 +80,14 @@ class FakeDxlBus:
 
     def disable_torque(self) -> None:
         self.torque_disabled_count += 1
+        self.torque_disabled = True
 
     def enable_torque(self) -> None:
         self.torque_enabled_count += 1
+        self.torque_disabled = False
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class FakeWhisper:

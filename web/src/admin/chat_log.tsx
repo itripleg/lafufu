@@ -1,7 +1,8 @@
 import { Component, createMemo, createSignal, onCleanup, onMount, For, Show } from "solid-js";
 import { NatsWs } from "../shared/nats_ws";
 import { api, type ChatRow } from "../shared/api";
-import { EMOTION_COLORS, EMOTION_GLYPH, type Emotion } from "../shared/design";
+import { EMOTION_COLORS, type Emotion } from "../shared/design";
+import { LafufuHead } from "../shared/lafufu_head";
 import { lsGet, lsSet } from "../shared/local_storage";
 import { toast } from "../shared/toast";
 import { Panel } from "./panel";
@@ -364,8 +365,16 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
                   {new Date(e.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                 </span>
                 <Show when={e.emotion}>
-                  <span style={{ color: EMOTION_COLORS[e.emotion as Emotion] ?? "var(--c-mist)" }}>
-                    {EMOTION_GLYPH[e.emotion as Emotion]} {e.emotion}
+                  <span
+                    style={{
+                      display: "inline-flex",
+                      "align-items": "center",
+                      gap: "4px",
+                      color: EMOTION_COLORS[e.emotion as Emotion] ?? "var(--c-mist)",
+                    }}
+                  >
+                    <LafufuHead emotion={e.emotion as Emotion} size={16} />
+                    {e.emotion}
                   </span>
                 </Show>
                 <Show when={e.elapsedMs !== undefined}>
@@ -478,8 +487,12 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
               style={{
                 background: `linear-gradient(180deg, ${EMOTION_COLORS[speakEmotion()]} 0%, ${EMOTION_COLORS[speakEmotion()]}cc 100%)`,
                 color: "#1a1410",
+                display: "inline-flex",
+                "align-items": "center",
+                gap: "8px",
               }}
             >
+              <LafufuHead emotion={speakEmotion()} size={20} />
               speak it
             </button>
           </div>

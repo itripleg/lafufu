@@ -16,7 +16,7 @@ from .animation.seed import seed_animations
 from .api.app import create_app
 from .api.ws_bridge import WsBridge
 from .bootstrap import seed_default_settings
-from .db import create_engine_for_path, init_db
+from .db import backup_db, check_schema_version, create_engine_for_path, init_db
 from .models.chat import ChatMessage
 from .models.expression import Expression
 from .models.frame import Frame
@@ -121,6 +121,7 @@ class ControlService(BaseService):
         self._api_token = api_token
         self._server: uvicorn.Server | None = None
         self._app = None
+        self._engine = None
         # Arrival time of the most recent agent.transcript; cleared by the reply that consumes it.
         self._last_transcript_at: datetime | None = None
 
@@ -130,7 +131,13 @@ class ControlService(BaseService):
 
     async def on_startup(self) -> None:
         engine = create_engine_for_path(str(settings.db_path()))
+        self._engine = engine
         init_db(engine)
+        # backup copies the entire DB file (cost grows with data), so run it off
+        # the loop. init_db / check_schema_version / the seeds are schema-bounded
+        # and tiny, and this all runs pre-serving (before the heartbeat task).
+        await asyncio.to_thread(backup_db, str(settings.db_path()))
+        check_schema_version(engine)
         seed_default_settings(engine)
         seed_animations(engine)
         # Publish the idle expression so the animator can cache it as its fallback —
@@ -326,8 +333,11 @@ class ControlService(BaseService):
         self._server = uvicorn.Server(config)
 
     async def _rebroadcast_all_settings(self, engine) -> None:
-        with Session(engine) as s:
-            rows = list(s.exec(select(Setting)).all())
+        def _read_rows():
+            with Session(engine) as s:
+                return list(s.exec(select(Setting)).all())
+
+        rows = await asyncio.to_thread(_read_rows)
         for row in rows:
             payload = {
                 "key": row.key,
@@ -389,3 +399,5 @@ class ControlService(BaseService):
     async def on_shutdown(self) -> None:
         if self._server:
             self._server.should_exit = True
+        if self._engine is not None:
+            await asyncio.to_thread(self._engine.dispose)

@@ -359,7 +359,9 @@ class AgentService(BaseService):
         except (TypeError, ValueError):
             self.log.warning("speaker.volume.bad_value value=%r", msg.value)
             return
-        ok, detail = _set_alsa_volume(self._speaker_card, self._speaker_control, pct)
+        ok, detail = await asyncio.to_thread(
+            _set_alsa_volume, self._speaker_card, self._speaker_control, pct
+        )
         if ok:
             self.log.info("speaker.volume.set pct=%d", pct)
         else:
@@ -481,9 +483,8 @@ class AgentService(BaseService):
         if self._player_factory is not None and new_rate is not None and new_rate != old_rate:
             old_player = self._speaker_play
             self._speaker_play = self._player_factory(new_rate)
-            # _PyAudioPlayer (Windows/macOS dev path) holds an open output
-            # stream + pyaudio.PyAudio() instance. _AplayPlayer and
-            # _NoOpPlayer have no close() — hasattr guards both.
+            # _PyAudioPlayer and _AplayPlayer both implement close(); only
+            # _NoOpPlayer lacks it — hasattr guards that case.
             if hasattr(old_player, "close"):
                 try:
                     old_player.close()
@@ -770,6 +771,12 @@ class AgentService(BaseService):
         await self._publish_state("shutdown")
         if self._mic_loop_task:
             self._mic_loop_task.cancel()
+            try:
+                await self._mic_loop_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                self.log.warning("mic_loop.shutdown.unexpected error=%s", e)
         if hasattr(self._mic, "close"):
             try:
                 self._mic.close()
@@ -777,8 +784,8 @@ class AgentService(BaseService):
                 self.log.warning("mic.close.failed error=%s", e)
         # _PyAudioPlayer (Windows/macOS dev path) holds its own pyaudio.PyAudio
         # instance + open output stream; close so we don't leak across runs.
-        # _AplayPlayer / _NoOpPlayer don't implement close — `hasattr` skips
-        # both, so this is no-op on the Pi.
+        # _PyAudioPlayer and _AplayPlayer both implement close(); only
+        # _NoOpPlayer lacks it and is skipped by `hasattr`.  Runs on the Pi too.
         if hasattr(self._speaker_play, "close"):
             try:
                 self._speaker_play.close()

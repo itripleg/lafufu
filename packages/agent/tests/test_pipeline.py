@@ -100,6 +100,45 @@ def test_aplay_player_uses_dynamic_sample_rate(monkeypatch):
     )
 
 
+def test_aplay_player_close_reaps_subprocess(monkeypatch):
+    """close() must terminate + wait the live aplay proc so it doesn't orphan on shutdown."""
+    from lafufu_agent.__main__ import _AplayPlayer
+
+    events: list[str] = []
+
+    class _FakePopen:
+        def __init__(self, argv, **kwargs):
+            self.stdin = type(
+                "S",
+                (),
+                {
+                    "write": lambda self, b: None,
+                    "flush": lambda self: None,
+                    "close": lambda self: events.append("stdin_close"),
+                },
+            )()
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            events.append("terminate")
+
+        def wait(self, timeout=None):
+            events.append("wait")
+            return 0
+
+    import subprocess as _sp
+
+    monkeypatch.setattr(_sp, "Popen", _FakePopen)
+    player = _AplayPlayer(sample_rate=16000)
+    player.play(b"\x00\x00" * 100)  # opens a proc
+    player.close()
+    assert "terminate" in events, f"close() must terminate the aplay proc; got {events}"
+    assert "wait" in events, f"close() must wait() the aplay proc so it's reaped; got {events}"
+    assert player._proc is None
+
+
 def test_fake_piper_supports_streaming_iteration():
     """FakePiper.synthesize_stream yields chunks one at a time."""
     from lafufu_shared.testing import FakePiper
