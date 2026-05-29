@@ -55,8 +55,11 @@ def get_frames() -> dict[str, dict]:
 def put_frame(name: str, body: dict) -> None:
     data = json.dumps(body).encode()
     req = urllib.request.Request(
-        f"{BASE}/animator/frames/{name}", data=data, method="PUT",
-        headers={"Content-Type": "application/json"})
+        f"{BASE}/animator/frames/{name}",
+        data=data,
+        method="PUT",
+        headers={"Content-Type": "application/json"},
+    )
     urllib.request.urlopen(req, timeout=10).read()
 
 
@@ -64,8 +67,10 @@ def main() -> None:
     try:
         frames = get_frames()
     except urllib.error.URLError as e:
-        sys.exit(f"control service not reachable at {BASE}: {e}\n"
-                 f"start it with:  uv run python -m lafufu_control")
+        sys.exit(
+            f"control service not reachable at {BASE}: {e}\n"
+            f"start it with:  uv run python -m lafufu_control"
+        )
 
     updated, skipped = 0, []
     for name, emotion in FRAME_TO_EMOTION.items():
@@ -74,11 +79,18 @@ def main() -> None:
             skipped.append(name)
             continue
         # Full-replace PUT: resend every field, only swap `image`.
-        put_frame(name, {
-            "head_lr": f["head_lr"], "head_ud": f["head_ud"],
-            "eye": f["eye"], "jaw": f["jaw"], "brow": f["brow"],
-            "image": ref(emotion), "description": f.get("description"),
-        })
+        put_frame(
+            name,
+            {
+                "head_lr": f["head_lr"],
+                "head_ud": f["head_ud"],
+                "eye": f["eye"],
+                "jaw": f["jaw"],
+                "brow": f["brow"],
+                "image": ref(emotion),
+                "description": f.get("description"),
+            },
+        )
         print(f"  {name:18s} -> {ref(emotion)}")
         updated += 1
 
