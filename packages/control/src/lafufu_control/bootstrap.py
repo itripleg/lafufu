@@ -272,6 +272,15 @@ DEFAULTS: list[tuple[str, str, str, str]] = [
         "str",
         "ALSA simple mixer control name on speaker.alsa_card (run `amixer -c <card> scontrols`).",
     ),
+    # System
+    (
+        "btcast.enabled",
+        "true",
+        "bool",
+        "Advertise the Pi's LAN IP as its Bluetooth adapter name (lafufu-btcast service). "
+        "Turn off to stop the Bluetooth IP broadcast — the adapter is hidden within ~30s. "
+        "Honored only on the Pi (the broadcast runs there); no effect in local dev.",
+    ),
 ]
 
 
