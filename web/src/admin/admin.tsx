@@ -272,7 +272,7 @@ const Admin: Component = () => {
                       "pointer-events": "none",
                     }}
                   >
-                    ● {draftCount()}
+                    {draftCount()}
                   </span>
                 </Show>
               </button>

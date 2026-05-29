@@ -1,6 +1,6 @@
 import { Component, createEffect, createMemo, createSignal, onCleanup, onMount, Show } from "solid-js";
 import type { NatsWs } from "../shared/nats_ws";
-import { api } from "../shared/api";
+import { api, type ExpressionDTO, type FrameDTO } from "../shared/api";
 import { emotionToColor } from "../shared/design";
 import { applyDragDelta, axisMid, type DraggableAxis, type ServoRanges } from "./head_drag";
 import { useServoConfig } from "../shared/use_servo_config";
@@ -36,6 +36,16 @@ const EMOTION_SPRITE: Record<string, string> = {
 const spriteUrl = (emotion: string) =>
   api.imageFileUrl("sprites", "default", EMOTION_SPRITE[emotion] ?? EMOTION_SPRITE.neutral);
 
+/** Resolve a "bucket/kind/name" frame image ref to a servable URL. */
+const refToUrl = (ref: string | null): string | null => {
+  if (!ref) return null;
+  const parts = ref.split("/");
+  if (parts.length !== 3) return null;
+  const [bucket, kind, name] = parts;
+  if (bucket !== "letterheads" && bucket !== "sprites") return null;
+  return api.imageFileUrl(bucket as "letterheads" | "sprites", kind, name);
+};
+
 export const PetDevice: Component<{ nats: NatsWs }> = (props) => {
   const config = useServoConfig(props.nats);
 
@@ -60,6 +70,47 @@ export const PetDevice: Component<{ nats: NatsWs }> = (props) => {
     setPopping(true);
     setTimeout(() => setPopping(false), 240);
   });
+
+  // ── frame playback (mirrors the studio) ──
+  // When an emotion arrives, play that expression's frames client-side and
+  // show each frame's image. The animator only moves servos and is dark
+  // without hardware, so the pet drives its own image animation here. Falls
+  // back to the per-emotion sprite when idle or no matching expression.
+  const [playImage, setPlayImage] = createSignal<string | null>(null);
+  let exprList: ExpressionDTO[] = [];
+  let frameMap = new Map<string, FrameDTO>();
+  let playbackTimer: ReturnType<typeof setTimeout> | undefined;
+  const stopFramePlayback = () => {
+    if (playbackTimer !== undefined) { clearTimeout(playbackTimer); playbackTimer = undefined; }
+  };
+  const playEmotionFrames = (emo: string) => {
+    stopFramePlayback();
+    // The animator resolves an emotion to the expression of the same name.
+    const expr = exprList.find((e) => e.name === emo);
+    if (!expr || expr.playback === "random_walk" || expr.steps.length === 0) {
+      setPlayImage(null); // → falls back to the static per-emotion sprite
+      return;
+    }
+    const run = (idx: number) => {
+      const step = expr.steps[idx];
+      const fr = step ? frameMap.get(step.frame) : undefined;
+      const delay = step?.delay_ms ?? expr.default_delay_ms ?? 0;
+      const duration = step?.duration_ms ?? expr.default_duration_ms ?? 200;
+      playbackTimer = setTimeout(() => {
+        if (fr) setPlayImage(refToUrl(fr.image));
+        playbackTimer = setTimeout(() => {
+          const next = idx + 1;
+          if (next >= expr.steps.length) {
+            if (expr.playback === "loop") run(0);
+            else setPlayImage(null); // "once" finished → settle to the sprite
+          } else run(next);
+        }, duration);
+      }, delay);
+    };
+    run(0);
+  };
+  createEffect(() => { playEmotionFrames(emotion()); });
+  onCleanup(stopFramePlayback);
 
   // ── head tilt / servo drive ──
   const [headLr, setHeadLr] = createSignal<number | undefined>(undefined);
@@ -146,6 +197,17 @@ export const PetDevice: Component<{ nats: NatsWs }> = (props) => {
     const preview = new URLSearchParams(window.location.search).get("emotion");
     if (preview && preview in EMOTION_SPRITE) setEmotion(preview);
 
+    // Load expressions + frames so emotions can animate through their frame
+    // images (same data the studio plays). A failed load just leaves the pet
+    // on the static per-emotion sprite.
+    void Promise.all([api.listExpressions(), api.listFrames()])
+      .then(([ex, fr]) => {
+        exprList = ex.items;
+        frameMap = new Map(fr.items.map((f) => [f.name, f]));
+        playEmotionFrames(emotion()); // catch up now that data is loaded
+      })
+      .catch(() => { /* no frame playback — stays on the emotion sprite */ });
+
     const subs: Array<() => void> = [];
     subs.push(props.nats.subscribe("animator.pose", (f) => {
       lastPose = f.payload;
@@ -221,7 +283,7 @@ export const PetDevice: Component<{ nats: NatsWs }> = (props) => {
             }}
           >
             <img
-              src={config() ? spriteUrl(emotion()) : "/lafufu.png"}
+              src={playImage() ?? (config() ? spriteUrl(emotion()) : "/lafufu.png")}
               alt={`lafufu ${statusText()}`}
               draggable={false}
               style={{

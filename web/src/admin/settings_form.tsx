@@ -119,7 +119,16 @@ const DYNAMIC_OPTIONS: Record<string, () => Promise<OptionEntry[]>> = {
     const { devices } = await api.listInputDevices();
     return devices.map((d) => ({ value: d.name, label: d.label }));
   },
+  // Phomemo label media sizes the printer recognizes (the printable-area table
+  // in packages/printer/.../service.py). Custom.WIDTHxHEIGHT is still settable
+  // via direct edit, but the common label stock is a fixed, known set.
+  "printer.media": async () => ["4x6", "4x8", "2x1", "Round108", "Round144"],
 };
+
+/** Settings that only make sense on a Linux host (they drive ALSA via amixer).
+ *  Hidden from the UI when the server reports a non-Linux platform; their
+ *  dropdown options come from the server's enumerated ALSA cards/controls. */
+const LINUX_ONLY_KEYS = new Set(["speaker.alsa_card", "speaker.alsa_control"]);
 
 /** Pure helper: split an OptionEntry into (value, label). */
 export const optionParts = (o: OptionEntry): { value: string; label: string } =>
@@ -161,6 +170,8 @@ export const SettingsForm: Component<Props> = (props) => {
   const [rows, setRows] = createStore<Row[]>([]);
   const [savingKey, setSavingKey] = createSignal<string | null>(null);
   const [dynamicOptions, setDynamicOptions] = createSignal<Record<string, OptionEntry[]>>({});
+  // null = unknown (fetch pending/failed) → don't hide anything (fail-safe).
+  const [serverPlatform, setServerPlatform] = createSignal<string | null>(null);
   const [filter, setFilter] = createSignal("");
   const [tab, setTab] = createSignal<Tab>(lsGet<Tab>("settings/tab", "audio"));
   const setActiveTab = (t: Tab) => { setTab(t); lsSet("settings/tab", t); };
@@ -204,6 +215,14 @@ export const SettingsForm: Component<Props> = (props) => {
       try { out[key] = await fetcher(); }
       catch { /* falls back to free-text */ }
     }
+    // Server audio: platform gates the ALSA pickers (Linux-only); its
+    // enumerated cards/controls become their dropdown options.
+    try {
+      const audio = await api.systemAudio();
+      setServerPlatform(audio.platform);
+      out["speaker.alsa_card"] = audio.alsa_cards;
+      out["speaker.alsa_control"] = audio.alsa_controls;
+    } catch { /* platform stays null → settings remain visible (fail-safe) */ }
     setDynamicOptions(out);
   };
 
@@ -337,40 +356,50 @@ export const SettingsForm: Component<Props> = (props) => {
     else toast.warn(`reset ${ok}, failed ${fail}`);
   };
 
-  // Wrapping widgetFor in a Component breaks Solid's auto-memoization of
-  // `{widgetFor(row)}` inside JSX — without this, every keystroke triggers
-  // re-evaluation of the whole branch and remounts the input element, killing
-  // focus. The Component boundary makes the call a one-shot at mount and
-  // delegates further reactivity to per-attribute bindings.
-  const Widget = (props: { row: Row }) => widgetFor(props.row);
+  // Widget reactively switches from scalar input to dropdown once dynamic
+  // options finish loading. Show tracks the opts memo so the transition
+  // happens automatically — without re-running widgetFor on every keystroke
+  // (which would remount the input and kill focus).
+  const Widget = (props: { row: Row }) => {
+    const opts = createMemo(() => {
+      const o = dynamicOptions()[props.row.key];
+      return o && o.length > 0 ? o : null;
+    });
+    return (
+      <Show when={opts()} fallback={widgetFor(props.row)}>
+        {(currentOpts) => {
+          const o = currentOpts();
+          const known = () => o.some((opt) => optionParts(opt).value === props.row.value);
+          return (
+            <select
+              class={`field ${isDirty(props.row) ? "field--dirty" : ""}`}
+              style={{ flex: 1, cursor: "pointer" }}
+              value={known() ? props.row.value : ""}
+              onChange={(e) => update(props.row.key, e.currentTarget.value)}
+            >
+              <Show when={!known()}>
+                <option value="" disabled>
+                  {props.row.value} (not in list)
+                </option>
+              </Show>
+              <For each={o}>
+                {(opt) => {
+                  const { value, label } = optionParts(opt);
+                  return <option value={value}>{label}</option>;
+                }}
+              </For>
+            </select>
+          );
+        }}
+      </Show>
+    );
+  };
 
   const widgetFor = (row: Row) => {
-    const opts = dynamicOptions()[row.key];
-    if (opts && opts.length > 0) {
-      const known = opts.some((o) => optionParts(o).value === row.value);
-      return (
-        <select
-          class={`field ${isDirty(row) ? "field--dirty" : ""}`}
-          style={{ flex: 1, cursor: "pointer" }}
-          value={known ? row.value : ""}
-          onChange={(e) => update(row.key, e.currentTarget.value)}
-        >
-          <Show when={!known}>
-            <option value="" disabled>
-              {row.value} (not in list)
-            </option>
-          </Show>
-          <For each={opts}>
-            {(o) => {
-              const { value, label } = optionParts(o);
-              return <option value={value}>{label}</option>;
-            }}
-          </For>
-        </select>
-      );
-    }
     if (row.value_type === "bool") {
-      const checked = row.value === "true" || row.value === "1";
+      // Accessor (not a snapshot) so the switch re-reads row.value reactively —
+      // a plain const here only updated after save+refresh.
+      const checked = () => row.value === "true" || row.value === "1";
       return (
         <label
           style={{
@@ -379,11 +408,11 @@ export const SettingsForm: Component<Props> = (props) => {
           }}
         >
           <span
-            onClick={() => update(row.key, checked ? "false" : "true")}
+            onClick={() => update(row.key, checked() ? "false" : "true")}
             style={{
               width: "40px", height: "22px",
               "border-radius": "999px",
-              background: checked ? "var(--c-moss)" : "var(--c-shell)",
+              background: checked() ? "var(--c-moss)" : "var(--c-shell)",
               border: `1px solid ${isDirty(row) ? "var(--c-amber)" : "var(--c-edge)"}`,
               position: "relative",
               transition: "background var(--t-fast)",
@@ -393,7 +422,7 @@ export const SettingsForm: Component<Props> = (props) => {
               style={{
                 position: "absolute",
                 top: "1px",
-                left: checked ? "19px" : "1px",
+                left: checked() ? "19px" : "1px",
                 width: "18px", height: "18px",
                 "border-radius": "50%",
                 background: "var(--c-bone)",
@@ -406,7 +435,7 @@ export const SettingsForm: Component<Props> = (props) => {
             class="f-mono"
             style={{ "font-size": "12px", color: isDirty(row) ? "var(--c-amber)" : "var(--c-mist)" }}
           >
-            {checked ? "true" : "false"}
+            {checked() ? "true" : "false"}
           </span>
         </label>
       );
@@ -541,11 +570,16 @@ export const SettingsForm: Component<Props> = (props) => {
 
   const filtered = createMemo(() => {
     const q = filter().trim().toLowerCase();
+    // Hide Linux-only settings when the server is known to be non-Linux
+    // (unknown platform → show, fall back to free-text).
+    const p = serverPlatform();
+    const hideLinuxOnly = p !== null && p !== "linux";
+    const visible = (r: Row) => !(hideLinuxOnly && LINUX_ONLY_KEYS.has(r.key));
     // Empty query → scope to the active tab. Non-empty → global search:
     // match across every category so a search finds settings regardless of
     // which tab is selected.
-    if (!q) return rows.filter((r) => categoryOf(r.key) === tab());
-    return rows.filter((r) => matchesQuery(r, q));
+    if (!q) return rows.filter((r) => categoryOf(r.key) === tab() && visible(r));
+    return rows.filter((r) => matchesQuery(r, q) && visible(r));
   });
 
   return (
@@ -626,10 +660,26 @@ export const SettingsForm: Component<Props> = (props) => {
                     "min-width": "0",
                   }}
                 >
+                  {/* Dirty dot sits inline right before the label so it reads as
+                      the tab's own indicator instead of floating in the corner. */}
+                  <Show when={c().dirty > 0}>
+                    <span
+                      style={{
+                        width: "6px",
+                        height: "6px",
+                        "margin-right": "6px",
+                        "flex-shrink": "0",
+                        "border-radius": "50%",
+                        background: "var(--c-amber)",
+                        "box-shadow": "0 0 4px var(--c-amber)",
+                        "pointer-events": "none",
+                      }}
+                      title={`${c().dirty} unsaved draft${c().dirty === 1 ? "" : "s"}`}
+                    />
+                  </Show>
                   <span>{t.label}</span>
-                  {/* Match count + dirty dot are absolutely positioned so they
-                      never change the tab's flow size — no layout shift when a
-                      search toggles the badge on and off. */}
+                  {/* Match count stays absolutely positioned (right) so it never
+                      changes the tab's flow size when search toggles it. */}
                   <Show when={c().matches > 0}>
                     <span
                       class="f-mono"
@@ -649,22 +699,6 @@ export const SettingsForm: Component<Props> = (props) => {
                     >
                       {c().matches}
                     </span>
-                  </Show>
-                  <Show when={c().dirty > 0}>
-                    <span
-                      style={{
-                        position: "absolute",
-                        top: "4px",
-                        left: "5px",
-                        width: "6px",
-                        height: "6px",
-                        "border-radius": "50%",
-                        background: "var(--c-amber)",
-                        "box-shadow": "0 0 4px var(--c-amber)",
-                        "pointer-events": "none",
-                      }}
-                      title={`${c().dirty} unsaved draft${c().dirty === 1 ? "" : "s"}`}
-                    />
                   </Show>
                 </button>
               );

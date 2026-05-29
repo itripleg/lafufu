@@ -132,6 +132,11 @@ export const api = {
   patchSetting: (key: string, body: { value: unknown; value_type?: string }) => req("PATCH", `/settings/${key}`, body),
   putSetting: (key: string, body: { value: unknown; value_type: string }) => req("PUT", `/settings/${key}`, body),
   restartService: (name: string) => req("POST", `/system/services/${name}/restart`),
+  systemAudio: () =>
+    req<{ platform: string; alsa_cards: string[]; alsa_controls: string[] }>(
+      "GET",
+      "/system/audio",
+    ),
   animatorPreview: (name: string, position: number) => req("POST", "/animator/preview", { name, position }),
   animatorSetPose: (pose: { head_lr: number; head_ud: number; eye: number; jaw: number; brow: number }) =>
     req("POST", "/animator/set_pose", pose),
