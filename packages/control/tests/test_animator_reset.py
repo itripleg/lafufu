@@ -34,8 +34,8 @@ def test_reset_expression_restores_factory_steps(client):
     r = client.post("/api/animator/expressions/happy/reset")
     assert r.status_code == 200
     body = r.json()
-    # Built-in happy seeds with default_duration_ms=800 (see seed.py)
-    assert body["default_duration_ms"] == 800
+    # Built-in happy seeds with default_duration_ms=150 (see seed.py)
+    assert body["default_duration_ms"] == 150
     assert body["playback"] == "loop"
 
 
