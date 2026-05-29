@@ -1099,7 +1099,12 @@ export const StudioSection: Component<{ nats: NatsWs }> = (props) => {
 
   const saveFrame = async (frameName: string, pose: Pose, image: string | null) => {
     const f = framesByName().get(frameName);
-    if (!f) return;
+    if (!f) {
+      // Cache miss (e.g. the frame was deleted while its editor was open) —
+      // surface it instead of silently dropping the operator's edit.
+      toast.err("save failed", `frame "${frameName}" not found — try refreshing`);
+      return;
+    }
     await apiCall(
       () => api.updateFrame(frameName, frameUpdateBody(f, { ...pose, image })),
       "save frame",

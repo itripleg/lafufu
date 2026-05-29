@@ -10,10 +10,11 @@
  *   - We've never received one → no signal.
  *   - Otherwise → offline.
  *
- * Every received frame also refreshes control's row, because every frame had
- * to pass through control's WS bridge — that's its proof of life. Without
- * this, control (which publishes nothing except its own 5 s heartbeat) would
- * be the only service that could "go offline" purely from event-loop jitter.
+ * Control's row is special: frames never bump its lastSeenMs. Its liveness
+ * comes from the live WS connection state (onConnection) — receiving anything
+ * at all proves control's bridge is up. Without this, control (which publishes
+ * nothing but its own 5 s heartbeat) could appear to "go offline" purely from
+ * event-loop jitter.
  */
 import { Component, createSignal, onCleanup, onMount, For, Show } from "solid-js";
 import { NatsWs } from "../shared/nats_ws";
