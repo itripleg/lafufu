@@ -36,3 +36,6 @@ models/*.onnx.json
 # OS
 .DS_Store
 Thumbs.db
+training/
+companion_*.png
+lafufu_ref_crop.png

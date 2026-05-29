@@ -4,7 +4,7 @@ import { Blob } from "../shared/blob";
 import { lsGet, lsKeys, lsRemovePrefix, lsSet } from "../shared/local_storage";
 import { toast } from "../shared/toast";
 import { HeadPanel } from "./head_panel";
-import { ChatLog } from "./chat_log";
+import { Companion } from "./companion";
 import { ServiceStatus } from "./service_status";
 import { SettingsForm } from "./settings_form";
 import { StudioSection } from "./studio_section";
@@ -283,7 +283,7 @@ const Admin: Component = () => {
 
       <div>
         <div style={{ display: tab() === "chat" ? "block" : "none" }}>
-          <ChatLog nats={nats} />
+          <Companion nats={nats} />
         </div>
         <div style={{ display: tab() === "head" ? "block" : "none" }}>
           <HeadPanel nats={nats} />

@@ -1,7 +1,17 @@
 """FastAPI app factory. `nats_publish` is injected so tests can verify without a real broker."""
 
+import mimetypes
 from collections.abc import Callable
 from pathlib import Path
+
+# Windows maps .js -> text/plain in the registry, so StaticFiles serves the
+# Vite bundle with the wrong Content-Type and the browser rejects the ES module
+# (strict MIME on <script type="module">) — leaving a blank page. Register the
+# correct types at import so the built SPA loads in local Windows dev. No-op on
+# Linux/Pi where these are already correct.
+mimetypes.add_type("application/javascript", ".js")
+mimetypes.add_type("application/javascript", ".mjs")
+mimetypes.add_type("text/css", ".css")
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse

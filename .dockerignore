@@ -1,0 +1,21 @@
+# Keep the build context small + reproducible.
+.git
+.venv
+**/__pycache__
+**/*.pyc
+web/node_modules
+web/dist
+var
+data
+models
+*.gbc
+*.onnx
+*.tflite
+diag_*.png
+studio_*.png
+demo_lafufu_*.png
+demo_lafufu_*.gif
+lafufu_ref_crop.png
+anima_tmp.json
+objinfo.json
+*.stackdump

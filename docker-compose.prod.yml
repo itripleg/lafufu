@@ -1,0 +1,33 @@
+# Lafufu UI/UX deployment — control service + NATS only.
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Exposes the control deck on host :8090 (http://<host>:8090/admin).
+# The agent/animator/printer are omitted (no hardware on the server); the
+# chat UI renders but won't get live replies without the agent.
+services:
+  nats:
+    image: nats:2.10-alpine
+    restart: unless-stopped
+    # Core pub/sub only — no JetStream needed by the control service.
+
+  control:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      - nats
+    environment:
+      LAFUFU_NATS_URL: nats://nats:4222
+      LAFUFU_DATA_DIR: /data
+      LAFUFU_CONTROL_PORT: "8080"
+      # Empty = open (no lock screen). Set a value to require the shared token.
+      LAFUFU_API_TOKEN: ""
+    volumes:
+      - lafufu-data:/data       # persists the SQLite DB + backups
+    ports:
+      - "8090:8080"
+    restart: unless-stopped
+
+volumes:
+  lafufu-data:
