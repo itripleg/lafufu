@@ -1,0 +1,1 @@
+import{k as f,s as i}from"./index-D-ks4O1N.js";function p(o,a,n){const[s,{refetch:c}]=f(o),t=e=>{console.warn("reactive_resource: refetch failed",e)},u=a.map(e=>n.subscribe(e,()=>{try{const r=c();r&&typeof r.then=="function"&&r.catch(t)}catch(r){t(r)}}));return i(()=>u.forEach(e=>e())),[s,c]}export{p as c};
