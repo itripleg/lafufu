@@ -246,7 +246,7 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
       title="Chat"
       accent="var(--c-moss)"
       fullHeight
-      style={{ "min-height": "62vh", display: "flex", "flex-direction": "column" }}
+      style={{ height: "62vh", "min-height": "420px", display: "flex", "flex-direction": "column" }}
       actions={
         <div
           style={{
@@ -323,15 +323,22 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
           "margin-bottom": "14px",
           display: "flex",
           "flex-direction": "column",
-          /* When messages don't fill the panel, push them to the bottom edge
-             (just above the input) so the empty space appears above instead
-             of awkwardly between the last message and the input. Standard
-             chat-app feel — messages "rise" from the input as they arrive. */
-          "justify-content": "flex-end",
-          gap: "10px",
           "min-height": "180px",
         }}
       >
+        {/* Inner column pinned to the bottom via margin-top:auto: a short
+            history sits just above the input (chat feel); a long one scrolls
+            normally with the oldest messages reachable. justify-content:
+            flex-end on the scroll box itself clipped the top of the history
+            out of scroll range, so you couldn't scroll up to old messages. */}
+        <div
+          style={{
+            "margin-top": "auto",
+            display: "flex",
+            "flex-direction": "column",
+            gap: "10px",
+          }}
+        >
         <For each={entries()}>
           {(e) => (
             <div
@@ -429,6 +436,7 @@ export const ChatLog: Component<{ nats: NatsWs }> = (props) => {
             no messages yet — start a conversation below
           </div>
         </Show>
+        </div>
       </div>
 
       <Show when={tab() === "chat"}>

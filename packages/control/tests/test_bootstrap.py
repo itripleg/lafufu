@@ -46,6 +46,8 @@ def test_seeds_all_expected_keys(tmp_path):
         "animator.eye.default",
         "animator.jaw.default",
         "animator.brow.default",
+        # Bluetooth IP broadcast toggle
+        "btcast.enabled",
     }
     missing = expected_new - keys
     assert not missing, f"bootstrap missing keys: {sorted(missing)}"
