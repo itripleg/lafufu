@@ -1,58 +1,31 @@
 """00_servo_only.py — exercise the jaw with NO audio.
 
-Sweeps the jaw open <-> closed at a fixed frequency. No audio at all.
-
-USE THIS FIRST. If the servo can't track the sinusoid cleanly at the
-chosen frequency (with no algorithm/audio in the way), every other
-script will look wrong too — the bottleneck is the servo response
-(PROFILE_VELOCITY/ACCELERATION, the U2D2 link, mechanical drag), not
-the lipsync algorithm.
+Sweeps the jaw open <-> closed at a fixed frequency. Use this FIRST: if
+the servo can't track the sinusoid cleanly at a given frequency, no
+amplitude-following lipsync algorithm will look better than that.
 
 Run on the Pi:
     uv run python debug/lipsync/00_servo_only.py
+    uv run python debug/lipsync/00_servo_only.py --freq-hz 6 --duration-s 8
 
-Knobs at the top — edit and re-run.
+All knobs are CLI flags; defaults match the production agent's chunk
+cadence. Algorithm lives in algorithms.py and is shared with server.py.
 """
 
 from __future__ import annotations
 
-import math
-import time
+import argparse
 
-from common import JawBus, open_pct_to_dxl
-
-# --- CONFIG (edit and re-run) ---
-FREQ_HZ = 4.0  # full open->close->open cycles per second
-DURATION_S = 5.0  # total run time
-TICK_HZ = 30  # how often we send a fresh goal position
-# Try FREQ_HZ from 1 to 10 — at what point does the jaw start to lag /
-# overshoot / quantize? That number is the realistic ceiling for any
-# amplitude-following lipsync, regardless of algorithm.
-# --------------------------------
+from algorithms import ServoOnlyCfg, run_servo_only
 
 
 def main() -> None:
-    bus = JawBus.open()
-    try:
-        dt = 1.0 / TICK_HZ
-        t0 = time.monotonic()
-        next_tick = t0
-        while True:
-            t = time.monotonic() - t0
-            if t >= DURATION_S:
-                break
-            # 0..1 sine wave
-            pct = 0.5 * (1.0 + math.sin(2 * math.pi * FREQ_HZ * t))
-            bus.write_goal(open_pct_to_dxl(pct))
-            next_tick += dt
-            sleep_for = next_tick - time.monotonic()
-            if sleep_for > 0:
-                time.sleep(sleep_for)
-        # Park at closed and hold briefly so the operator sees a clean stop.
-        bus.write_goal(open_pct_to_dxl(0.0))
-        time.sleep(0.5)
-    finally:
-        bus.close()
+    p = argparse.ArgumentParser()
+    p.add_argument("--freq-hz", type=float, default=ServoOnlyCfg.freq_hz)
+    p.add_argument("--duration-s", type=float, default=ServoOnlyCfg.duration_s)
+    p.add_argument("--tick-hz", type=int, default=ServoOnlyCfg.tick_hz)
+    a = p.parse_args()
+    run_servo_only(ServoOnlyCfg(freq_hz=a.freq_hz, duration_s=a.duration_s, tick_hz=a.tick_hz))
 
 
 if __name__ == "__main__":

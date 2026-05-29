@@ -1,94 +1,46 @@
 """03_gate.py — binary mouth open/close on an RMS threshold.
 
-The simplest possible "talking" puppet: mouth fully OPEN when RMS is above
-GATE_THRESHOLD, fully CLOSED below it. No amplitude tracking at all.
-
-Why bother:
-  - If the GATE looks tightly sync'd with the audio, the timing pipeline
-    (aplay buffer + servo response + chunk loop) is fine and the desync
-    you've been seeing is in the AMPLITUDE-tracking layer (RMS smoothing,
-    normalize, envelope).
-  - If even the GATE looks early/late, the bug is in the audio buffer or
-    the servo response — not in the algorithm.
-
-Tune GATE_THRESHOLD by ear/eye: the mouth should open with the first
-audible syllable and close in pauses, not in between syllables.
+The simplest possible talking puppet. If the GATE looks tightly
+sync'd but DIRECT / ENVELOPE don't, the desync is in amplitude
+tracking, not timing or servo response.
 
 Run on the Pi:
-    uv run python debug/lipsync/03_gate.py /path/to/sample.wav
+    uv run python debug/lipsync/03_gate.py /tmp/test.wav
+    uv run python debug/lipsync/03_gate.py /tmp/test.wav --gate-threshold 0.03
+
+Algorithm lives in algorithms.py and is shared with server.py.
 """
 
 from __future__ import annotations
 
-import contextlib
-import sys
-import time
+import argparse
 
-from common import (
-    JawBus,
-    aplay_popen,
-    chunk_rms,
-    iter_chunks,
-    open_pct_to_dxl,
-    open_wav,
-)
-
-# --- CONFIG (edit and re-run) ---
-CHUNK_MS = 40
-ALSA_BUFFER_MS = 1000
-ALSA_PERIOD_MS = 40
-OFFSET_MS = 0  # +N: jaw uses RMS from N ms AHEAD of audio; -N: behind
-GATE_THRESHOLD = 0.02  # RMS threshold; tweak by listening
-OPEN_PCT = 1.0  # how far to open when gate fires (0.6..1.0 is usable)
-ALSA_DEVICE = "default"
-# --------------------------------
+from algorithms import GateCfg, run_gate
 
 
 def main() -> None:
-    if len(sys.argv) != 2:
-        sys.exit("usage: 03_gate.py <audio.wav>")
-    wav_path = sys.argv[1]
-
-    reader, info = open_wav(wav_path)
-    chunk_frames = max(1, info.sample_rate * CHUNK_MS // 1000)
-    buffer_frames = info.sample_rate * ALSA_BUFFER_MS // 1000
-    period_frames = info.sample_rate * ALSA_PERIOD_MS // 1000
-    chunks = list(iter_chunks(reader, chunk_frames))
-    reader.close()
-
-    bus = JawBus.open()
-    proc = aplay_popen(info.sample_rate, buffer_frames, period_frames, ALSA_DEVICE)
-
-    try:
-        dt = CHUNK_MS / 1000.0
-        offset_chunks = OFFSET_MS // CHUNK_MS
-        next_tick = time.monotonic()
-        for i, chunk in enumerate(chunks):
-            j = i + offset_chunks
-            rms = chunk_rms(chunks[j]) if 0 <= j < len(chunks) else 0.0
-            pct = OPEN_PCT if rms > GATE_THRESHOLD else 0.0
-            bus.write_goal(open_pct_to_dxl(pct))
-
-            try:
-                proc.stdin.write(chunk)
-                proc.stdin.flush()
-            except (BrokenPipeError, ValueError):
-                break
-
-            next_tick += dt
-            sleep_for = next_tick - time.monotonic()
-            if sleep_for > 0:
-                time.sleep(sleep_for)
-
-        bus.write_goal(open_pct_to_dxl(0.0))
-        with contextlib.suppress(Exception):
-            proc.stdin.close()
-        with contextlib.suppress(Exception):
-            proc.wait(timeout=3)
-    finally:
-        with contextlib.suppress(Exception):
-            proc.terminate()
-        bus.close()
+    p = argparse.ArgumentParser()
+    p.add_argument("wav", help="path to 16-bit PCM mono WAV")
+    p.add_argument("--chunk-ms", type=int, default=GateCfg.chunk_ms)
+    p.add_argument("--alsa-buffer-ms", type=int, default=GateCfg.alsa_buffer_ms)
+    p.add_argument("--alsa-period-ms", type=int, default=GateCfg.alsa_period_ms)
+    p.add_argument("--offset-ms", type=int, default=GateCfg.offset_ms)
+    p.add_argument("--gate-threshold", type=float, default=GateCfg.gate_threshold)
+    p.add_argument("--open-pct", type=float, default=GateCfg.open_pct)
+    p.add_argument("--alsa-device", default=GateCfg.alsa_device)
+    a = p.parse_args()
+    run_gate(
+        GateCfg(
+            chunk_ms=a.chunk_ms,
+            alsa_buffer_ms=a.alsa_buffer_ms,
+            alsa_period_ms=a.alsa_period_ms,
+            offset_ms=a.offset_ms,
+            gate_threshold=a.gate_threshold,
+            open_pct=a.open_pct,
+            alsa_device=a.alsa_device,
+        ),
+        a.wav,
+    )
 
 
 if __name__ == "__main__":
