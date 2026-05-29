@@ -403,6 +403,86 @@ const ExpressionDropZone: Component<{ children: any }> = (props) => {
 };
 
 // ─────────────────────────────────────────────────────────────
+// Pose slider card: 5 unlabeled servo sliders for the previewed frame.
+// Sits in the editor row beside the preview; live-drives the head as you drag
+// and saves the frame's pose on release. Disabled while playback cycles frames.
+// ─────────────────────────────────────────────────────────────
+const PoseSliderCard: Component<{
+  frame: FrameDTO | undefined;
+  ranges: Record<keyof Pose, readonly [number, number]>;
+  disabled: boolean;
+  onCommit: (frameName: string, pose: Pose) => void;
+}> = (props) => {
+  const [pose, setPose] = createSignal<Pose>(
+    props.frame ? poseOfFrame(props.frame) : { head_lr: 0, head_ud: 0, eye: 0, jaw: 0, brow: 0 },
+  );
+  // Re-seed when the previewed frame changes (incl. as playback cycles).
+  createEffect(() => {
+    const f = props.frame;
+    if (f) setPose(poseOfFrame(f));
+  });
+
+  let previewTimer: number | undefined;
+  let pending: { servo: keyof Pose; value: number } | null = null;
+  const schedulePreview = (servo: keyof Pose, value: number) => {
+    pending = { servo, value };
+    if (previewTimer != null) return;
+    previewTimer = window.setTimeout(async () => {
+      previewTimer = undefined;
+      const p = pending;
+      pending = null;
+      if (p) { try { await api.animatorPreview(p.servo, p.value); } catch { /* no toast per twitch */ } }
+    }, 40);
+  };
+  onCleanup(() => { if (previewTimer != null) window.clearTimeout(previewTimer); });
+
+  const onInput = (key: keyof Pose, raw: string) => {
+    const v = Number(raw);
+    setPose((p) => ({ ...p, [key]: v }));
+    schedulePreview(key, v);
+  };
+  const commit = () => {
+    const f = props.frame;
+    if (f) props.onCommit(f.name, pose());
+  };
+
+  return (
+    <div
+      class="pebble--inset"
+      style={{
+        width: "150px",
+        "flex-shrink": "0",
+        "border-radius": "var(--r-pebble)",
+        padding: "14px 12px",
+        display: "flex",
+        "flex-direction": "column",
+        "justify-content": "space-evenly",
+        gap: "12px",
+        "min-height": "0",
+        opacity: props.frame && !props.disabled ? 1 : 0.45,
+      }}
+    >
+      <For each={SLIDER_DEFS}>
+        {(def) => (
+          <input
+            type="range"
+            class="slider"
+            min={props.ranges[def.key][0]}
+            max={props.ranges[def.key][1]}
+            value={pose()[def.key]}
+            disabled={!props.frame || props.disabled}
+            onInput={(ev) => onInput(def.key, ev.currentTarget.value)}
+            onChange={commit}
+            title={def.label}
+            style={{ width: "100%" }}
+          />
+        )}
+      </For>
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────
 // Frame editor modal: pose sliders + image picker + timing
 // ─────────────────────────────────────────────────────────────
 type ModalState =
@@ -962,6 +1042,19 @@ export const StudioSection: Component<{ nats: NatsWs }> = (props) => {
     return expressions()?.find((e) => e.name === name) ?? null;
   });
 
+  // The frame currently shown in the editor preview (the step at the play
+  // index). Shared by the preview pane and the pose-slider card beside it.
+  const previewIdx = createMemo(() => {
+    const e = currentExpr();
+    if (!e || e.steps.length === 0) return 0;
+    return Math.min(frameIndex(), e.steps.length - 1);
+  });
+  const previewFrame = createMemo<FrameDTO | undefined>(() => {
+    const e = currentExpr();
+    if (!e || e.steps.length === 0) return undefined;
+    return framesByName().get(e.steps[previewIdx()]?.frame ?? "");
+  });
+
   let playTimer: number | undefined;
   const stopPlayback = () => {
     if (playTimer != null) { window.clearTimeout(playTimer); playTimer = undefined; }
@@ -1216,8 +1309,8 @@ export const StudioSection: Component<{ nats: NatsWs }> = (props) => {
         color: "var(--c-bone)",
         display: "flex",
         "flex-direction": "column",
-        height: "75vh",
-        "min-height": "560px",
+        height: "calc(75vh + 50px)",
+        "min-height": "610px",
         overflow: "hidden",
         outline: "none",
         padding: "0",
@@ -1672,6 +1765,16 @@ export const StudioSection: Component<{ nats: NatsWs }> = (props) => {
                       })()}
                     </Show>
                   </div>
+
+                  <PoseSliderCard
+                    frame={previewFrame()}
+                    ranges={ranges()}
+                    disabled={playing()}
+                    onCommit={(name, pose) => {
+                      const fr = previewFrame();
+                      if (fr) saveFrame(name, pose, fr.image);
+                    }}
+                  />
                 </div>
               </div>
             )}
