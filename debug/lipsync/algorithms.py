@@ -16,11 +16,14 @@ from dataclasses import dataclass
 
 from common import (
     JawBus,
+    aplay_file_popen,
     aplay_popen,
     chunk_rms,
     iter_chunks,
     open_pct_to_dxl,
     open_wav,
+    percentile_sorted,
+    rms_int16,
 )
 
 # --- configs ---
@@ -54,6 +57,37 @@ class EnvelopeCfg(DirectCfg):
 class GateCfg(DirectCfg):
     gate_threshold: float = 0.02
     open_pct: float = 1.0
+
+
+@dataclass
+class MonolithCfg:
+    """A faithful port of the legacy monolith lipsync (dynamixel.py:1838-1955).
+
+    Differences from Envelope mode:
+    - **Content-adaptive** RMS normalisation: per-WAV p_low/p_high percentile
+      floor and ceiling, so a quiet WAV still opens the mouth as wide as a
+      loud one.
+    - **Deadzone**: ``x <= deadzone`` collapses to target=0; cleans up tiny
+      RMS noise during pauses so the mouth doesn't flutter.
+    - **Gamma**: ``target = target ** gamma`` (<1.0) — perceptual loudness
+      curve, gives more open-mouth at lower volumes.
+    - **File-mode aplay**: ``aplay file.wav`` runs to completion; the motor
+      loop paces against its own wall clock relative to t0, not against an
+      stdin-write cadence.
+    - **FPS-driven chunking**: chunk_ms = 1000/fps (legacy default fps=20
+      -> 50 ms chunks).
+
+    Knob defaults match the legacy monolith values.
+    """
+
+    fps: int = 20
+    deadzone: float = 0.05
+    gamma: float = 0.70
+    p_low: float = 0.10
+    p_high: float = 0.95
+    attack_ms: int = 30
+    release_ms: int = 80
+    alsa_device: str = "default"
 
 
 # --- shared chunked-playback loop ---
@@ -176,3 +210,81 @@ def _gate_target(_prev: float, rms: float, cfg: GateCfg) -> float:
 def run_gate(cfg: GateCfg, wav_path: str, stop: threading.Event | None = None) -> None:
     """RMS threshold -> binary open/close."""
     _run_chunked(cfg, wav_path, _gate_target, stop or threading.Event())
+
+
+def run_monolith(cfg: MonolithCfg, wav_path: str, stop: threading.Event | None = None) -> None:
+    """Faithful port of the legacy monolith lipsync (dynamixel.py:1838-1955).
+
+    Pre-pass:
+      1. Read the whole WAV into chunks of ``framerate / fps`` frames each.
+      2. Compute raw int16 RMS for every chunk.
+      3. Sort the RMS values; take floor = percentile(p_low), ceil = percentile(p_high).
+
+    Playback:
+      1. Spawn ``aplay file.wav`` (file mode — no stdin streaming).
+      2. Tick the motor loop by wall clock against ``t0`` (the moment aplay
+         was spawned), so motor + audio drift together rather than against
+         each other when the system is loaded.
+      3. For each chunk:
+         - x = clamp01((rms - floor) / (ceil - floor))
+         - if x <= deadzone: target = 0  else: target = (x - deadzone)/(1-deadzone)
+         - target = clamp01(target) ** gamma
+         - asymmetric one-pole envelope: attack_ms when rising, release_ms when falling
+         - jaw position from envelope in [0..1]
+    """
+    stop = stop or threading.Event()
+    reader, info = open_wav(wav_path)
+    try:
+        chunk_frames = max(1, info.sample_rate // max(1, cfg.fps))
+        chunks = list(iter_chunks(reader, chunk_frames))
+    finally:
+        reader.close()
+
+    if not chunks:
+        return
+
+    # Pre-pass: percentile floor/ceil over RAW int16 RMS (matches legacy).
+    rms_vals = [rms_int16(c) for c in chunks]
+    vals_sorted = sorted(rms_vals)
+    floor = percentile_sorted(vals_sorted, cfg.p_low)
+    ceil = percentile_sorted(vals_sorted, cfg.p_high)
+    denom = max(1e-6, ceil - floor)
+
+    dt = 1.0 / max(1, cfg.fps)
+    attack_coeff = 1.0 - math.exp(-dt / max(1e-6, cfg.attack_ms / 1000.0))
+    release_coeff = 1.0 - math.exp(-dt / max(1e-6, cfg.release_ms / 1000.0))
+
+    bus = JawBus.open()
+    proc = aplay_file_popen(wav_path, cfg.alsa_device)
+    t0 = time.monotonic()
+    env = 0.0
+    try:
+        for i, rms in enumerate(rms_vals):
+            if stop.is_set():
+                break
+            # Wall-clock pacing: catch up to where playback should be.
+            target_t = t0 + (i + 1) * dt
+            now = time.monotonic()
+            if target_t > now and stop.wait(timeout=target_t - now):
+                break
+
+            x = (rms - floor) / denom
+            x = max(0.0, min(1.0, x))
+            if x <= cfg.deadzone:
+                target = 0.0
+            else:
+                target = (x - cfg.deadzone) / max(1e-6, 1.0 - cfg.deadzone)
+            target = max(0.0, min(1.0, target))
+            target = target ** max(1e-6, cfg.gamma)
+
+            coeff = attack_coeff if target > env else release_coeff
+            env = env + (target - env) * coeff
+            bus.write_goal(open_pct_to_dxl(env))
+
+        bus.write_goal(open_pct_to_dxl(0.0))
+        with contextlib.suppress(Exception):
+            proc.wait(timeout=3)
+    finally:
+        with contextlib.suppress(Exception):
+            proc.terminate()
+        bus.close()

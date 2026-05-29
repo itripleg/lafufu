@@ -109,6 +109,12 @@ The scripts expect **16-bit PCM mono**, which is what Piper outputs.
 | 01 | Direct | RMS → jaw, instant. No envelope. The baseline. |
 | 02 | Envelope | RMS → attack/release envelope → jaw. Closest to production. |
 | 03 | Gate | RMS threshold → binary open/close. No amplitude tracking. |
+| 04 | Monolith (legacy) | Faithful port of the **known-working** lipsync from `C:\dev\lafufu-jb\dynamixel.py`. The gold reference. |
+
+If the testbed's 04 Monolith mode looks tight on the Pi but Envelope (the
+production analog) doesn't, port the missing pieces (percentile RMS
+normalisation, deadzone, gamma) into the agent — see
+[`legacy-comparison.md`](./legacy-comparison.md) for the side-by-side.
 
 ## Suggested A/B procedure
 

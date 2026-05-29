@@ -192,6 +192,48 @@ def aplay_popen(
     )
 
 
+def aplay_file_popen(wav_path: str, device: str = "default") -> subprocess.Popen:
+    """Spawn ``aplay file.wav`` — file mode, the way the legacy monolith does it.
+
+    aplay reads the WAV header itself (format, rate, channels) and manages
+    its own buffering. The motor loop paces against its own wall clock, not
+    against an stdin write cadence, so motor + audio drift together when
+    the system is loaded rather than against each other.
+    """
+    return subprocess.Popen(
+        ["aplay", "-q", "-D", device, wav_path],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def rms_int16(chunk: bytes) -> float:
+    """RAW int16 RMS (NOT normalised), matching the legacy monolith.
+
+    Used by Monolith mode so the p10/p95 percentile floor/ceil are computed
+    in the same units the legacy used. ``chunk_rms`` above normalises to
+    ~[0, 1] which loses the per-utterance percentile semantics.
+    """
+    samples = np.frombuffer(chunk, dtype=np.int16).astype(np.float32)
+    if samples.size == 0:
+        return 0.0
+    return float(np.sqrt(np.mean(samples * samples)))
+
+
+def percentile_sorted(vals_sorted: list[float], p: float) -> float:
+    """Linear-interp percentile from a pre-sorted list — matches legacy."""
+    if not vals_sorted:
+        return 0.0
+    p = max(0.0, min(1.0, p))
+    if len(vals_sorted) == 1:
+        return vals_sorted[0]
+    idx = p * (len(vals_sorted) - 1)
+    lo = int(idx)
+    hi = min(lo + 1, len(vals_sorted) - 1)
+    frac = idx - lo
+    return vals_sorted[lo] * (1.0 - frac) + vals_sorted[hi] * frac
+
+
 def chunk_rms(chunk: bytes) -> float:
     """RMS of a 16-bit PCM chunk, normalised to ~[0, 1]."""
     samples = np.frombuffer(chunk, dtype=np.int16).astype(np.float32)

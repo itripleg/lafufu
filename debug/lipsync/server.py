@@ -32,10 +32,12 @@ from algorithms import (
     DirectCfg,
     EnvelopeCfg,
     GateCfg,
+    MonolithCfg,
     ServoOnlyCfg,
     run_direct,
     run_envelope,
     run_gate,
+    run_monolith,
     run_servo_only,
 )
 
@@ -113,6 +115,18 @@ class GateReq(_BaseChunkedReq):
     open_pct: float = GateCfg.open_pct
 
 
+class MonolithReq(BaseModel):
+    wav: str
+    fps: int = MonolithCfg.fps
+    deadzone: float = MonolithCfg.deadzone
+    gamma: float = MonolithCfg.gamma
+    p_low: float = MonolithCfg.p_low
+    p_high: float = MonolithCfg.p_high
+    attack_ms: int = MonolithCfg.attack_ms
+    release_ms: int = MonolithCfg.release_ms
+    alsa_device: str = MonolithCfg.alsa_device
+
+
 class GenReq(BaseModel):
     text: str
     filename: str = "test.wav"
@@ -172,6 +186,19 @@ def api_run_gate(req: GateReq):
     )
     cfg = GateCfg(**req.model_dump(exclude={"wav"}))
     _start(run_gate, cfg, req.wav)
+    return {"ok": True}
+
+
+@app.post("/api/run/monolith")
+def api_run_monolith(req: MonolithReq):
+    _check_wav(req.wav)
+    _log.clear()
+    _log.append(
+        f"[start] monolith wav={req.wav} fps={req.fps} deadzone={req.deadzone} "
+        f"gamma={req.gamma} attack_ms={req.attack_ms} release_ms={req.release_ms}"
+    )
+    cfg = MonolithCfg(**req.model_dump(exclude={"wav"}))
+    _start(run_monolith, cfg, req.wav)
     return {"ok": True}
 
 
@@ -344,6 +371,35 @@ pre#log {
 }
 .wav-current { font-family: monospace; color: var(--muted); margin-left: 0.5rem; }
 .wav-current.set { color: var(--good); }
+dialog#export-dialog {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1rem;
+  max-width: 720px;
+  width: 92%;
+}
+dialog#export-dialog::backdrop { background: rgba(0,0,0,0.6); }
+dialog#export-dialog h3 { margin: 0 0 0.6rem; font-size: 1rem; }
+dialog#export-dialog textarea {
+  font-family: ui-monospace, "Cascadia Code", Menlo, monospace;
+  background: #111;
+  color: #cfd8dc;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.5rem;
+  width: 100%;
+  font-size: 12px;
+  resize: vertical;
+}
+dialog#export-dialog .actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+}
+.copied-flash { border-color: var(--good) !important; }
 </style>
 </head>
 <body>
@@ -392,6 +448,7 @@ pre#log {
     <button data-tab="direct" onclick="showTab('direct')">01 Direct</button>
     <button data-tab="envelope" onclick="showTab('envelope')">02 Envelope</button>
     <button data-tab="gate" onclick="showTab('gate')">03 Gate</button>
+    <button data-tab="monolith" onclick="showTab('monolith')">04 Monolith (legacy)</button>
   </div>
 
   <div id="tab-servo" class="tab-body">
@@ -408,6 +465,7 @@ pre#log {
     </div>
     <div style="margin-top: 0.8rem;">
       <button class="primary" onclick="runServo()">Run</button>
+      <button onclick="exportMode('servo')">Export settings&hellip;</button>
     </div>
   </div>
 
@@ -428,6 +486,7 @@ pre#log {
     <p class="apply">apply to lafufu: <code>animator.lipsync.offset_ms</code>, agent's RMS calibration.</p>
     <div style="margin-top: 0.8rem;">
       <button class="primary" onclick="runDirect()">Run</button>
+      <button onclick="exportMode('direct')">Export settings&hellip;</button>
     </div>
   </div>
 
@@ -450,6 +509,7 @@ pre#log {
     <p class="apply">apply to lafufu: <code>animator.lipsync.attack_ms</code>, <code>animator.lipsync.release_ms</code>, <code>animator.lipsync.offset_ms</code>.</p>
     <div style="margin-top: 0.8rem;">
       <button class="primary" onclick="runEnvelope()">Run</button>
+      <button onclick="exportMode('envelope')">Export settings&hellip;</button>
     </div>
   </div>
 
@@ -470,6 +530,34 @@ pre#log {
     </div>
     <div style="margin-top: 0.8rem;">
       <button class="primary" onclick="runGate()">Run</button>
+      <button onclick="exportMode('gate')">Export settings&hellip;</button>
+    </div>
+  </div>
+
+  <div id="tab-monolith" class="tab-body">
+    <p class="help">
+      <b>Legacy monolith reference.</b> Faithful port of
+      <code>C:\\dev\\lafufu-jb\\dynamixel.py:1838-1955</code> &mdash; the
+      known-working lipsync. Uses <b>per-WAV percentile-normalised RMS</b>
+      (content-adaptive), an explicit <b>deadzone + gamma</b> curve,
+      <b>file-mode aplay</b> (not stdin streaming), and <b>wall-clock motor
+      pacing</b>. If this looks tight but Envelope doesn't, port these
+      pieces into the production agent. Defaults match the legacy.
+    </p>
+    <div class="grid">
+      <label class="field"><span class="label">FPS (chunks/sec)</span><input type="number" id="m-fps" value="20" min="5" max="60" step="5" /></label>
+      <label class="field"><span class="label">Deadzone (0..1)</span><input type="number" id="m-deadzone" value="0.05" step="0.01" min="0" max="0.5" /></label>
+      <label class="field"><span class="label">Gamma (&lt;1 = perceptual)</span><input type="number" id="m-gamma" value="0.70" step="0.05" min="0.1" max="3" /></label>
+      <label class="field"><span class="label">p_low (RMS floor pct)</span><input type="number" id="m-p-low" value="0.10" step="0.05" min="0" max="0.5" /></label>
+      <label class="field"><span class="label">p_high (RMS ceil pct)</span><input type="number" id="m-p-high" value="0.95" step="0.01" min="0.5" max="1" /></label>
+      <label class="field"><span class="label">Attack (ms)</span><input type="number" id="m-attack-ms" value="30" min="1" max="200" step="5" /></label>
+      <label class="field"><span class="label">Release (ms)</span><input type="number" id="m-release-ms" value="80" min="5" max="400" step="10" /></label>
+      <label class="field"><span class="label">ALSA device</span><input type="text" id="m-alsa-device" value="default" /></label>
+    </div>
+    <p class="apply">apply to lafufu: <code>animator.lipsync.attack_ms</code>, <code>animator.lipsync.release_ms</code>; the other pieces (percentiles, deadzone, gamma, file-mode aplay) require code changes &mdash; see <code>legacy-comparison.md</code>.</p>
+    <div style="margin-top: 0.8rem;">
+      <button class="primary" onclick="runMonolith()">Run</button>
+      <button onclick="exportMode('monolith')">Export settings&hellip;</button>
     </div>
   </div>
 </div>
@@ -480,6 +568,20 @@ pre#log {
 </div>
 
 </main>
+
+<dialog id="export-dialog">
+  <h3>Settings export</h3>
+  <p style="color: var(--muted); margin: 0 0 0.6rem; font-size: 0.85rem;">
+    Edit the &ldquo;Notes&rdquo; line if you want, then click <b>Copy</b>.
+    The whole block is markdown &mdash; paste it to another agent to apply
+    the live settings on Lafufu and (optionally) port the other knobs.
+  </p>
+  <textarea id="export-text" rows="22" spellcheck="false"></textarea>
+  <div class="actions">
+    <button onclick="document.getElementById('export-dialog').close()">Close</button>
+    <button class="primary" onclick="copyExport()">Copy to clipboard</button>
+  </div>
+</dialog>
 
 <script>
 let selectedWav = "";
@@ -586,6 +688,21 @@ async function runEnvelope() {
     await api("POST", "/api/run/envelope", body);
   } catch (e) { addLog("[error] run envelope: " + e.message); }
 }
+async function runMonolith() {
+  try {
+    await api("POST", "/api/run/monolith", {
+      wav: requireWav(),
+      fps: intv("m-fps"),
+      deadzone: num("m-deadzone"),
+      gamma: num("m-gamma"),
+      p_low: num("m-p-low"),
+      p_high: num("m-p-high"),
+      attack_ms: intv("m-attack-ms"),
+      release_ms: intv("m-release-ms"),
+      alsa_device: str("m-alsa-device"),
+    });
+  } catch (e) { addLog("[error] run monolith: " + e.message); }
+}
 async function runGate() {
   try {
     await api("POST", "/api/run/gate", {
@@ -626,6 +743,165 @@ async function pollStatus() {
     }
   } catch (_) {}
 }
+function exportMode(mode) {
+  let text;
+  try { text = formatSummary(mode); }
+  catch (e) { alert("Couldn't read settings: " + e.message); return; }
+  document.getElementById("export-text").value = text;
+  document.getElementById("export-dialog").showModal();
+}
+
+function formatSummary(mode) {
+  const now = new Date().toISOString();
+  const wav = selectedWav || "(none selected)";
+  if (mode === "servo") {
+    return `# Lipsync export - servo only (no audio)
+
+**Date:** ${now}
+**Notes:** (replace this line with your observations, e.g. "tracks cleanly to 6 Hz, jitter at 8 Hz")
+
+## Knobs
+
+- freq_hz = ${num("servo-freq-hz")}
+- duration_s = ${num("servo-duration-s")}
+- tick_hz = ${intv("servo-tick-hz")}
+
+## Context
+
+Servo-only mode (no audio). Used to characterise the jaw servo's response.
+The highest freq_hz the servo can still track cleanly is the practical
+ceiling for any amplitude-following lipsync. No direct lafufu settings to
+apply; informational only.
+
+Source: debug/lipsync/algorithms.py (run_servo_only + ServoOnlyCfg).
+`;
+  }
+  if (mode === "monolith") {
+    return `# Lipsync export - monolith mode (legacy reference)
+
+**Audio:** ${wav}
+**Date:** ${now}
+**Notes:** (replace this line with your observations)
+
+## Apply to lafufu (live settings via admin UI or PUT /api/settings/<key>)
+
+- animator.lipsync.attack_ms = ${intv("m-attack-ms")}
+- animator.lipsync.release_ms = ${intv("m-release-ms")}
+
+## Code changes required (the legacy pieces not in production yet)
+
+The legacy algorithm beats Envelope mode primarily because of these layers,
+which the production agent does NOT have. Port them into the agent's
+lipsync RMS path:
+
+- fps = ${intv("m-fps")}  (chunk_ms = 1000/fps = ${Math.round(1000 / Math.max(1, intv("m-fps")))} ms)
+- deadzone = ${num("m-deadzone")}  (x <= deadzone -> target=0)
+- gamma = ${num("m-gamma")}  (target = target ** gamma, perceptual curve)
+- p_low = ${num("m-p-low")}  (RMS floor percentile, computed PER WAV)
+- p_high = ${num("m-p-high")}  (RMS ceiling percentile, computed PER WAV)
+- alsa_device = ${str("m-alsa-device")}
+
+## Context
+
+Algorithm: faithful port of the legacy monolith at
+**C:/dev/lafufu-jb/dynamixel.py:1838-1955** (known-working before the
+modular rewrite). Source for this testbed: **debug/lipsync/algorithms.py**
+(run_monolith + MonolithCfg).
+
+Key differences vs production / Envelope mode:
+
+1. **Content-adaptive RMS normalisation** (the big win): the legacy
+   computes p_low/p_high percentiles over the WHOLE WAV in a pre-pass,
+   then maps each chunk's RMS into that per-utterance range. Production
+   uses fixed rms_min/rms_max so a quiet WAV never opens the mouth fully.
+2. **Deadzone + gamma curve**: kills the "mouth flutters in pauses" and
+   "mouth undershoots on quiet consonants" effects.
+3. **File-mode aplay** (aplay file.wav) instead of stdin streaming:
+   aplay manages its own buffering at full speed and the motor loop paces
+   against its own wall clock, so motor + audio drift TOGETHER under
+   system load rather than against each other.
+4. **Wall-clock motor pacing** against t0 (the moment aplay was spawned).
+
+For an implementing agent:
+- Pure tunables (attack_ms, release_ms): set via admin UI now.
+- Algorithm work: edit **packages/agent/src/lafufu_agent/pipeline.py**
+  (the lipsync RMS path) to add the percentile pre-pass, deadzone, and
+  gamma. Switching production to file-mode aplay is a deeper change in
+  **packages/agent/src/lafufu_agent/__main__.py** (_AplayPlayer) and may
+  not be worth it if the algorithm changes alone close the gap.
+- See **debug/lipsync/legacy-comparison.md** for the full side-by-side.
+- See **docs/superpowers/plans/2026-05-28-prod-hardening.md** (T13) for
+  the broader follow-up.
+`;
+  }
+  const prefix = {direct: "d", envelope: "e", gate: "g"}[mode];
+  const offset = intv(prefix + "-offset-ms");
+  const live = [`- animator.lipsync.offset_ms = ${offset}`];
+  if (mode === "envelope") {
+    live.push(`- animator.lipsync.attack_ms = ${intv("e-attack-ms")}`);
+    live.push(`- animator.lipsync.release_ms = ${intv("e-release-ms")}`);
+  }
+  const other = [
+    `- chunk_ms = ${intv(prefix + "-chunk-ms")}`,
+    `- alsa_buffer_ms = ${intv(prefix + "-alsa-buffer-ms")}`,
+    `- alsa_period_ms = ${intv(prefix + "-alsa-period-ms")}`,
+    `- alsa_device = ${str(prefix + "-alsa-device")}`,
+  ];
+  if (mode === "direct" || mode === "envelope") {
+    other.push(`- rms_min = ${num(prefix + "-rms-min")}`);
+    other.push(`- rms_max = ${num(prefix + "-rms-max")}`);
+  }
+  if (mode === "gate") {
+    other.push(`- gate_threshold = ${num("g-gate-threshold")}`);
+    other.push(`- open_pct = ${num("g-open-pct")}`);
+  }
+  const gateNote = (mode === "gate")
+    ? `\n\nNote: gate is binary open/close - no direct production equivalent. If gate looks tight but envelope doesn't, the desync is in amplitude tracking, not timing.`
+    : "";
+  return `# Lipsync export - ${mode} mode
+
+**Audio:** ${wav}
+**Date:** ${now}
+**Notes:** (replace this line with your observations)
+
+## Apply to lafufu (live settings via admin UI or PUT /api/settings/<key>)
+
+${live.join("\n")}
+
+## Other knobs (used in the testbed; may require code changes)
+
+${other.join("\n")}
+
+## Context
+
+Algorithm: ${mode} (source: debug/lipsync/algorithms.py - run_${mode} + ${mode[0].toUpperCase() + mode.slice(1)}Cfg).${gateNote}
+
+For an implementing agent: apply the live settings above first and test
+on the running Lafufu with the same audio file. If desync remains, the
+"other knobs" may need code changes:
+
+- alsa_buffer_ms / alsa_period_ms / alsa_device live in
+  packages/agent/src/lafufu_agent/__main__.py (_AplayPlayer class).
+- rms_min / rms_max and chunk_ms live in the agent's lipsync
+  RMS path (packages/agent/src/lafufu_agent/pipeline.py).
+- See docs/superpowers/plans/2026-05-28-prod-hardening.md (T13) for
+  the broader follow-up about extra desync added by our own layers
+  (motion smoother, asyncio scheduling, NATS fan-out).
+`;
+}
+
+async function copyExport() {
+  const ta = document.getElementById("export-text");
+  try {
+    await navigator.clipboard.writeText(ta.value);
+    ta.classList.add("copied-flash");
+    setTimeout(() => ta.classList.remove("copied-flash"), 800);
+  } catch (_) {
+    ta.select();
+    document.execCommand("copy");
+  }
+}
+
 setInterval(pollStatus, 500);
 refreshWavs();
 </script>
