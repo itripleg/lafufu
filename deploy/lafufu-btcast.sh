@@ -19,9 +19,12 @@ last_ip=""
 # setting is absent, or auth blocks the loopback read, keep broadcasting so a
 # control hiccup can't silently hide the Pi's IP.
 broadcast_enabled() {
+    # Only an explicit "false" disables. Anything else — control unreachable,
+    # empty body, a parse error, or a non-list response — leaves val unequal to
+    # "false" and so keeps broadcasting (fail-open by construction).
     local val
     val="$(curl -fsS --max-time 3 "$CONTROL_SETTINGS_URL" 2>/dev/null \
-        | "$PYTHON" -c 'import sys, json; rows = json.load(sys.stdin); print(next((r["value"] for r in rows if r.get("key") == "btcast.enabled"), "true"))' 2>/dev/null)" || val="true"
+        | "$PYTHON" -c 'import sys, json; rows = json.load(sys.stdin); print(next((r["value"] for r in rows if r.get("key") == "btcast.enabled"), "true"))' 2>/dev/null)"
     [[ "$val" != "false" ]]
 }
 

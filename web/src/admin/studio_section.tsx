@@ -411,7 +411,7 @@ const PoseSliderCard: Component<{
   frame: FrameDTO | undefined;
   ranges: Record<keyof Pose, readonly [number, number]>;
   disabled: boolean;
-  onCommit: (frameName: string, pose: Pose) => void;
+  onCommit: (frameName: string, pose: Pose, image: string | null) => void;
 }> = (props) => {
   const [pose, setPose] = createSignal<Pose>(
     props.frame ? poseOfFrame(props.frame) : { head_lr: 0, head_ud: 0, eye: 0, jaw: 0, brow: 0 },
@@ -443,7 +443,9 @@ const PoseSliderCard: Component<{
   };
   const commit = () => {
     const f = props.frame;
-    if (f) props.onCommit(f.name, pose());
+    // Capture the image alongside the frame read here so the parent can't save
+    // this pose against a different frame's image if the preview advances.
+    if (f) props.onCommit(f.name, pose(), f.image);
   };
 
   return (
@@ -1770,10 +1772,7 @@ export const StudioSection: Component<{ nats: NatsWs }> = (props) => {
                     frame={previewFrame()}
                     ranges={ranges()}
                     disabled={playing()}
-                    onCommit={(name, pose) => {
-                      const fr = previewFrame();
-                      if (fr) saveFrame(name, pose, fr.image);
-                    }}
+                    onCommit={(name, pose, image) => saveFrame(name, pose, image)}
                   />
                 </div>
               </div>
