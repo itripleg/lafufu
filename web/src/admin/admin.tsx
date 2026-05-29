@@ -17,9 +17,11 @@ import { SystemPulse } from "./system_pulse";
  */
 type AdminTab = "chat" | "head" | "studio" | "settings" | "status";
 
+// Head tab is hidden for now (the Studio supersedes it). The panel + code are
+// kept and still mount under tab() === "head"; just re-add the entry here to
+// restore the button.
 const ADMIN_TABS: { id: AdminTab; label: string; accent: string }[] = [
   { id: "chat", label: "Chat", accent: "var(--c-moss)" },
-  { id: "head", label: "Head", accent: "var(--c-iris)" },
   { id: "studio", label: "Studio", accent: "var(--c-coral)" },
   { id: "settings", label: "Settings", accent: "var(--c-amber)" },
   { id: "status", label: "Status", accent: "var(--c-mauve)" },
