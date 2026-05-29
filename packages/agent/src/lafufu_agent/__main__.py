@@ -368,7 +368,8 @@ class _AplayPlayer:
     def play(self, chunk: bytes) -> None:
         if not chunk:
             return
-        if self._proc is None or self._proc.poll() is not None:
+        fresh = self._proc is None or self._proc.poll() is not None
+        if fresh:
             device = os.environ.get("LAFUFU_APLAY_DEVICE", "default")
             self._proc = self._subprocess.Popen(
                 [
@@ -388,6 +389,12 @@ class _AplayPlayer:
                 stdin=self._subprocess.PIPE,
             )
         try:
+            if fresh:
+                # Prepend ~80 ms of silence so the ALSA device finishes opening
+                # before real audio arrives — without this the hardware startup
+                # latency clips the first syllable of every utterance.
+                silence_bytes = (self._sample_rate * 80 // 1000) * 2  # 16-bit mono
+                self._proc.stdin.write(b"\x00" * silence_bytes)
             self._proc.stdin.write(chunk)
             self._proc.stdin.flush()
         except (BrokenPipeError, ValueError):
