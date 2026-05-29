@@ -397,6 +397,44 @@ label.field .hint {
   border-bottom: 1px solid var(--border);
 }
 #tab-faq th { background: var(--panel-2); color: var(--text); }
+.cmd-card {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0.5rem 0.6rem;
+  margin: 0.4rem 0 0.7rem;
+}
+.cmd-card .cmd-what { color: var(--muted); font-size: 0.8rem; margin-bottom: 0.3rem; }
+.cmd-card .cmd-row {
+  display: flex;
+  align-items: stretch;
+  gap: 0.4rem;
+}
+.cmd-card pre {
+  margin: 0;
+  flex: 1;
+  background: #111;
+  color: #cfd8dc;
+  padding: 0.4rem 0.55rem;
+  border-radius: 4px;
+  font-family: ui-monospace, "Cascadia Code", Menlo, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-x: auto;
+}
+.cmd-card button.cmd-copy {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 0.75rem;
+  padding: 0.3rem 0.6rem;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.cmd-card button.cmd-copy:hover { background: #3a3a3a; }
+.cmd-card button.cmd-copy.copied { background: var(--good); color: #06250a; border-color: transparent; }
 pre#log {
   font-family: ui-monospace, "Cascadia Code", Menlo, monospace;
   background: #111;
@@ -651,6 +689,104 @@ dialog#export-dialog .actions {
       See <code>debug/lipsync/legacy-comparison.md</code> in the repo
       for the full side-by-side.
     </p>
+
+    <h3>Pi commands &mdash; copy &amp; paste</h3>
+    <p>
+      Click the <b>Copy</b> button on any card. Two scenarios &mdash;
+      pick the section that matches where you're typing.
+    </p>
+
+    <h4>Scenario A &mdash; You're already on the Pi (terminal, kiosk, etc.)</h4>
+
+    <div class="cmd-card">
+      <div class="cmd-what">1. Stop the lafufu services so they don't fight for the bus or speaker.</div>
+      <div class="cmd-row">
+        <pre id="cmd-pi-stop">sudo systemctl stop lafufu-agent lafufu-animator</pre>
+        <button class="cmd-copy" onclick="copyCmd('cmd-pi-stop', this)">Copy</button>
+      </div>
+    </div>
+
+    <div class="cmd-card">
+      <div class="cmd-what">2. Make sure the latest testbed code is on the Pi (only needed once per pull). Run from /srv/lafufu.</div>
+      <div class="cmd-row">
+        <pre id="cmd-pi-pull">cd /srv/lafufu &amp;&amp; git fetch &amp;&amp; git checkout debug/lipsync-testbed &amp;&amp; git pull</pre>
+        <button class="cmd-copy" onclick="copyCmd('cmd-pi-pull', this)">Copy</button>
+      </div>
+    </div>
+
+    <div class="cmd-card">
+      <div class="cmd-what">3. Start this debug page itself (then open http://&lt;pi-ip&gt;:8090 from your laptop browser).</div>
+      <div class="cmd-row">
+        <pre id="cmd-pi-server">cd /srv/lafufu &amp;&amp; uv run python debug/lipsync/server.py</pre>
+        <button class="cmd-copy" onclick="copyCmd('cmd-pi-server', this)">Copy</button>
+      </div>
+    </div>
+
+    <div class="cmd-card">
+      <div class="cmd-what">4. List audio output devices (use one of these names if the default device doesn't work).</div>
+      <div class="cmd-row">
+        <pre id="cmd-pi-aplay-list">aplay -l</pre>
+        <button class="cmd-copy" onclick="copyCmd('cmd-pi-aplay-list', this)">Copy</button>
+      </div>
+    </div>
+
+    <div class="cmd-card">
+      <div class="cmd-what">5. Check what's plugged in to USB (look for /dev/ttyUSB* — that's the U2D2 / servo bus).</div>
+      <div class="cmd-row">
+        <pre id="cmd-pi-tty">ls -l /dev/ttyUSB* /dev/ttyACM* 2&gt;/dev/null</pre>
+        <button class="cmd-copy" onclick="copyCmd('cmd-pi-tty', this)">Copy</button>
+      </div>
+    </div>
+
+    <div class="cmd-card">
+      <div class="cmd-what">6. When you're done — bring the services back so Lafufu works normally again.</div>
+      <div class="cmd-row">
+        <pre id="cmd-pi-start">sudo systemctl start lafufu-agent lafufu-animator</pre>
+        <button class="cmd-copy" onclick="copyCmd('cmd-pi-start', this)">Copy</button>
+      </div>
+    </div>
+
+    <h4>Scenario B &mdash; You're on your dev machine (laptop)</h4>
+
+    <div class="cmd-card">
+      <div class="cmd-what">1. SSH to the Pi. (lafufu.local works if mDNS/avahi resolves on your network; otherwise use the IP.)</div>
+      <div class="cmd-row">
+        <pre id="cmd-ssh">ssh lafufu@lafufu.local</pre>
+        <button class="cmd-copy" onclick="copyCmd('cmd-ssh', this)">Copy</button>
+      </div>
+    </div>
+
+    <div class="cmd-card">
+      <div class="cmd-what">2. Or by IP, if .local isn't resolving (find Lafufu's IP via the Bluetooth name "lafufu &lt;ip&gt;").</div>
+      <div class="cmd-row">
+        <pre id="cmd-ssh-ip">ssh lafufu@172.20.10.11</pre>
+        <button class="cmd-copy" onclick="copyCmd('cmd-ssh-ip', this)">Copy</button>
+      </div>
+    </div>
+
+    <div class="cmd-card">
+      <div class="cmd-what">3. One-liner — SSH and start the debug server in one command (leaves the SSH session attached, Ctrl-C ends both).</div>
+      <div class="cmd-row">
+        <pre id="cmd-ssh-server">ssh -t lafufu@lafufu.local 'sudo systemctl stop lafufu-agent lafufu-animator &amp;&amp; cd /srv/lafufu &amp;&amp; git fetch &amp;&amp; git checkout debug/lipsync-testbed &amp;&amp; git pull &amp;&amp; uv run python debug/lipsync/server.py'</pre>
+        <button class="cmd-copy" onclick="copyCmd('cmd-ssh-server', this)">Copy</button>
+      </div>
+    </div>
+
+    <div class="cmd-card">
+      <div class="cmd-what">4. Tail Lafufu's live logs from your laptop while you experiment.</div>
+      <div class="cmd-row">
+        <pre id="cmd-ssh-logs">ssh lafufu@lafufu.local 'journalctl -u lafufu-agent -u lafufu-animator -f -n 50'</pre>
+        <button class="cmd-copy" onclick="copyCmd('cmd-ssh-logs', this)">Copy</button>
+      </div>
+    </div>
+
+    <div class="cmd-card">
+      <div class="cmd-what">5. Browser URL once the server is up (replace lafufu.local with the Pi's IP if needed).</div>
+      <div class="cmd-row">
+        <pre id="cmd-url">http://lafufu.local:8090/</pre>
+        <button class="cmd-copy" onclick="copyCmd('cmd-url', this)">Copy</button>
+      </div>
+    </div>
 
     <h3>Common problems and fixes</h3>
     <table>
@@ -1137,6 +1273,27 @@ on the running Lafufu with the same audio file. If desync remains, the
   the broader follow-up about extra desync added by our own layers
   (motion smoother, asyncio scheduling, NATS fan-out).
 `;
+}
+
+async function copyCmd(preId, btn) {
+  const text = document.getElementById(preId).innerText;
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (_) {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    ta.remove();
+  }
+  const orig = btn.textContent;
+  btn.textContent = "Copied!";
+  btn.classList.add("copied");
+  setTimeout(() => {
+    btn.textContent = orig;
+    btn.classList.remove("copied");
+  }, 1200);
 }
 
 async function copyExport() {
