@@ -25,13 +25,13 @@ const GRACE_MS = 800;
 const REST_MS = 6000;
 
 const EMOTION_SPRITE: Record<string, string> = {
-  happy: "lafufu_happy.png",
-  sad: "lafufu_sad.png",
-  angry: "lafufu_angry.png",
-  surprised: "lafufu_surprised.png",
-  neutral: "lafufu_neutral.png",
-  agree: "lafufu_agree.png",
-  disagree: "lafufu_disagree.png",
+  happy:     "idle_01.png",
+  sad:       "idle_07.png",
+  angry:     "idle_06.png",
+  surprised: "idle_01.png",
+  neutral:   "idle_01.png",
+  agree:     "laugh_01.png",
+  disagree:  "idle_06.png",
 };
 const spriteUrl = (emotion: string) =>
   api.imageFileUrl("sprites", "default", EMOTION_SPRITE[emotion] ?? EMOTION_SPRITE.neutral);

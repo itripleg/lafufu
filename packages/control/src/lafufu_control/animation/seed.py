@@ -1,8 +1,12 @@
-"""Seed the eight built-in expressions and their referenced frames.
+"""Seed the built-in expressions and their referenced frames.
 
 Per-row idempotent: inserts missing seed rows and backfills is_builtin on
 pre-existing seed-named rows. Never clobbers user edits on other fields.
-15 frames + 8 expressions wired to the canonical emotions.
+
+Servo frames (15): physical head-motion keyframes used by the animator.
+Video frames (33): idle_01..20 + laugh_01..13, each with an image ref from
+  the hand-drawn animation videos. Used by emotion expressions on the pet screen.
+Expressions (8): 7 emotions + idle random_walk.
 """
 
 import json
@@ -17,7 +21,7 @@ from ..models.frame import Frame
 IDLE = {"head_lr": 2063, "head_ud": 3082, "eye": 2045, "jaw": 1728, "brow": 2075}
 
 
-def _offset(**deltas: int) -> dict[str, int]:
+def _offset(**deltas: int) -> dict:
     """Idle pose with per-servo deltas (no clamping — the keyframe player clamps)."""
     out = dict(IDLE)
     for k, v in deltas.items():
@@ -25,7 +29,13 @@ def _offset(**deltas: int) -> dict[str, int]:
     return out
 
 
-SEED_FRAMES: dict[str, dict[str, int]] = {
+def _vid(filename: str) -> dict:
+    """Video-frame record: IDLE servo positions + image ref."""
+    return {**IDLE, "image": f"sprites/default/{filename}"}
+
+
+# Servo keyframes — physical head positions, no image refs.
+SEED_FRAMES: dict[str, dict] = {
     "agree_low": _offset(head_ud=40, brow=10),
     "agree_high": _offset(head_ud=-15, brow=10),
     "disagree_left": _offset(head_lr=55, brow=-5),
@@ -41,43 +51,94 @@ SEED_FRAMES: dict[str, dict[str, int]] = {
     "idle_glance_l": _offset(head_lr=12, eye=-40),
     "idle_glance_r": _offset(head_lr=-12, eye=40),
     "idle_look_up": _offset(head_ud=-20),
+    # Video frames — all at IDLE servo positions; image drives the pet screen.
+    **{f"vid_idle_{i:02d}": _vid(f"idle_{i:02d}.png") for i in range(1, 21)},
+    **{f"vid_laugh_{i:02d}": _vid(f"laugh_{i:02d}.png") for i in range(1, 14)},
+}
+
+# Frames whose image refs must be kept up-to-date even when already in the DB
+# (image path could change between releases). All vid_* frames qualify.
+_ALWAYS_REFRESH_IMAGE = {
+    n for n in SEED_FRAMES if n.startswith("vid_")
 }
 
 # (name, playback, default_duration_ms, default_delay_ms, easing, frame_names, emotion)
+# Emotion expressions now drive the pet screen through video frame image refs.
+# The idle expression stays random_walk (no frame list) for continuous head motion.
 SEED_EXPRESSIONS: list[tuple[str, str, int, int, str, list[str], str]] = [
     (
+        "neutral",
+        "once",
+        500,
+        0,
+        "ease-in-out",
+        ["vid_idle_01"],
+        "neutral",
+    ),
+    (
+        "happy",
+        "loop",
+        150,
+        0,
+        "linear",
+        [f"vid_laugh_{i:02d}" for i in range(1, 14)],
+        "happy",
+    ),
+    (
+        "sad",
+        "loop",
+        400,
+        0,
+        "ease-in-out",
+        [f"vid_idle_{i:02d}" for i in [6, 7, 8, 9, 10, 11]],
+        "sad",
+    ),
+    (
+        "angry",
+        "loop",
+        160,
+        0,
+        "linear",
+        [f"vid_idle_{i:02d}" for i in [5, 6, 7, 8, 9, 8, 7, 6]],
+        "angry",
+    ),
+    (
+        "surprised",
+        "once",
+        300,
+        0,
+        "ease-out",
+        [f"vid_idle_{i:02d}" for i in [1, 2, 3]],
+        "surprised",
+    ),
+    (
         "agree",
         "once",
-        220,
-        60,
+        180,
+        0,
         "ease-in-out",
-        ["agree_low", "agree_high", "agree_low", "agree_high", "agree_low"],
+        [f"vid_laugh_{i:02d}" for i in [1, 2, 3, 2, 1, 2, 3, 2, 1]],
         "agree",
     ),
     (
         "disagree",
         "once",
-        220,
-        60,
+        180,
+        0,
         "ease-in-out",
-        ["disagree_left", "disagree_right", "disagree_left", "disagree_right"],
+        [f"vid_idle_{i:02d}" for i in [5, 6, 7, 8, 7, 6, 5, 6, 7]],
         "disagree",
     ),
-    ("happy", "loop", 800, 300, "ease-in-out", ["happy_a", "happy_b"], "happy"),
-    ("sad", "loop", 1500, 600, "ease-in-out", ["sad_a", "sad_b"], "sad"),
-    ("angry", "loop", 180, 50, "linear", ["angry_a", "angry_b"], "angry"),
-    ("surprised", "once", 250, 1500, "ease-out", ["surprised_held"], "surprised"),
-    ("neutral", "once", 300, 100, "ease-in-out", ["idle_calm"], "neutral"),
     # idle uses random_walk — continuous sinusoidal motion around the idle
     # pose. steps_json holds the {intensity, speed, pause_chance} config
     # instead of a frame list. See KeyframePlayer._random_walk_pose.
     (
         "idle",
         "random_walk",
-        1200,  # duration/delay unused by random_walk; kept for schema parity
+        1200,
         400,
         "ease-in-out",
-        [],  # no frames
+        [],
         "idle",
     ),
 ]
@@ -89,6 +150,9 @@ IDLE_RANDOM_WALK_CONFIG = {"intensity": 1.0, "speed": 1.0, "pause_chance": 0.30}
 def seed_animations(engine) -> None:
     """Per-row upsert: insert missing seed rows, backfill is_builtin on
     pre-existing seed-named rows. Never clobbers user edits.
+
+    Video frames (_ALWAYS_REFRESH_IMAGE) are always updated so image paths
+    stay current across releases.
 
     Expressions are committed one-at-a-time because `Expression.emotion`
     carries a UNIQUE constraint: if a user-created row already claims
@@ -104,6 +168,11 @@ def seed_animations(engine) -> None:
             existing = s.get(Frame, name)
             if existing is None:
                 s.add(Frame(name=name, is_builtin=True, **pose))
+            elif name in _ALWAYS_REFRESH_IMAGE:
+                # Keep image ref current; don't touch servo positions or description.
+                existing.image = pose.get("image")
+                existing.is_builtin = True
+                s.add(existing)
             elif not existing.is_builtin:
                 existing.is_builtin = True
                 s.add(existing)
@@ -180,6 +249,15 @@ def apply_frame_seed(s: Session, name: str) -> Frame:
     f.is_builtin = True
     s.add(f)
     return f
+
+
+def apply_all_video_frame_seeds(s: Session) -> list[Frame]:
+    """Upsert every vid_* frame from the current seed. Used by the apply-seeds
+    script to push updated image refs to a running server's DB."""
+    out = []
+    for name in sorted(_ALWAYS_REFRESH_IMAGE):
+        out.append(apply_frame_seed(s, name))
+    return out
 
 
 def apply_expression_seed(s: Session, name: str) -> Expression:
