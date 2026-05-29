@@ -448,6 +448,47 @@ pre#log {
   margin: 0;
   font-size: 12px;
 }
+/* Sticky log dock — stays visible while you scroll through long tabs (FAQ etc).
+   The log card itself becomes a thin bar pinned to the bottom of the viewport. */
+#log-card {
+  position: sticky;
+  bottom: 0;
+  z-index: 20;
+  margin-bottom: 0;
+  border-radius: 6px 6px 0 0;
+  border-bottom: none;
+  background: var(--panel);
+}
+#log-card h2 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  cursor: pointer;
+  user-select: none;
+}
+#log-card h2::after {
+  content: "▾";
+  font-size: 0.75rem;
+  margin-left: auto;
+  transition: transform 0.15s;
+}
+#log-card.collapsed h2::after { transform: rotate(180deg); }
+#log-card.collapsed pre { display: none; }
+#log-card.collapsed { padding-bottom: 0.4rem; }
+#log-card .log-pill {
+  display: inline-block;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 0.7rem;
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  font-weight: 400;
+}
+#log-card .log-pill.has-error { color: var(--bad); }
+#log-card .log-pill.has-start { color: var(--accent-hot); }
+/* Leave room below `main` so sticky bottom doesn't cover the last task content. */
+main { padding-bottom: 0; }
 .wav-current { font-family: monospace; color: var(--muted); margin-left: 0.5rem; }
 .wav-current.set { color: var(--good); }
 dialog#export-dialog {
@@ -947,8 +988,8 @@ dialog#export-dialog .actions {
   </div>
 </div>
 
-<div class="card">
-  <h2>Log</h2>
+<div class="card" id="log-card">
+  <h2 onclick="toggleLog()">Log <span class="log-pill" id="log-pill">idle</span></h2>
   <pre id="log">(idle)</pre>
 </div>
 
@@ -1111,6 +1152,28 @@ function addLog(line) {
   if (pre.textContent === "(idle)") pre.textContent = "";
   pre.textContent += line + "\\n";
   pre.scrollTop = pre.scrollHeight;
+  flashLog(line);
+}
+
+function toggleLog() {
+  document.getElementById("log-card").classList.toggle("collapsed");
+}
+
+function flashLog(latestLine) {
+  const pill = document.getElementById("log-pill");
+  if (!pill) return;
+  pill.classList.remove("has-error", "has-start");
+  if (/^\\[error\\]/.test(latestLine)) {
+    pill.textContent = "error";
+    pill.classList.add("has-error");
+  } else if (/^\\[start\\]/.test(latestLine)) {
+    pill.textContent = "running";
+    pill.classList.add("has-start");
+  } else if (/^\\[done\\]/.test(latestLine)) {
+    pill.textContent = "done";
+  } else if (/^\\[stop\\]/.test(latestLine)) {
+    pill.textContent = "stopped";
+  }
 }
 
 let lastLogLen = 0;
@@ -1124,6 +1187,11 @@ async function pollStatus() {
       const pre = document.getElementById("log");
       pre.textContent = j.log.length ? j.log.join("\\n") : "(idle)";
       pre.scrollTop = pre.scrollHeight;
+      if (j.log.length) flashLog(j.log[j.log.length - 1]);
+      else {
+        const pill = document.getElementById("log-pill");
+        if (pill) { pill.textContent = "idle"; pill.classList.remove("has-error", "has-start"); }
+      }
       lastLogLen = j.log.length;
     }
   } catch (_) {}
