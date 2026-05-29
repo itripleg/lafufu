@@ -1319,11 +1319,11 @@ For an implementing agent:
 
 ## Apply to lafufu (live settings via admin UI or PUT /api/settings/<key>)
 
-${live.join("\n")}
+${live.join("\\n")}
 
 ## Other knobs (used in the testbed; may require code changes)
 
-${other.join("\n")}
+${other.join("\\n")}
 
 ## Context
 
