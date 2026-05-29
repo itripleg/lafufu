@@ -2,9 +2,11 @@
 
 Run this against local or VPS after deploying the new sprites:
     python scripts/apply_video_seeds.py
-    python scripts/apply_video_seeds.py --base http://2.24.90.246
+    python scripts/apply_video_seeds.py --base http://2.24.90.246:8090
 
-The server must already be running (docker compose up / uvicorn).
+After a git pull on a machine with an existing DB, the server auto-seeds new
+vid_* frames on startup. Only run this script if you pulled while the server
+was already running (it won't restart to pick up seed changes mid-run).
 """
 
 from __future__ import annotations
