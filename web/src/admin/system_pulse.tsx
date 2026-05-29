@@ -7,6 +7,12 @@ interface Line { ts: number; topic: string; payload: any; }
 
 const FILTER_KEY = "pulse/filter";
 const PAUSED_KEY = "pulse/paused";
+const TELEMETRY_KEY = "pulse/telemetry";
+
+// High-frequency telemetry (~20 Hz) that floods the firehose and drowns out
+// meaningful events. Dropped at ingest unless the "telemetry" toggle is on, so
+// the 200-line buffer stays full of signal rather than pose/rms spam.
+const NOISY = new Set(["animator.pose", "agent.tts.rms"]);
 
 const topicColor = (topic: string): string => {
   if (topic.startsWith("agent."))    return "var(--c-moss)";
@@ -21,11 +27,13 @@ export const SystemPulse: Component<{ nats: NatsWs }> = (props) => {
   const [lines, setLines] = createSignal<Line[]>([]);
   const [filter, setFilter] = createSignal(lsGet<string>(FILTER_KEY, ""));
   const [paused, setPaused] = createSignal(lsGet<boolean>(PAUSED_KEY, false));
+  const [showTelemetry, setShowTelemetry] = createSignal(lsGet<boolean>(TELEMETRY_KEY, false));
 
   let unsub: (() => void) | undefined;
   onMount(() => {
     unsub = props.nats.subscribe(">", (f) => {
       if (paused()) return;
+      if (!showTelemetry() && NOISY.has(f.topic)) return;
       setLines((ls) => [...ls.slice(-199), { ts: Date.now(), topic: f.topic, payload: f.payload }]);
     });
   });
@@ -42,6 +50,7 @@ export const SystemPulse: Component<{ nats: NatsWs }> = (props) => {
 
   const onFilter = (v: string) => { setFilter(v); lsSet(FILTER_KEY, v); };
   const togglePause = () => { const p = !paused(); setPaused(p); lsSet(PAUSED_KEY, p); };
+  const toggleTelemetry = () => { const v = !showTelemetry(); setShowTelemetry(v); lsSet(TELEMETRY_KEY, v); };
   const clear = () => setLines([]);
 
   return (
@@ -51,6 +60,13 @@ export const SystemPulse: Component<{ nats: NatsWs }> = (props) => {
       accent="var(--c-mauve)"
       actions={
         <>
+          <button
+            class={`btn btn--tiny ${showTelemetry() ? "" : "btn--ghost"}`}
+            onClick={toggleTelemetry}
+            title="Include high-frequency telemetry (animator.pose, agent.tts.rms)"
+          >
+            {showTelemetry() ? "telemetry on" : "telemetry off"}
+          </button>
           <button
             class={`btn btn--tiny ${paused() ? "" : "btn--ghost"}`}
             classList={{ "btn--coral": paused() }}
