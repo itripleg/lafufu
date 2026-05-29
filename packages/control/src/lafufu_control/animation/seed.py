@@ -58,9 +58,7 @@ SEED_FRAMES: dict[str, dict] = {
 
 # Frames whose image refs must be kept up-to-date even when already in the DB
 # (image path could change between releases). All vid_* frames qualify.
-_ALWAYS_REFRESH_IMAGE = {
-    n for n in SEED_FRAMES if n.startswith("vid_")
-}
+_ALWAYS_REFRESH_IMAGE = {n for n in SEED_FRAMES if n.startswith("vid_")}
 
 # (name, playback, default_duration_ms, default_delay_ms, easing, frame_names, emotion)
 # Emotion expressions now drive the pet screen through video frame image refs.
@@ -246,6 +244,10 @@ def apply_frame_seed(s: Session, name: str) -> Frame:
         return f
     for k, v in pose.items():
         setattr(f, k, v)
+    # Explicitly clear image when the seed doesn't define one — prevents stale
+    # image refs from persisting across resets on pure servo keyframes.
+    if "image" not in pose:
+        f.image = None
     f.is_builtin = True
     s.add(f)
     return f
