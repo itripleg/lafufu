@@ -17,8 +17,8 @@ from __future__ import annotations
 import argparse
 import json
 import time
-import urllib.request
 import urllib.parse
+import urllib.request
 import uuid
 from pathlib import Path
 
@@ -63,8 +63,9 @@ EXPRESSIONS = {
 
 def post(path: str, payload: dict) -> dict:
     data = json.dumps(payload).encode()
-    req = urllib.request.Request(COMFY + path, data=data,
-                                 headers={"Content-Type": "application/json"})
+    req = urllib.request.Request(
+        COMFY + path, data=data, headers={"Content-Type": "application/json"}
+    )
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.loads(r.read())
 
@@ -74,16 +75,17 @@ def upload_ref() -> str:
     boundary = "----lafufu" + uuid.uuid4().hex
     body = bytearray()
     body += f"--{boundary}\r\n".encode()
-    body += (b'Content-Disposition: form-data; name="image"; '
-             b'filename="lafufu_ref_crop.png"\r\n')
+    body += b'Content-Disposition: form-data; name="image"; filename="lafufu_ref_crop.png"\r\n'
     body += b"Content-Type: image/png\r\n\r\n"
     body += REF_CROP.read_bytes()
     body += f"\r\n--{boundary}\r\n".encode()
     body += b'Content-Disposition: form-data; name="overwrite"\r\n\r\ntrue\r\n'
     body += f"--{boundary}--\r\n".encode()
     req = urllib.request.Request(
-        COMFY + "/upload/image", data=bytes(body),
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+        COMFY + "/upload/image",
+        data=bytes(body),
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.loads(r.read())["name"]
 
@@ -91,29 +93,36 @@ def upload_ref() -> str:
 def build_graph(ref_name: str, emotion: str, denoise: float) -> dict:
     pos = POS_BASE.format(expr=EXPRESSIONS[emotion])
     return {
-        "1": {"class_type": "UNETLoader",
-              "inputs": {"unet_name": UNET, "weight_dtype": "default"}},
-        "2": {"class_type": "CLIPLoader",
-              "inputs": {"clip_name": CLIP, "type": "stable_diffusion"}},
+        "1": {"class_type": "UNETLoader", "inputs": {"unet_name": UNET, "weight_dtype": "default"}},
+        "2": {
+            "class_type": "CLIPLoader",
+            "inputs": {"clip_name": CLIP, "type": "stable_diffusion"},
+        },
         "3": {"class_type": "VAELoader", "inputs": {"vae_name": VAE}},
         "4": {"class_type": "LoadImage", "inputs": {"image": ref_name}},
-        "5": {"class_type": "VAEEncode",
-              "inputs": {"pixels": ["4", 0], "vae": ["3", 0]}},
-        "6": {"class_type": "CLIPTextEncode",
-              "inputs": {"text": pos, "clip": ["2", 0]}},
-        "7": {"class_type": "CLIPTextEncode",
-              "inputs": {"text": NEG, "clip": ["2", 0]}},
-        "8": {"class_type": "KSampler",
-              "inputs": {"model": ["1", 0], "positive": ["6", 0],
-                         "negative": ["7", 0], "latent_image": ["5", 0],
-                         "seed": SEED, "steps": STEPS, "cfg": CFG,
-                         "sampler_name": SAMPLER, "scheduler": SCHEDULER,
-                         "denoise": denoise}},
-        "9": {"class_type": "VAEDecode",
-              "inputs": {"samples": ["8", 0], "vae": ["3", 0]}},
-        "10": {"class_type": "SaveImage",
-               "inputs": {"images": ["9", 0],
-                          "filename_prefix": f"lafufu_{emotion}"}},
+        "5": {"class_type": "VAEEncode", "inputs": {"pixels": ["4", 0], "vae": ["3", 0]}},
+        "6": {"class_type": "CLIPTextEncode", "inputs": {"text": pos, "clip": ["2", 0]}},
+        "7": {"class_type": "CLIPTextEncode", "inputs": {"text": NEG, "clip": ["2", 0]}},
+        "8": {
+            "class_type": "KSampler",
+            "inputs": {
+                "model": ["1", 0],
+                "positive": ["6", 0],
+                "negative": ["7", 0],
+                "latent_image": ["5", 0],
+                "seed": SEED,
+                "steps": STEPS,
+                "cfg": CFG,
+                "sampler_name": SAMPLER,
+                "scheduler": SCHEDULER,
+                "denoise": denoise,
+            },
+        },
+        "9": {"class_type": "VAEDecode", "inputs": {"samples": ["8", 0], "vae": ["3", 0]}},
+        "10": {
+            "class_type": "SaveImage",
+            "inputs": {"images": ["9", 0], "filename_prefix": f"lafufu_{emotion}"},
+        },
     }
 
 
@@ -129,9 +138,13 @@ def run_one(ref_name: str, emotion: str, denoise: float) -> Path:
         time.sleep(2)
     outs = hist[pid]["outputs"]
     img = next(v["images"][0] for v in outs.values() if v.get("images"))
-    q = urllib.parse.urlencode({"filename": img["filename"],
-                                "subfolder": img.get("subfolder", ""),
-                                "type": img.get("type", "output")})
+    q = urllib.parse.urlencode(
+        {
+            "filename": img["filename"],
+            "subfolder": img.get("subfolder", ""),
+            "type": img.get("type", "output"),
+        }
+    )
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     dest = OUT_DIR / f"lafufu_{emotion}.png"
     with urllib.request.urlopen(f"{COMFY}/view?{q}", timeout=30) as r:

@@ -15,8 +15,6 @@ so the sprite animation still renders.
 import time
 
 import uvicorn
-from lafufu_shared import settings
-
 from lafufu_control.animation.seed import seed_animations
 from lafufu_control.api.app import create_app
 from lafufu_control.bootstrap import seed_default_settings
@@ -25,6 +23,7 @@ from lafufu_control.db import (
     create_engine_for_path,
     init_db,
 )
+from lafufu_shared import settings
 
 
 def main() -> None:

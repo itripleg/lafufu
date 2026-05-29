@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 import urllib.request
 from typing import Any
 
@@ -21,10 +20,14 @@ IDLE = {"head_lr": 2063, "head_ud": 3082, "eye": 2045, "jaw": 1728, "brow": 2075
 
 # Video frames: idle cycle (20) + laugh cycle (13), all at IDLE servo positions.
 VIDEO_FRAMES: dict[str, dict[str, Any]] = {
-    **{f"vid_idle_{i:02d}": {**IDLE, "image": f"sprites/default/idle_{i:02d}.png"}
-       for i in range(1, 21)},
-    **{f"vid_laugh_{i:02d}": {**IDLE, "image": f"sprites/default/laugh_{i:02d}.png"}
-       for i in range(1, 14)},
+    **{
+        f"vid_idle_{i:02d}": {**IDLE, "image": f"sprites/default/idle_{i:02d}.png"}
+        for i in range(1, 21)
+    },
+    **{
+        f"vid_laugh_{i:02d}": {**IDLE, "image": f"sprites/default/laugh_{i:02d}.png"}
+        for i in range(1, 14)
+    },
 }
 
 # Emotion expressions using video frame sequences.
@@ -118,7 +121,7 @@ def main() -> None:
 
     # 1. Load existing frames and expressions.
     existing_frames = {f["name"] for f in _req("GET", f"{base}/animator/frames")["items"]}
-    existing_exprs  = {e["name"] for e in _req("GET", f"{base}/animator/expressions")["items"]}
+    existing_exprs = {e["name"] for e in _req("GET", f"{base}/animator/expressions")["items"]}
 
     # 2. Upsert video frames.
     print(f"Upserting {len(VIDEO_FRAMES)} video frames...")

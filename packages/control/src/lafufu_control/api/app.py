@@ -1,4 +1,5 @@
 """FastAPI app factory. `nats_publish` is injected so tests can verify without a real broker."""
+# ruff: noqa: E402  — mimetypes registration must run before StaticFiles is used
 
 import mimetypes
 from collections.abc import Callable
