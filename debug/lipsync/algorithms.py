@@ -255,8 +255,10 @@ def run_monolith(cfg: MonolithCfg, wav_path: str, stop: threading.Event | None =
     release_coeff = 1.0 - math.exp(-dt / max(1e-6, cfg.release_ms / 1000.0))
 
     bus = JawBus.open()
-    proc = aplay_file_popen(wav_path, cfg.alsa_device)
+    # t0 BEFORE Popen so the wall-clock baseline is the moment we asked aplay
+    # to start (not the moment fork+exec returned ~30ms later on a loaded Pi).
     t0 = time.monotonic()
+    proc = aplay_file_popen(wav_path, cfg.alsa_device)
     env = 0.0
     try:
         for i, rms in enumerate(rms_vals):
@@ -282,9 +284,12 @@ def run_monolith(cfg: MonolithCfg, wav_path: str, stop: threading.Event | None =
             bus.write_goal(open_pct_to_dxl(env))
 
         bus.write_goal(open_pct_to_dxl(0.0))
-        with contextlib.suppress(Exception):
-            proc.wait(timeout=3)
     finally:
+        # Terminate FIRST so file-mode aplay (which plays the whole WAV and
+        # ignores stdin) exits promptly; THEN reap. Calling wait() before
+        # terminate() would block the full timeout on every Stop click.
         with contextlib.suppress(Exception):
             proc.terminate()
+        with contextlib.suppress(Exception):
+            proc.wait(timeout=3)
         bus.close()

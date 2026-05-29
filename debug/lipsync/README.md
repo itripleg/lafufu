@@ -33,10 +33,19 @@ Bring them back when done: `sudo systemctl start lafufu-agent lafufu-animator`.
   (`JAW_OPEN_POS=1594`, `JAW_CLOSE_POS=1811`). For a different head or
   recalibrated servo, edit those two constants first.
 - `JawBus` installs `SIGINT` / `SIGTERM` handlers and an `atexit` hook
-  that disable torque on exit — Ctrl-C or stopping the server will not
-  leave torque on. If something gets `kill -9`'d, power-cycle the U2D2.
+  that disable torque on exit. **CLI scripts** (`00..04_*.py`): Ctrl-C
+  cleanly torques off. **Web server** (`server.py`): the bus is opened
+  inside a worker thread, so signal handlers can't install there — use
+  the **Stop button** in the UI to end a run cleanly. If you do Ctrl-C
+  the server mid-run, torque may stay on briefly; power-cycle the U2D2
+  or wait a few seconds for the daemon thread to finish.
 - The scripts push goal positions **without any motion smoother**. If the
   servo jerks or stalls, kill the run.
+- **Bus detection requires the standard DXL chain**: `JawBus.open()`
+  probes motor ID 1 (`head_lr` in Lafufu's wiring) to verify a port +
+  baud combination is live. A minimal bench rig with only the jaw servo
+  (ID 4) powered will fail detection even though the jaw is present —
+  power the full chain or edit the probe ID in `common.py:JawBus.open`.
 
 ---
 

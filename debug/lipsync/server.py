@@ -487,8 +487,10 @@ pre#log {
 }
 #log-card .log-pill.has-error { color: var(--bad); }
 #log-card .log-pill.has-start { color: var(--accent-hot); }
-/* Leave room below `main` so sticky bottom doesn't cover the last task content. */
-main { padding-bottom: 0; }
+/* Leave room below `main` so the sticky log dock at the bottom doesn't cover
+   the last Run / Export buttons on long tabs (FAQ, Monolith). 5rem comfortably
+   clears the collapsed log header (~3rem) plus a margin. */
+main { padding-bottom: 5rem; }
 .wav-current { font-family: monospace; color: var(--muted); margin-left: 0.5rem; }
 .wav-current.set { color: var(--good); }
 dialog#export-dialog {
