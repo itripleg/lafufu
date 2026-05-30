@@ -9,18 +9,17 @@ round-trips stretch, the loop is starved, the stepper's wall-clock `dt`
 becomes irregular, and `smooth_damp` turns the fat `dt` into a lurch —
 visible as twitchy servos that get worse "after a while".
 
-This test proves the loop is blocked by servo I/O: it runs the real stepper
-loop against a bus whose writes are slow, and asserts the event loop stays
-responsive enough to service a 5 ms heartbeat. It FAILS on the current
-(blocking) implementation and PASSES once the bus writes are moved off the
-event loop (dedicated writer thread / executor).
+This test runs the real stepper against a bus whose writes are slow and asserts
+the event loop stays responsive enough to service a 5 ms heartbeat. It pins the
+fix: the stepper runs in a dedicated writer thread that owns the bus, so the
+blocking serial round-trips never stall the loop. (Before the fix the loop was
+stalled ~150 ms/tick.)
 """
 
 import asyncio
 import itertools
 import time
 
-import pytest
 from lafufu_animator.service import AnimatorService
 from lafufu_shared.testing import FakeDxlBus
 
@@ -42,19 +41,9 @@ class SlowDxlBus(FakeDxlBus):
         super().write(name, position)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Mechanism B unfixed: the stepper's blocking DXL round-trips run on the "
-        "event loop and stall it ~168 ms/tick. See "
-        "docs/superpowers/specs/2026-05-30-servo-twitch-fix-design.md. Remove this "
-        "marker when the writer-thread fix lands — strict=True will then flag the "
-        "xpass so this becomes a normal passing regression test."
-    ),
-)
 async def test_stepper_does_not_block_event_loop():
     bus = SlowDxlBus()
-    # Production stepper rate. No NATS needed — we drive _stepper_loop directly.
+    # Production stepper rate. No NATS needed — we start the stepper directly.
     svc = AnimatorService(bus=bus, nats_url="nats://unused:4222", stepper_hz=30.0)
     svc._has_u2d2 = True
 
@@ -67,14 +56,17 @@ async def test_stepper_does_not_block_event_loop():
             ticks.append(time.monotonic())
             await asyncio.sleep(0.005)
 
-    stepper = asyncio.create_task(svc._stepper_loop())
+    # The fix: the stepper runs in a dedicated writer thread that owns the bus,
+    # so its blocking serial round-trips never stall the event loop.
+    svc._start_stepper(asyncio.get_running_loop())
     hb = asyncio.create_task(heartbeat())
     try:
         await asyncio.sleep(1.0)  # let several stepper ticks happen
     finally:
         stop.set()
-        svc._shutdown.set()
-        await asyncio.gather(stepper, hb, return_exceptions=True)
+        svc._stepper_stop.set()
+        await asyncio.gather(hb, return_exceptions=True)
+        svc._stepper_thread.join(timeout=2)
 
     # Sanity: the stepper actually ran and wrote servos.
     assert bus.writes, "stepper never wrote to the bus"

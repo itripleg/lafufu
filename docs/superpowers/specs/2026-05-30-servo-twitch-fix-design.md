@@ -1,7 +1,7 @@
 # Servo twitch / "struggle after a while" — root cause + fix design
 
 **Date:** 2026-05-30
-**Status:** Ready for implementation (root cause confirmed; branch placement pending consolidation)
+**Status:** Mechanism B (event-loop blocking) **IMPLEMENTED on `main`** — servo writes moved to a dedicated writer thread + `dt` clamp; the regression test passes (xfail marker removed). Pending: live hardware verification on the real Lafufu, and Mechanism A (the testbed bus-guard + combined debug GUI).
 **Author:** diagnosis session (Claude)
 
 ## Symptom

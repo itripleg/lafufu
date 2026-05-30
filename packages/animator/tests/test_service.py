@@ -297,10 +297,14 @@ async def test_shutdown_awaits_tasks_before_closing_bus(nats_server):
     assert bus.closed is True, "DxlBus.close() must be called on shutdown"
     assert bus.torque_disabled is True, "torque must be disabled on shutdown"
     for t in (
-        svc._stepper_task,
         svc._pose_publish_task,
         svc._keyframe_player_task,
         svc._lipsync_watchdog_task,
         svc._idle_request_task,
     ):
         assert t is None or t.done(), f"background task {t!r} must be done after shutdown"
+    # The servo stepper is a dedicated thread now; it must be joined before the
+    # bus is closed so no write races disable_torque/close.
+    assert svc._stepper_thread is None or not svc._stepper_thread.is_alive(), (
+        "stepper thread must be joined on shutdown"
+    )

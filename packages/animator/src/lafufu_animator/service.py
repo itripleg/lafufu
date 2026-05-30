@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import threading
 import time
 from typing import Protocol
 
@@ -80,8 +81,15 @@ class AnimatorService(BaseService):
         self._pose_publish_task: asyncio.Task | None = None
         self._lipsync_watchdog_task: asyncio.Task | None = None
         self._keyframe_player_task: asyncio.Task | None = None
-        self._stepper_task: asyncio.Task | None = None
         self._idle_request_task: asyncio.Task | None = None
+        # The servo stepper runs in a DEDICATED THREAD (not an asyncio task) that
+        # exclusively owns the DXL bus. Bus writes are blocking serial round-trips;
+        # running them on the event loop stalled it and made the stepper's wall-clock
+        # dt irregular under load — which smooth_damp turned into lurches (twitchy
+        # servos). The thread decouples servo cadence from loop scheduling.
+        self._stepper_thread: threading.Thread | None = None
+        self._stepper_stop = threading.Event()
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     @property
     def nats_url(self) -> str:
@@ -214,7 +222,9 @@ class AnimatorService(BaseService):
         self._pose_publish_task = asyncio.create_task(self._pose_publish_loop())
         self._lipsync_watchdog_task = asyncio.create_task(self._lipsync_watchdog())
         self._keyframe_player_task = asyncio.create_task(self._keyframe_player_loop())
-        self._stepper_task = asyncio.create_task(self._stepper_loop())
+        # Servo stepper: dedicated writer thread that owns the bus, NOT an asyncio
+        # task — keeps blocking serial I/O off the event loop.
+        self._start_stepper(asyncio.get_running_loop())
 
     async def on_shutdown(self) -> None:
         tasks = [
@@ -223,7 +233,6 @@ class AnimatorService(BaseService):
                 self._pose_publish_task,
                 self._lipsync_watchdog_task,
                 self._keyframe_player_task,
-                self._stepper_task,
                 self._idle_request_task,
             )
             if t
@@ -232,6 +241,13 @@ class AnimatorService(BaseService):
             t.cancel()
         # Await them so no task writes to the bus after we disable torque.
         await asyncio.gather(*tasks, return_exceptions=True)
+        # Stop + join the stepper THREAD before touching the bus, so no write can
+        # race disable_torque/close (mirrors the await-tasks-before-close rule).
+        # Joined off the loop so we don't block it; the thread is a daemon, so a
+        # timeout can't wedge process exit.
+        self._stepper_stop.set()
+        if self._stepper_thread is not None:
+            await asyncio.to_thread(self._stepper_thread.join, 2.0)
         try:
             self._bus.disable_torque()
         except Exception as e:
@@ -355,19 +371,40 @@ class AnimatorService(BaseService):
             self.log.warning("dxl.read.failed error=%s", e)
             return None
 
-    async def _stepper_loop(self) -> None:
-        """Ease the current pose toward the target pose and write to the bus.
+    def _start_stepper(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Start the servo stepper in its dedicated writer thread.
 
-        Uses the acceleration-limited PoseSmoother (motion.py): every move
-        eases IN and out, so a large target change no longer starts with a
-        jerk. Per-servo smooth-times keep the jaw fast for lipsync while the
+        Captures the running loop so the thread can marshal the (async)
+        degraded-state publish back onto it via ``call_soon_threadsafe``.
+        """
+        self._loop = loop
+        self._stepper_stop.clear()
+        self._stepper_thread = threading.Thread(
+            target=self._stepper_run, name="dxl-stepper", daemon=True
+        )
+        self._stepper_thread.start()
+
+    def _stepper_run(self) -> None:
+        """Ease current pose toward target and write to the bus — in a dedicated
+        thread, OFF the event loop.
+
+        Each pose write is five blocking DXL round-trips; on the loop they stalled
+        every other coroutine and made this loop's wall-clock ``dt`` irregular,
+        which ``smooth_damp`` turned into lurches (twitchy servos under load).
+        Owning the bus in one thread also keeps it a single writer.
+
+        Uses the acceleration-limited PoseSmoother (motion.py): every move eases
+        IN and out. Per-servo smooth-times keep the jaw fast for lipsync while the
         head stays calm and deliberate.
         """
         last = time.monotonic()
-        while not self._shutdown.is_set():
+        while not self._stepper_stop.is_set():
             now = time.monotonic()
             dt = now - last
             last = now
+            # Clamp dt so a one-off long gap (GC pause, a slow/contended write, a
+            # scheduling hiccup) can't make smooth_damp emit a single large lurch.
+            dt = min(dt, 2.0 * self._stepper_dt)
             try:
                 if self._has_u2d2:
                     new_pose = self._smoother.step(self._target_pose, dt)
@@ -376,12 +413,23 @@ class AnimatorService(BaseService):
                     except OSError as e:
                         self.log.warning("dxl.write.failed error=%s", e)
                         self._has_u2d2 = False
-                        await self._publish_state("degraded", detail=str(e))
+                        self._publish_degraded_threadsafe(str(e))
             except Exception as e:
                 self.log.warning("stepper.error error=%s", e)
 
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(self._shutdown.wait(), timeout=self._stepper_dt)
+            self._stepper_stop.wait(timeout=self._stepper_dt)
+
+    def _publish_degraded_threadsafe(self, detail: str) -> None:
+        """Schedule the (async) degraded-state publish on the event loop from the
+        stepper thread — NATS publishing must run on the loop, not this thread."""
+        loop = self._loop
+        if loop is None:
+            return
+        # The loop may already be closing during shutdown; swallow that race.
+        with contextlib.suppress(RuntimeError):
+            loop.call_soon_threadsafe(
+                lambda: asyncio.create_task(self._publish_state("degraded", detail=detail))
+            )
 
     async def _on_preview(self, subject: str, msg: schemas.AnimatorIntentPreview) -> None:
         self._last_intent_mono = time.monotonic()
