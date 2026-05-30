@@ -111,7 +111,13 @@ def _run_chunked(cfg: DirectCfg, wav_path: str, target_fn, stop: threading.Event
         reader.close()
 
     bus = JawBus.open()
-    proc = aplay_popen(info.sample_rate, buffer_frames, period_frames, cfg.alsa_device)
+    try:
+        proc = aplay_popen(info.sample_rate, buffer_frames, period_frames, cfg.alsa_device)
+    except BaseException:
+        # If aplay can't be spawned, the bus has torque enabled with no further
+        # writes — torque off and re-raise so we don't leave the jaw energised.
+        bus.close()
+        raise
 
     try:
         dt = cfg.chunk_ms / 1000.0
@@ -168,7 +174,9 @@ def run_servo_only(cfg: ServoOnlyCfg, stop: threading.Event | None = None) -> No
             if sleep_for > 0 and stop.wait(timeout=sleep_for):
                 break
         bus.write_goal(open_pct_to_dxl(0.0))
-        time.sleep(0.3)
+        # Park briefly so the operator sees a clean stop; honour stop so the
+        # park doesn't block a follow-up Run after the user clicks Stop.
+        stop.wait(timeout=0.3)
     finally:
         bus.close()
 
@@ -258,7 +266,11 @@ def run_monolith(cfg: MonolithCfg, wav_path: str, stop: threading.Event | None =
     # t0 BEFORE Popen so the wall-clock baseline is the moment we asked aplay
     # to start (not the moment fork+exec returned ~30ms later on a loaded Pi).
     t0 = time.monotonic()
-    proc = aplay_file_popen(wav_path, cfg.alsa_device)
+    try:
+        proc = aplay_file_popen(wav_path, cfg.alsa_device)
+    except BaseException:
+        bus.close()
+        raise
     env = 0.0
     try:
         for i, rms in enumerate(rms_vals):

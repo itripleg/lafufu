@@ -153,16 +153,22 @@ def open_wav(path: str) -> tuple[wave.Wave_read, WavInfo]:
     you have something exotic.
     """
     w = wave.open(path, "rb")  # noqa: SIM115 — caller closes after iter_chunks
-    info = WavInfo(
-        sample_rate=w.getframerate(),
-        channels=w.getnchannels(),
-        sample_width=w.getsampwidth(),
-        frames=w.getnframes(),
-    )
-    if info.channels != 1 or info.sample_width != 2:
-        raise ValueError(
-            f"expected 16-bit mono WAV, got channels={info.channels} width={info.sample_width}"
+    try:
+        info = WavInfo(
+            sample_rate=w.getframerate(),
+            channels=w.getnchannels(),
+            sample_width=w.getsampwidth(),
+            frames=w.getnframes(),
         )
+        if info.channels != 1 or info.sample_width != 2:
+            raise ValueError(
+                f"expected 16-bit mono WAV, got channels={info.channels} width={info.sample_width}"
+            )
+    except BaseException:
+        # Close the file descriptor before re-raising so format-rejection
+        # in a long bench session doesn't leak fds.
+        w.close()
+        raise
     return w, info
 
 
