@@ -6,7 +6,6 @@ Decoupled from concrete mic/Whisper/Ollama/Piper — uses Protocol-style duck ty
 import asyncio
 import logging
 import socket
-import threading
 import time
 from datetime import datetime
 from typing import Protocol
@@ -132,91 +131,69 @@ class VoicePipeline:
             if self.speaker_play and hasattr(self.speaker_play, "play")
             else self.speaker_play
         )
-        # Pace chunk writes + RMS publishes to playback rate so animator's
-        # jaw motion stays in sync with audio. Anchored to the FIRST play_fn
-        # call (set inside the loop) — anchoring before queue.get() instead
-        # would leave next_tick in the past by however long Piper took to
-        # synthesize the first chunk (~100ms+), so every sleep_for would
-        # compute negative and the loop would race through publishing
-        # back-to-back. With first-write anchoring, chunk N publishes at
-        # audio_start + (N+1)*chunk_dt — i.e. exactly when ALSA's first
-        # period flips chunk N to audible (period_size = chunk_dt).
         chunk_dt = getattr(self.piper, "chunk_ms", 40) / 1000.0
-        start_ts: float | None = None
-        next_tick = 0.0
-
-        # Stream synth in an executor — chunks arrive via a bounded queue so
-        # blocking generator iteration doesn't freeze the loop. `cancelled`
-        # lets us stop the producer if the consumer aborts early.
         loop = asyncio.get_running_loop()
-        queue: asyncio.Queue[tuple[bytes, float] | None] = asyncio.Queue(maxsize=8)
-        cancelled = threading.Event()
 
-        def _produce():
-            try:
-                gen = (
-                    self.piper.synthesize_stream(text)
-                    if hasattr(self.piper, "synthesize_stream")
-                    else iter(self.piper.synthesize(text))
-                )
-                for item in gen:
-                    if cancelled.is_set():
-                        break
-                    asyncio.run_coroutine_threadsafe(queue.put(item), loop).result()
-            finally:
-                asyncio.run_coroutine_threadsafe(queue.put(None), loop).result()
+        # Render the WHOLE utterance up front, THEN play + pace the jaw against
+        # playback start. The earlier chunk-streaming approach let a slow synth
+        # fall behind realtime: when the consumer waited on the next chunk, the
+        # jaw-pacing clock kept advancing, so the jaw drifted from the audio and
+        # ran on after the voice stopped. Buffering removes that producer race —
+        # the legacy monolith rendered each utterance fully before playing, and
+        # the bench testbed confirmed buffered/file playback stays locked while
+        # stdin-streaming desyncs. Tradeoff: a short beat before speech while the
+        # reply synthesizes.
+        def _synth_all() -> list[tuple[bytes, float]]:
+            gen = (
+                self.piper.synthesize_stream(text)
+                if hasattr(self.piper, "synthesize_stream")
+                else iter(self.piper.synthesize(text))
+            )
+            return list(gen)
 
         try:
-            producer_fut = loop.run_in_executor(None, _produce)
-            try:
-                while True:
-                    item = await queue.get()
-                    if item is None:
-                        break
-                    audio_bytes, raw_rms = item
-                    if play_fn:
-                        play_fn(audio_bytes)
-                    # Anchor the pacing clock to the FIRST write into aplay —
-                    # that's the moment audio begins buffering toward the
-                    # speaker. Anchoring before queue.get() would leave the
-                    # pacing math in the past by the synth latency and every
-                    # subsequent sleep_for would compute negative.
-                    if start_ts is None:
-                        start_ts = time.monotonic()
-                        next_tick = start_ts
-                    # Adapt raw RMS → 0..1 mouth target against recent loudness.
-                    mouth_target = self._lipsync_norm.update(raw_rms)
-                    # Sleep until next_tick (one chunk_dt after the previous
-                    # publish, i.e. when ALSA flips the freshly-buffered chunk
-                    # to audible), THEN publish so the jaw moves with the
-                    # audio rather than ahead of it.
-                    next_tick += chunk_dt
-                    sleep_for = next_tick - time.monotonic()
-                    if sleep_for > 0:
-                        await asyncio.sleep(sleep_for)
-                    await nats_helper.publish_model(
-                        self.nats,
-                        topics.AGENT_TTS_RMS,
-                        schemas.AgentTtsRms(
-                            ts=time.monotonic() - start_ts,
-                            rms=mouth_target,
-                            mouth_target=mouth_target,
-                        ),
-                    )
-            finally:
-                # Signal the producer to stop, then drain the queue so any
-                # pending put() coroutine can complete — without this, a
-                # producer thread blocked on a full queue would hang the
-                # `await producer_fut` below forever.
-                cancelled.set()
-                while True:
-                    try:
-                        drained = queue.get_nowait()
-                    except asyncio.QueueEmpty:
-                        break
-                    if drained is None:
-                        break
-                await producer_fut
+            # Synthesis blocks; run it in an executor so the loop keeps
+            # servicing NATS + callbacks during the synth beat.
+            chunks = await loop.run_in_executor(None, _synth_all)
+
+            # Feed the already-synthesized audio to the speaker in a worker
+            # thread so its blocking writes never stall the loop; aplay then
+            # plays at a steady realtime rate. We pace the RMS/jaw track against
+            # the moment playback began (t0) — exactly like the monolith, and
+            # with all audio buffered there is no producer race to drift against.
+            def _play_all() -> None:
+                if not play_fn:
+                    return
+                for audio_bytes, _rms in chunks:
+                    play_fn(audio_bytes)
+
+            play_fut = loop.run_in_executor(None, _play_all)
+            t0 = time.monotonic()
+
+            for i, (_audio_bytes, raw_rms) in enumerate(chunks):
+                # Stop pacing early if playback died (speaker/aplay raised).
+                if play_fut.done() and play_fut.exception() is not None:
+                    break
+                # Adapt raw RMS → 0..1 mouth target against recent loudness.
+                mouth_target = self._lipsync_norm.update(raw_rms)
+                # Publish chunk i's jaw target when it should be audible: t0 plus
+                # i*chunk_dt. animator.lipsync.offset_ms trims the residual
+                # buffer/prepend lead.
+                target_t = t0 + i * chunk_dt
+                sleep_for = target_t - time.monotonic()
+                if sleep_for > 0:
+                    await asyncio.sleep(sleep_for)
+                await nats_helper.publish_model(
+                    self.nats,
+                    topics.AGENT_TTS_RMS,
+                    schemas.AgentTtsRms(
+                        ts=time.monotonic() - t0,
+                        rms=mouth_target,
+                        mouth_target=mouth_target,
+                    ),
+                )
+            # Surface any playback error and wait for playback to drain.
+            await play_fut
         finally:
             # Always close the speaker + return to idle, even if playback
             # raised — otherwise the aplay subprocess leaks and the agent

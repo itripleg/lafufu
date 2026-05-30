@@ -191,8 +191,14 @@ async def test_pipeline_does_not_block_event_loop_during_synth(nats_server):
     assert max(spans) < 0.18, f"event loop blocked for >180ms during synth: {spans}"
 
 
-async def test_pipeline_streams_first_chunk_before_synth_finishes(nats_server):
-    """TTFS test: first chunk should hit the speaker before the last chunk is synthesized."""
+async def test_pipeline_buffers_full_synth_before_playback(nats_server):
+    """Lipsync sync fix: the WHOLE utterance is synthesized before any audio
+    plays or the jaw pacing begins. Chunk-streaming let a slow synth fall behind
+    realtime, so the jaw-pacing clock drifted from the audio (the drift you see
+    as the mouth lagging + continuing after the voice stops). Buffering removes
+    that producer race — matching the legacy monolith's render-then-play. The
+    tradeoff is a short beat before speech while the reply synthesizes.
+    """
     import time as _time
 
     import nats
@@ -205,7 +211,7 @@ async def test_pipeline_streams_first_chunk_before_synth_finishes(nats_server):
 
         def synthesize_stream(self, text):
             for _i in range(5):
-                _time.sleep(0.1)  # 100ms per chunk
+                _time.sleep(0.1)  # 100ms per chunk => ~500ms total synth
                 yield (b"\x00" * 1764, 0.5)
 
         def synthesize(self, text):
@@ -223,18 +229,16 @@ async def test_pipeline_streams_first_chunk_before_synth_finishes(nats_server):
         speaker_play=_record_play,
     )
 
-    # NOTE: t_start includes mic + LLM stub time (both near-instant with fakes).
-    # The 250ms budget below has ~150ms slack over the ~100ms first-synth-chunk.
     t_start = _time.monotonic()
-    await pipeline.run_one_cycle()
+    await pipeline.speak("hi")
     await nc.drain()
 
     assert len(play_times) == 5
-    # First chunk should arrive within ~250ms of synth start (first synth chunk
-    # is ~100ms, plus loop overhead). NOT 500ms (which would mean buffering).
+    # No audio plays until the full ~500ms synth completes (buffered). Streaming
+    # would have played the first chunk at ~100ms.
     first_chunk_latency = play_times[0] - t_start
-    assert first_chunk_latency < 0.25, (
-        f"first chunk latency {first_chunk_latency:.3f}s exceeds budget — synth was buffered"
+    assert first_chunk_latency >= 0.4, (
+        f"first play at {first_chunk_latency:.3f}s — synth was NOT buffered (still streaming)"
     )
 
 
