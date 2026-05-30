@@ -44,6 +44,27 @@ CLAMP = {
 PROFILE_VELOCITY = 300
 PROFILE_ACCELERATION = 80
 
+# The jaw is the exception. Lipsync needs it to SNAP between open and closed at
+# syllable speed; the calm 300/80 head profile throttles it so a brief loud
+# syllable (~40 ms) never physically reaches full open — measured: the software
+# (normalizer + envelope) commands ~full range, the servo's onboard motion
+# profile was the cap. 0 = unlimited in the X-series velocity-based profile,
+# matching the debug testbed's JawBus (the gold-reference lipsync), which sets
+# no profile at all. Tune up to a finite value here if the snap is too harsh.
+JAW_PROFILE_VELOCITY = 0
+JAW_PROFILE_ACCELERATION = 0
+
+
+def profile_velocity(servo: str) -> int:
+    """Per-servo Profile Velocity. The jaw runs unlimited for lipsync snap;
+    every other servo keeps the calm safety-cap velocity."""
+    return JAW_PROFILE_VELOCITY if servo == "jaw" else PROFILE_VELOCITY
+
+
+def profile_acceleration(servo: str) -> int:
+    """Per-servo Profile Acceleration. See profile_velocity()."""
+    return JAW_PROFILE_ACCELERATION if servo == "jaw" else PROFILE_ACCELERATION
+
 
 def clamp(value: float, lo: float, hi: float) -> int:
     """Clamp value to [min(lo,hi), max(lo,hi)] and return as int."""

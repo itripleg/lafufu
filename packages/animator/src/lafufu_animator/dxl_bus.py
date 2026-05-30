@@ -111,8 +111,10 @@ class DxlBus:
             for addr, value in (
                 (ADDR_MIN_POSITION_LIMIT, lo),
                 (ADDR_MAX_POSITION_LIMIT, hi),
-                (ADDR_PROFILE_VELOCITY, pose.PROFILE_VELOCITY),
-                (ADDR_PROFILE_ACCELERATION, pose.PROFILE_ACCELERATION),
+                # Per-servo: the jaw runs unlimited so it can snap for lipsync;
+                # head/eye/brow keep the calm safety-cap profile.
+                (ADDR_PROFILE_VELOCITY, pose.profile_velocity(name)),
+                (ADDR_PROFILE_ACCELERATION, pose.profile_acceleration(name)),
             ):
                 comm, err = self._packet.write4ByteTxRx(self._port, dxl_id, addr, int(value))
                 self._check(comm, err, f"configure_limits {name}")

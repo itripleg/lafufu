@@ -97,13 +97,35 @@ def test_configure_limits_writes_position_limits_per_servo():
 
 
 def test_configure_limits_writes_velocity_and_acceleration_backstop():
-    """Profile Velocity + Acceleration capped in hardware as a safety backstop."""
+    """Profile Velocity + Acceleration capped in hardware as a safety backstop
+    for the CALM servos (head/eye/brow). The jaw is the exception — see
+    test_configure_limits_jaw_snaps_faster_than_head."""
     bus = _bus()
     bus.configure_limits()
     writes = bus._packet.writes
-    for dxl_id in pose.DXL_IDS.values():
+    for name, dxl_id in pose.DXL_IDS.items():
+        if name == "jaw":
+            continue
         assert (dxl_id, ADDR_PROFILE_VELOCITY, pose.PROFILE_VELOCITY) in writes
         assert (dxl_id, ADDR_PROFILE_ACCELERATION, pose.PROFILE_ACCELERATION) in writes
+
+
+def test_configure_limits_jaw_snaps_faster_than_head():
+    """The jaw must SNAP for lipsync. The calm head profile (300/80) throttled
+    it so brief loud syllables never physically reached full open — the software
+    commands ~full range, the servo's onboard profile was the cap. The jaw gets
+    an unlimited profile (0 = max in the X-series velocity-based profile),
+    matching the debug testbed's gold-reference JawBus, which sets no profile."""
+    bus = _bus()
+    bus.configure_limits()
+    writes = bus._packet.writes
+    jaw_id = pose.DXL_IDS["jaw"]
+    head_id = pose.DXL_IDS["head_lr"]
+    assert (jaw_id, ADDR_PROFILE_VELOCITY, 0) in writes
+    assert (jaw_id, ADDR_PROFILE_ACCELERATION, 0) in writes
+    # The jaw profile must differ from the calm head profile.
+    assert (jaw_id, ADDR_PROFILE_VELOCITY, pose.PROFILE_VELOCITY) not in writes
+    assert (head_id, ADDR_PROFILE_VELOCITY, pose.PROFILE_VELOCITY) in writes
 
 
 def test_configure_limits_raises_when_port_not_open():
