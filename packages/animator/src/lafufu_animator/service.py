@@ -68,6 +68,14 @@ class AnimatorService(BaseService):
         self._stepper_dt = 1.0 / max(1.0, stepper_hz)
         self._has_u2d2 = True  # set False on disconnect
         self._last_rms_ts = 0.0
+        # True while the agent is mid-utterance (agent.state == "speaking").
+        # While speaking, lipsync owns the jaw outright: a custom emotion
+        # expression may still drive head/eye/brow, but its jaw keyframe must
+        # NOT reach the mouth (it would fight lipsync). Without this flag the
+        # only protection was a 500ms-since-last-RMS window, which let the
+        # expression grab the jaw before the first RMS and during inter-sentence
+        # pauses.
+        self._speaking = False
         self._last_intent_mono = 0.0  # monotonic timestamp of last intent/preview/reply
         self.idle_animation_enabled = True  # toggleable via settings (Phase 0 default: on)
 
@@ -90,6 +98,18 @@ class AnimatorService(BaseService):
         self._stepper_thread: threading.Thread | None = None
         self._stepper_stop = threading.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
+        # Servo-bus fault tolerance. A serial DXL bus occasionally drops a
+        # single round-trip (a transient COMM_RX_TIMEOUT / -3001 — EMI, a
+        # momentarily-busy servo). A single transient is NOT a dead bus, so
+        # we tolerate a few CONSECUTIVE failures before declaring degraded;
+        # any success resets the counter. Once degraded, the stepper keeps
+        # trying to re-open the bus on an interval so it self-heals without a
+        # service restart (the old behaviour: one -3001 killed all motion +
+        # idle until someone restarted the animator).
+        self._max_write_failures = 5
+        self._consecutive_write_failures = 0
+        self._reopen_interval_s = 2.0
+        self._last_reopen_attempt = 0.0
 
     @property
     def nats_url(self) -> str:
@@ -163,6 +183,14 @@ class AnimatorService(BaseService):
             topics.AGENT_TTS_RMS,
             schemas.AgentTtsRms,
             self._on_tts_rms,
+        )
+        # Track the agent's speaking state so lipsync can own the jaw exclusively
+        # while it talks (emotion expressions still move head/eye/brow).
+        await nats_helper.subscribe_model(
+            self.nats,
+            f"{topics.AGENT_STATE}.*",
+            schemas.AgentState,
+            self._on_agent_state,
         )
         # Per-servo idle defaults — operator-tunable via admin sliders.
         # When a value arrives, store it AND update target_pose so the servo
@@ -332,6 +360,9 @@ class AnimatorService(BaseService):
         )
 
     def _move_to_pose(self, p: schemas.AnimatorPose) -> None:
+        # Raise on a failed write so the stepper can apply its consecutive-
+        # failure policy. _move_to_pose does NOT decide degraded state itself:
+        # a single transient timeout must not be treated as a dead bus.
         for name, value in (
             ("head_lr", p.head_lr),
             ("head_ud", p.head_ud),
@@ -339,11 +370,7 @@ class AnimatorService(BaseService):
             ("jaw", p.jaw),
             ("brow", p.brow),
         ):
-            try:
-                self._bus.write(name, value)
-            except OSError:
-                self._has_u2d2 = False
-                raise
+            self._bus.write(name, value)
         self._current_pose = p
 
     async def _safe_apply(self, target_pose: schemas.AnimatorPose) -> None:
@@ -410,26 +437,92 @@ class AnimatorService(BaseService):
                     new_pose = self._smoother.step(self._target_pose, dt)
                     try:
                         self._move_to_pose(new_pose)
+                        # Success — clear any transient-failure streak.
+                        if self._consecutive_write_failures:
+                            self.log.info(
+                                "dxl.write.recovered after=%d transient failure(s)",
+                                self._consecutive_write_failures,
+                            )
+                            self._consecutive_write_failures = 0
                     except OSError as e:
-                        self.log.warning("dxl.write.failed error=%s", e)
-                        self._has_u2d2 = False
-                        self._publish_degraded_threadsafe(str(e))
+                        self._consecutive_write_failures += 1
+                        if self._consecutive_write_failures >= self._max_write_failures:
+                            self.log.warning(
+                                "dxl.write.failed error=%s consecutive=%d -> degraded",
+                                e,
+                                self._consecutive_write_failures,
+                            )
+                            self._has_u2d2 = False
+                            self._last_reopen_attempt = now
+                            self._publish_degraded_threadsafe(str(e))
+                        else:
+                            # Transient — log and retry on the next tick.
+                            self.log.warning(
+                                "dxl.write.transient error=%s consecutive=%d/%d",
+                                e,
+                                self._consecutive_write_failures,
+                                self._max_write_failures,
+                            )
+                else:
+                    # Degraded: keep trying to re-open so the bus self-heals
+                    # without needing a service restart.
+                    self._attempt_bus_reopen(now)
             except Exception as e:
                 self.log.warning("stepper.error error=%s", e)
 
             self._stepper_stop.wait(timeout=self._stepper_dt)
 
-    def _publish_degraded_threadsafe(self, detail: str) -> None:
-        """Schedule the (async) degraded-state publish on the event loop from the
-        stepper thread — NATS publishing must run on the loop, not this thread."""
+    def _attempt_bus_reopen(self, now: float) -> None:
+        """Throttled re-open of a degraded bus, from the stepper thread.
+
+        Runs only every ``_reopen_interval_s`` so a persistently-absent bus
+        doesn't spin re-probing every tick. On success, re-seeds the smoother
+        from the servos' present positions (so the first move eases rather than
+        snaps) and returns to the ``idle`` state. Any failure leaves us degraded
+        and schedules the next attempt.
+        """
+        if now - self._last_reopen_attempt < self._reopen_interval_s:
+            return
+        self._last_reopen_attempt = now
+        try:
+            # Drop any stale handle before re-probing.
+            with contextlib.suppress(Exception):
+                self._bus.close()
+            self._bus.open()  # type: ignore[call-arg]
+            with contextlib.suppress(Exception):
+                self._bus.configure_limits()
+            self._bus.enable_torque()
+        except Exception as e:
+            self.log.warning("dxl.reopen.failed error=%s", e)
+            return
+
+        present = self._read_present_pose()
+        if present is not None:
+            self._smoother.reset_to(present)
+            self._current_pose = present
+        self._consecutive_write_failures = 0
+        self._has_u2d2 = True
+        self.log.info("dxl.reopen.ok bus reconnected; resuming servo motion")
+        self._publish_state_threadsafe("idle")
+
+    def _publish_state_threadsafe(self, state_name: str, detail: str = "") -> None:
+        """Schedule an (async) state publish on the event loop from the stepper
+        thread — NATS publishing must run on the loop, not this thread.
+
+        No-ops when there's no running loop or NATS connection yet (e.g. unit
+        tests that drive the stepper directly without a live bus connection).
+        """
         loop = self._loop
-        if loop is None:
+        if loop is None or self.nats is None:
             return
         # The loop may already be closing during shutdown; swallow that race.
         with contextlib.suppress(RuntimeError):
             loop.call_soon_threadsafe(
-                lambda: asyncio.create_task(self._publish_state("degraded", detail=detail))
+                lambda: asyncio.create_task(self._publish_state(state_name, detail=detail))
             )
+
+    def _publish_degraded_threadsafe(self, detail: str) -> None:
+        self._publish_state_threadsafe("degraded", detail=detail)
 
     async def _on_preview(self, subject: str, msg: schemas.AnimatorIntentPreview) -> None:
         self._last_intent_mono = time.monotonic()
@@ -503,6 +596,11 @@ class AnimatorService(BaseService):
             now_ms=int(time.monotonic() * 1000),
         )
         self._active_expression_name = msg.name
+
+    async def _on_agent_state(self, subject: str, msg: schemas.AgentState) -> None:
+        # Lipsync owns the jaw for the whole utterance, not just within 500ms
+        # of the last RMS. Flips on at "speaking", off at every other state.
+        self._speaking = msg.state == "speaking"
 
     async def _on_tts_rms(self, subject: str, msg: schemas.AgentTtsRms) -> None:
         # Drive the jaw via the attack/release envelope. mouth_target is already
@@ -589,8 +687,12 @@ class AnimatorService(BaseService):
 
                     if self._active_player is not None:
                         target = self._active_player.pose_at(now_ms)
-                        # If lipsync is currently driving the jaw, preserve it.
-                        if now_mono - self._last_rms_ts <= 0.5:
+                        # Lipsync owns the jaw while the agent is speaking (or
+                        # within 500ms of the last RMS as a fallback for direct
+                        # tts.rms without a speaking-state publisher). The
+                        # expression still drives head/eye/brow — only its jaw
+                        # keyframe is suppressed so it can't fight the mouth.
+                        if self._speaking or now_mono - self._last_rms_ts <= 0.5:
                             target = target.model_copy(update={"jaw": self._current_pose.jaw})
                         await self._safe_apply(target)
 

@@ -103,6 +103,90 @@ async def test_tts_rms_drives_jaw_during_speaking(running_animator, nats_server)
     assert len(jaw_writes) >= 2
 
 
+# Distinct, in-range jaw position an emotion expression keyframe wants. Must
+# differ from the idle/closed default so we can tell whether the expression
+# (vs lipsync) drove the mouth.
+_EXPR_JAW = 1650
+
+
+async def test_expression_does_not_move_jaw_while_speaking(running_animator, nats_server):
+    """While the agent is speaking, lipsync owns the jaw outright.
+
+    A custom emotion expression may still move head/eye/brow, but its jaw
+    keyframe must NOT reach the mouth — otherwise the animation fights lipsync.
+    No RMS is sent here, so the OLD 500ms-since-last-RMS guard would let the
+    expression grab the jaw; only an explicit `speaking` signal protects it.
+    """
+    _svc, bus = running_animator
+    nc = await nats.connect(nats_server)
+
+    # Agent announces it has started speaking.
+    await publish_model(nc, topics.AGENT_STATE_SPEAKING, schemas.AgentState(state="speaking"))
+    await asyncio.sleep(0.05)
+
+    bus.writes.clear()
+    # Short ramp + long hold so the expression's jaw target is a STABLE _EXPR_JAW
+    # (not a moving interpolation value) for the whole observation window.
+    payload = schemas.AnimatorIntentPlayExpression(
+        name="disagree",
+        playback="loop",
+        steps=[
+            schemas.AnimatorPlayStep(
+                pose=schemas.AnimatorPose(
+                    head_lr=2100, head_ud=3082, eye=2045, jaw=_EXPR_JAW, brow=2075
+                )
+            )
+        ],
+        default_duration_ms=40,
+        default_delay_ms=400,
+    )
+    await publish_model(nc, topics.ANIMATOR_INTENT_PLAY_EXPRESSION, payload)
+    await asyncio.sleep(0.2)
+    await nc.drain()
+
+    # The expression still drives the head (custom animation plays)...
+    assert abs(bus.last_position("head_lr") - 2100) <= 1
+    # ...but the jaw is NEVER driven to the expression's mouth value.
+    jaw_writes = [pos for (name, pos) in bus.writes if name == "jaw"]
+    assert jaw_writes, "stepper should still be writing the jaw"
+    assert all(pos != _EXPR_JAW for pos in jaw_writes), (
+        "expression keyframe drove the mouth while speaking — lipsync must own the jaw"
+    )
+
+
+async def test_expression_moves_jaw_again_after_speaking_ends(running_animator, nats_server):
+    """Once the agent stops speaking, the expression regains the jaw."""
+    _svc, bus = running_animator
+    nc = await nats.connect(nats_server)
+
+    await publish_model(nc, topics.AGENT_STATE_SPEAKING, schemas.AgentState(state="speaking"))
+    await asyncio.sleep(0.05)
+    payload = schemas.AnimatorIntentPlayExpression(
+        name="disagree",
+        playback="loop",
+        steps=[
+            schemas.AnimatorPlayStep(
+                pose=schemas.AnimatorPose(
+                    head_lr=2100, head_ud=3082, eye=2045, jaw=_EXPR_JAW, brow=2075
+                )
+            )
+        ],
+        default_duration_ms=40,
+        default_delay_ms=400,
+    )
+    await publish_model(nc, topics.ANIMATOR_INTENT_PLAY_EXPRESSION, payload)
+    await asyncio.sleep(0.1)
+
+    # Agent finished speaking — lipsync releases the jaw, expression takes over.
+    await publish_model(nc, topics.AGENT_STATE_IDLE, schemas.AgentState(state="idle"))
+    await asyncio.sleep(0.15)
+    await nc.drain()
+
+    assert abs(bus.last_position("jaw") - _EXPR_JAW) <= 1, (
+        "after speaking ends the expression should drive the jaw again"
+    )
+
+
 async def test_preview_intent_cancels_active_expression(running_animator, nats_server):
     """Operator-driven slider preview must take priority over a looping
     expression — otherwise the two fight for _target_pose."""
