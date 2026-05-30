@@ -143,4 +143,15 @@ describe("useLayoutMode", () => {
       dispose();
     });
   });
+
+  it("reverts from long back to desktop when the portrait query clears", () => {
+    const mm = installMatchMedia({ [MOBILE_QUERY]: false, [LONG_QUERY]: true });
+    createRoot((dispose) => {
+      const mode = useLayoutMode();
+      expect(mode()).toBe("long");
+      mm.set(LONG_QUERY, false);
+      expect(mode()).toBe("desktop");
+      dispose();
+    });
+  });
 });
