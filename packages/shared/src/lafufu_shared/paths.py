@@ -63,5 +63,11 @@ def image_letterheads_defaults_dir() -> Path:
 
 
 def image_sprites_defaults_dir() -> Path:
-    """Bundled default sprite images shipped with the repo."""
-    return _REPO_ROOT / "assets" / "images" / "sprites"
+    """Bundled default sprite images shipped with the repo.
+
+    The frame sprites (idle_NN/laugh_NN/lafufu_*) live in the ``default/``
+    subdir, and the animation seed references them as ``sprites/default/<name>``
+    — i.e. the image router serves them as bucket=sprites, kind=default. This
+    must point AT that subdir; pointing at its parent 404s every Studio frame.
+    """
+    return _REPO_ROOT / "assets" / "images" / "sprites" / "default"

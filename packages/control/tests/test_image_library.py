@@ -98,3 +98,23 @@ def test_unknown_bucket_404(client):
     """GET /api/images/wat returns 404 (bad_bucket)."""
     r = client.get("/api/images/wat")
     assert r.status_code == 404
+
+
+def test_serves_real_default_frame_sprite(tmp_path):
+    """Regression: the Studio's animation frames live in
+    assets/images/sprites/default/ and the seed references them as
+    sprites/default/<name>. image_sprites_defaults_dir() must resolve to that
+    subdir — not its parent — or every idle_/laugh_ frame 404s and the Studio
+    shows broken image links.
+
+    Uses the REAL bundled-asset paths (no monkeypatch) so it catches a resolver
+    that points one level too high (which the monkeypatched `client` fixture
+    can't)."""
+    engine = create_engine_for_path(str(tmp_path / "t.sqlite"))
+    init_db(engine)
+    app = create_app(engine=engine, nats_publish=lambda s, p: None)
+    c = TestClient(app)
+    for name in ("idle_01.png", "laugh_01.png", "lafufu_happy.png"):
+        r = c.get(f"/api/images/sprites/default/{name}")
+        assert r.status_code == 200, f"{name} -> {r.status_code} (Studio frame not served)"
+        assert r.headers["content-type"].startswith("image/")

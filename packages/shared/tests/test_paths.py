@@ -34,10 +34,14 @@ def test_image_letterheads_defaults_dir_contains_assets():
     assert "assets" in p.parts
 
 
-def test_image_sprites_defaults_dir_ends_with_images_sprites():
+def test_image_sprites_defaults_dir_points_at_default_subdir():
+    # The frame sprites live in assets/images/sprites/default/ and the animation
+    # seed references them as sprites/default/<name>. The defaults dir must point
+    # AT that subdir — pointing at its parent (.../sprites) 404s every Studio frame.
     p = paths.image_sprites_defaults_dir()
-    assert p.parts[-1] == "sprites"
-    assert p.parts[-2] == "images"
+    assert p.parts[-1] == "default"
+    assert p.parts[-2] == "sprites"
+    assert p.parts[-3] == "images"
 
 
 def test_image_sprites_defaults_dir_contains_assets():
