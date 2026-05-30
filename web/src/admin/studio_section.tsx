@@ -43,6 +43,7 @@ import { createReactiveResource } from "../shared/reactive_resource";
 import { lsGet, lsSet } from "../shared/local_storage";
 import { LafufuHead } from "../shared/lafufu_head";
 import { ImagePicker } from "./image_picker";
+import { useLayoutMode } from "../shared/use_media";
 
 type Pose = { head_lr: number; head_ud: number; eye: number; jaw: number; brow: number };
 
@@ -410,6 +411,10 @@ const PoseSliderCard: Component<{
   frame: FrameDTO | undefined;
   ranges: Record<keyof Pose, readonly [number, number]>;
   disabled: boolean;
+  /** Stretch to fill the parent cell instead of the intrinsic 150px width.
+   *  Studio always passes this now that the card lives in a grid cell whose
+   *  track (150px on desktop/long, 1fr on mobile) controls the actual width. */
+  fill?: boolean;
   onCommit: (frameName: string, pose: Pose, image: string | null) => void;
 }> = (props) => {
   const [pose, setPose] = createSignal<Pose>(
@@ -451,7 +456,7 @@ const PoseSliderCard: Component<{
     <div
       class="pebble--inset"
       style={{
-        width: "150px",
+        width: props.fill ? "100%" : "150px",
         "flex-shrink": "0",
         "border-radius": "var(--r-pebble)",
         padding: "14px 12px",
@@ -929,6 +934,9 @@ const FrameEditorModal: Component<{
 // Main Studio panel
 // ─────────────────────────────────────────────────────────────
 export const StudioSection: Component<{ nats: NatsWs }> = (props) => {
+  const layout = useLayoutMode();
+  const isMobile = () => layout() === "mobile";
+  const isLong = () => layout() === "long";
   const [expressions, refetchExprs] = createReactiveResource(
     async () => (await api.listExpressions()).items,
     ["expressions.changed"],
@@ -1310,9 +1318,12 @@ export const StudioSection: Component<{ nats: NatsWs }> = (props) => {
         color: "var(--c-bone)",
         display: "flex",
         "flex-direction": "column",
-        height: "calc(75vh + 50px)",
-        "min-height": "610px",
-        overflow: "hidden",
+        /* Mobile: let the studio grow to its natural height and scroll with the
+           page — a fixed 75vh box can't hold the stacked layout. Desktop/long
+           keep the fixed viewport-height workspace. */
+        height: isMobile() ? "auto" : "calc(75vh + 50px)",
+        "min-height": isMobile() ? "unset" : "610px",
+        overflow: isMobile() ? "visible" : "hidden",
         outline: "none",
         padding: "0",
       }}
@@ -1347,21 +1358,35 @@ export const StudioSection: Component<{ nats: NatsWs }> = (props) => {
         </div>
       </Show>
 
-      <div style={{ display: "flex", flex: "1 1 0", "min-height": "0" }}>
+      <div
+        style={{
+          display: "flex",
+          /* Mobile: stack the expression list above the editor. */
+          "flex-direction": isMobile() ? "column" : "row",
+          flex: "1 1 0",
+          "min-height": "0",
+        }}
+      >
       <DragDropProvider onDragStart={onDragStart} onDragEnd={onDragEnd}>
         <DragDropSensors />
 
         {/* Left: expression list */}
         <div
           style={{
-            width: "248px",
-            "min-width": "248px",
+            width: isMobile() ? "100%" : "248px",
+            "min-width": isMobile() ? "0" : "248px",
+            /* Cap + scroll the list on mobile so it doesn't shove the editor
+               off-screen; on desktop/long it's a full-height left rail. */
+            "max-height": isMobile() ? "168px" : undefined,
             background: "var(--c-shell)",
-            "border-right": "1px solid var(--c-edge)",
+            "border-right": isMobile() ? "none" : "1px solid var(--c-edge)",
+            "border-bottom": isMobile() ? "1px solid var(--c-edge)" : "none",
             padding: "16px",
             display: "flex",
             "flex-direction": "column",
-            "border-radius": "var(--r-pebble) 0 0 var(--r-pebble)",
+            "border-radius": isMobile()
+              ? "var(--r-pebble) var(--r-pebble) 0 0"
+              : "var(--r-pebble) 0 0 var(--r-pebble)",
           }}
         >
           <div class="eyebrow" style={{ "margin-bottom": "14px" }}>expressions</div>
@@ -1455,7 +1480,9 @@ export const StudioSection: Component<{ nats: NatsWs }> = (props) => {
             display: "flex",
             "flex-direction": "column",
             background: "var(--c-deep)",
-            overflow: "hidden",
+            // Mobile grows to content (the root scrolls with the page), so don't
+            // clip the stacked editor here.
+            overflow: isMobile() ? "visible" : "hidden",
           }}
         >
           <Show
@@ -1487,7 +1514,7 @@ export const StudioSection: Component<{ nats: NatsWs }> = (props) => {
                   "min-height": "0",
                   display: "flex",
                   "flex-direction": "column",
-                  overflow: "hidden",
+                  overflow: isMobile() ? "visible" : "hidden",
                 }}
               >
                 {/* Header */}
@@ -1593,21 +1620,41 @@ export const StudioSection: Component<{ nats: NatsWs }> = (props) => {
                   </Show>
                 </div>
 
-                {/* Frames + preview side-by-side */}
+                {/* Frames + preview + sliders. A 2-D reflow is exactly what CSS
+                    grid is for — explicit tracks avoid the flex-wrap height-
+                    distribution guesswork (a fixed 240px frame row + a 1fr
+                    preview row that takes the rest, with no align-content
+                    ambiguity).
+                    - desktop: one row → frames(544) | preview(1fr) | sliders(150).
+                    - long (portrait): preview(1fr) + sliders(150) on the top row,
+                      the frame strip spanning full-width on a fixed row beneath.
+                    - mobile: a single column (preview → sliders → strip). */}
                 <div
                   style={{
-                    display: "flex",
-                    gap: "16px",
-                    "align-items": "stretch",
+                    display: "grid",
+                    gap: isMobile() ? "12px" : "16px",
+                    "grid-template-columns": isMobile()
+                      ? "1fr"
+                      : isLong()
+                      ? "minmax(0, 1fr) 150px"
+                      : "544px minmax(0, 1fr) 150px",
+                    "grid-template-rows": isMobile()
+                      ? "minmax(220px, auto) auto 240px"
+                      : isLong()
+                      ? "minmax(0, 1fr) 240px"
+                      : "minmax(0, 1fr)",
                     flex: "1",
                     "min-height": "0",
                   }}
                 >
                   <div
                     style={{
-                      width: "544px",
-                      "max-width": "544px",
-                      "flex-shrink": "0",
+                      // frames strip — fixed rail (col 1) on desktop; full-width
+                      // bottom row on long + mobile. The grid cell sizes it.
+                      "grid-column": isLong() ? "1 / -1" : "1",
+                      "grid-row": isMobile() ? "3" : isLong() ? "2" : "1",
+                      "min-width": 0,
+                      "min-height": 0,
                       display: "flex",
                       "flex-direction": "column",
                     }}
@@ -1651,7 +1698,12 @@ export const StudioSection: Component<{ nats: NatsWs }> = (props) => {
                   <div
                     class="pebble--inset"
                     style={{
-                      flex: "1",
+                      // preview image — top-left cell on every layout (desktop
+                      // col 2, long/mobile col 1, always the first row).
+                      "grid-column": isMobile() ? "1" : isLong() ? "1" : "2",
+                      "grid-row": "1",
+                      "min-width": 0,
+                      "min-height": 0,
                       display: "flex",
                       "align-items": "center",
                       "justify-content": "center",
@@ -1659,7 +1711,6 @@ export const StudioSection: Component<{ nats: NatsWs }> = (props) => {
                       "border-radius": "var(--r-pebble)",
                       position: "relative",
                       overflow: "hidden",
-                      "min-height": "0",
                     }}
                   >
                     <Show
@@ -1767,12 +1818,26 @@ export const StudioSection: Component<{ nats: NatsWs }> = (props) => {
                     </Show>
                   </div>
 
-                  <PoseSliderCard
-                    frame={previewFrame()}
-                    ranges={ranges()}
-                    disabled={playing()}
-                    onCommit={(name, pose, image) => saveFrame(name, pose, image)}
-                  />
+                  {/* Sliders cell — beside the preview (desktop col 3, long
+                      col 2), or directly under it on mobile. The wrapper carries
+                      the grid placement so the card stretches to fill the cell. */}
+                  <div
+                    style={{
+                      "grid-column": isMobile() ? "1" : isLong() ? "2" : "3",
+                      "grid-row": isMobile() ? "2" : "1",
+                      display: "flex",
+                      "min-width": 0,
+                      "min-height": 0,
+                    }}
+                  >
+                    <PoseSliderCard
+                      frame={previewFrame()}
+                      ranges={ranges()}
+                      disabled={playing()}
+                      fill
+                      onCommit={(name, pose, image) => saveFrame(name, pose, image)}
+                    />
+                  </div>
                 </div>
               </div>
             )}
@@ -1781,12 +1846,15 @@ export const StudioSection: Component<{ nats: NatsWs }> = (props) => {
           {/* Gallery toggle bar */}
           <div
             style={{
-              height: "36px",
+              // Fixed-height single row on desktop; on phones the controls don't
+              // fit one line, so wrap and let the bar grow.
+              height: isMobile() ? "auto" : "36px",
               background: "var(--c-shell)",
               "border-top": "1px solid var(--c-edge)",
               display: "flex",
               "align-items": "center",
-              padding: "0 18px",
+              "flex-wrap": isMobile() ? "wrap" : "nowrap",
+              padding: isMobile() ? "8px 14px" : "0 18px",
               gap: "10px",
               "flex-shrink": "0",
             }}
@@ -1889,7 +1957,11 @@ export const StudioSection: Component<{ nats: NatsWs }> = (props) => {
               <div
                 style={{
                   display: "grid",
-                  "grid-template-columns": `repeat(auto-fill, minmax(${gallerySize() === 2 ? 160 : 124}px, 1fr))`,
+                  // Smaller minimum on phones so thumbnails tile a few per row
+                  // instead of forcing a wide track.
+                  "grid-template-columns": `repeat(auto-fill, minmax(${
+                    gallerySize() === 2 ? 160 : isMobile() ? 96 : 124
+                  }px, 1fr))`,
                   gap: "12px",
                 }}
               >

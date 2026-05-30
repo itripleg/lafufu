@@ -47,11 +47,14 @@ export const Panel: Component<Props> = (props) => {
           display: "flex",
           "align-items": "flex-start",
           "justify-content": "space-between",
+          /* Wrap so the title block and the action buttons drop onto separate
+             rows on narrow viewports instead of overlapping. */
+          "flex-wrap": "wrap",
           gap: "12px",
           "margin-bottom": "16px",
         }}
       >
-        <div style={{ "min-width": 0 }}>
+        <div style={{ "min-width": 0, flex: "1 1 auto" }}>
           <Show when={props.eyebrow}>
             <div class="eyebrow" style={{ "margin-bottom": "6px", color: props.accent ?? "var(--c-stone)" }}>
               {props.eyebrow}
@@ -69,7 +72,7 @@ export const Panel: Component<Props> = (props) => {
           </h2>
         </div>
         <Show when={props.actions}>
-          <div style={{ display: "flex", gap: "8px", "align-items": "center", "flex-shrink": 0 }}>
+          <div style={{ display: "flex", gap: "8px", "align-items": "center", "flex-wrap": "wrap", "flex-shrink": 0 }}>
             {props.actions}
           </div>
         </Show>
