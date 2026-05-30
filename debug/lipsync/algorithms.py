@@ -111,6 +111,9 @@ def _run_chunked(cfg: DirectCfg, wav_path: str, target_fn, stop: threading.Event
         reader.close()
 
     bus = JawBus.open()
+    # Park the jaw closed before any audio plays — see run_monolith for the
+    # full rationale (avoids "partially open default" on the first chunks).
+    bus.write_goal(open_pct_to_dxl(0.0))
     try:
         proc = aplay_popen(info.sample_rate, buffer_frames, period_frames, cfg.alsa_device)
     except BaseException:
@@ -263,14 +266,22 @@ def run_monolith(cfg: MonolithCfg, wav_path: str, stop: threading.Event | None =
     release_coeff = 1.0 - math.exp(-dt / max(1e-6, cfg.release_ms / 1000.0))
 
     bus = JawBus.open()
-    # t0 BEFORE Popen so the wall-clock baseline is the moment we asked aplay
-    # to start (not the moment fork+exec returned ~30ms later on a loaded Pi).
-    t0 = time.monotonic()
+    # Park the jaw at closed BEFORE audio starts. Without this the servo
+    # could be at any prior position (last run's final goal, or wherever
+    # it slumped to while torque was off between runs) and the first
+    # audio chunks would chase it from there instead of opening from a
+    # clean baseline — visible as a "partially open default."
+    bus.write_goal(open_pct_to_dxl(0.0))
     try:
         proc = aplay_file_popen(wav_path, cfg.alsa_device)
     except BaseException:
         bus.close()
         raise
+    # t0 AFTER Popen returns — matches the legacy monolith exactly. ALSA
+    # doesn't emit audio until a period (~40ms) is buffered, which happens
+    # AFTER fork+exec. Capturing t0 before Popen made the motor start
+    # ~30ms ahead of audio (mouth leads). The legacy got this right.
+    t0 = time.monotonic()
     env = 0.0
     try:
         for i, rms in enumerate(rms_vals):
