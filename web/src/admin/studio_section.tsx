@@ -411,11 +411,10 @@ const PoseSliderCard: Component<{
   frame: FrameDTO | undefined;
   ranges: Record<keyof Pose, readonly [number, number]>;
   disabled: boolean;
-  /** Stretch to the container width (mobile) instead of the fixed 150px rail. */
+  /** Stretch to fill the parent cell instead of the intrinsic 150px width.
+   *  Studio always passes this now that the card lives in a grid cell whose
+   *  track (150px on desktop/long, 1fr on mobile) controls the actual width. */
   fill?: boolean;
-  /** Flex `order` so the reflowed (mobile/long) layouts can place the sliders
-   *  after the preview without re-nesting the DOM. */
-  order?: number;
   onCommit: (frameName: string, pose: Pose, image: string | null) => void;
 }> = (props) => {
   const [pose, setPose] = createSignal<Pose>(
@@ -457,7 +456,6 @@ const PoseSliderCard: Component<{
     <div
       class="pebble--inset"
       style={{
-        order: props.order ?? 0,
         width: props.fill ? "100%" : "150px",
         "flex-shrink": "0",
         "border-radius": "var(--r-pebble)",
@@ -1622,32 +1620,41 @@ export const StudioSection: Component<{ nats: NatsWs }> = (props) => {
                   </Show>
                 </div>
 
-                {/* Frames + preview + sliders.
-                    - desktop: one row → frames(544) | preview | sliders(150).
-                    - long (portrait): wraps to preview + sliders on top, then
-                      the frame strip full-width underneath (via order + basis).
-                    - mobile: a single stacked column (preview → sliders → strip). */}
+                {/* Frames + preview + sliders. A 2-D reflow is exactly what CSS
+                    grid is for — explicit tracks avoid the flex-wrap height-
+                    distribution guesswork (a fixed 240px frame row + a 1fr
+                    preview row that takes the rest, with no align-content
+                    ambiguity).
+                    - desktop: one row → frames(544) | preview(1fr) | sliders(150).
+                    - long (portrait): preview(1fr) + sliders(150) on the top row,
+                      the frame strip spanning full-width on a fixed row beneath.
+                    - mobile: a single column (preview → sliders → strip). */}
                 <div
                   style={{
-                    display: "flex",
+                    display: "grid",
                     gap: isMobile() ? "12px" : "16px",
-                    "flex-direction": isMobile() ? "column" : "row",
-                    "flex-wrap": isLong() ? "wrap" : "nowrap",
-                    "align-items": "stretch",
+                    "grid-template-columns": isMobile()
+                      ? "1fr"
+                      : isLong()
+                      ? "minmax(0, 1fr) 150px"
+                      : "544px minmax(0, 1fr) 150px",
+                    "grid-template-rows": isMobile()
+                      ? "minmax(220px, auto) auto 240px"
+                      : isLong()
+                      ? "minmax(0, 1fr) 240px"
+                      : "minmax(0, 1fr)",
                     flex: "1",
                     "min-height": "0",
                   }}
                 >
                   <div
                     style={{
-                      // frames strip — fixed rail on desktop; full-width row
-                      // (wrapped below preview/sliders) on long + mobile.
-                      order: isMobile() || isLong() ? 3 : 0,
-                      width: isMobile() || isLong() ? "100%" : "544px",
-                      "max-width": isMobile() || isLong() ? "none" : "544px",
-                      flex: isLong() ? "1 1 100%" : isMobile() ? "0 0 auto" : "0 0 auto",
-                      height: isMobile() || isLong() ? "240px" : undefined,
-                      "flex-shrink": "0",
+                      // frames strip — fixed rail (col 1) on desktop; full-width
+                      // bottom row on long + mobile. The grid cell sizes it.
+                      "grid-column": isLong() ? "1 / -1" : "1",
+                      "grid-row": isMobile() ? "3" : isLong() ? "2" : "1",
+                      "min-width": 0,
+                      "min-height": 0,
                       display: "flex",
                       "flex-direction": "column",
                     }}
@@ -1691,11 +1698,12 @@ export const StudioSection: Component<{ nats: NatsWs }> = (props) => {
                   <div
                     class="pebble--inset"
                     style={{
-                      // preview image — first on the stacked layouts.
-                      order: isMobile() || isLong() ? 1 : 0,
-                      flex: isMobile() ? "0 0 auto" : "1 1 0",
+                      // preview image — top-left cell on every layout (desktop
+                      // col 2, long/mobile col 1, always the first row).
+                      "grid-column": isMobile() ? "1" : isLong() ? "1" : "2",
+                      "grid-row": "1",
                       "min-width": 0,
-                      "min-height": isMobile() ? "220px" : "0",
+                      "min-height": 0,
                       display: "flex",
                       "align-items": "center",
                       "justify-content": "center",
@@ -1810,14 +1818,26 @@ export const StudioSection: Component<{ nats: NatsWs }> = (props) => {
                     </Show>
                   </div>
 
-                  <PoseSliderCard
-                    frame={previewFrame()}
-                    ranges={ranges()}
-                    disabled={playing()}
-                    fill={isMobile()}
-                    order={isMobile() || isLong() ? 2 : 0}
-                    onCommit={(name, pose, image) => saveFrame(name, pose, image)}
-                  />
+                  {/* Sliders cell — beside the preview (desktop col 3, long
+                      col 2), or directly under it on mobile. The wrapper carries
+                      the grid placement so the card stretches to fill the cell. */}
+                  <div
+                    style={{
+                      "grid-column": isMobile() ? "1" : isLong() ? "2" : "3",
+                      "grid-row": isMobile() ? "2" : "1",
+                      display: "flex",
+                      "min-width": 0,
+                      "min-height": 0,
+                    }}
+                  >
+                    <PoseSliderCard
+                      frame={previewFrame()}
+                      ranges={ranges()}
+                      disabled={playing()}
+                      fill
+                      onCommit={(name, pose, image) => saveFrame(name, pose, image)}
+                    />
+                  </div>
                 </div>
               </div>
             )}

@@ -28,14 +28,21 @@ export type LayoutMode = "mobile" | "long" | "desktop";
 
 /** Phones — single hand, narrow. Everything stacks. */
 export const MOBILE_QUERY = "(max-width: 640px)";
-/** A big monitor rotated to portrait (or a portrait tablet). The `min-width`
- *  keeps portrait *phones* in `mobile` rather than `long`. */
-export const LONG_QUERY = "(orientation: portrait) and (min-width: 820px)";
+/** Any portrait viewport wider than a phone — a big monitor rotated on its
+ *  side, or a tablet held upright. The floor is `MOBILE_QUERY` + 1px (not a
+ *  bigger number) so there's no portrait dead-band that falls through to the
+ *  side-by-side `desktop` layout and squashes it; phones stay in `mobile`
+ *  because that query wins (see `useLayoutMode`). */
+export const LONG_QUERY = "(orientation: portrait) and (min-width: 641px)";
 
 /**
  * Collapse the two viewport queries into one layout mode. `mobile` wins over
  * `long` (a narrow portrait phone is mobile, not a tall-monitor layout);
  * everything else is `desktop` — the original, untouched layout.
+ *
+ * Like {@link createMediaQuery}, call this within a reactive owner (component
+ * setup or `createRoot`) — it relies on `onCleanup` to detach both matchMedia
+ * listeners, which silently no-ops without an owner.
  */
 export function useLayoutMode(): () => LayoutMode {
   const isMobile = createMediaQuery(MOBILE_QUERY);

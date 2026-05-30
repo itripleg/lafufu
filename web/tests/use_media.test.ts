@@ -16,6 +16,9 @@ interface FakeMql {
 }
 function installMatchMedia(initial: Record<string, boolean>) {
   const store = new Map<string, FakeMql>();
+  // Every event type the hook subscribes to, so a test can assert it listens
+  // on "change" specifically (and would fail if that ever regressed).
+  const eventTypes = new Set<string>();
   const get = (q: string): FakeMql => {
     let m = store.get(q);
     if (!m) {
@@ -29,7 +32,10 @@ function installMatchMedia(initial: Record<string, boolean>) {
     return {
       get matches() { return m.matches; },
       media: query,
-      addEventListener: (_: string, cb: (e: { matches: boolean }) => void) => m.listeners.add(cb),
+      addEventListener: (type: string, cb: (e: { matches: boolean }) => void) => {
+        eventTypes.add(type);
+        m.listeners.add(cb);
+      },
       removeEventListener: (_: string, cb: (e: { matches: boolean }) => void) => m.listeners.delete(cb),
       // legacy API, unused by the hook but part of the type
       addListener: () => {},
@@ -46,6 +52,7 @@ function installMatchMedia(initial: Record<string, boolean>) {
       for (const cb of m.listeners) cb({ matches });
     },
     listenerCount: (query: string) => get(query).listeners.size,
+    eventTypes,
   };
 }
 
@@ -67,11 +74,13 @@ describe("createMediaQuery", () => {
     });
   });
 
-  it("detaches its listener on cleanup", () => {
+  it("subscribes to the 'change' event and detaches on cleanup", () => {
     const mm = installMatchMedia({ "(max-width: 640px)": false });
     createRoot((dispose) => {
       createMediaQuery("(max-width: 640px)");
       expect(mm.listenerCount("(max-width: 640px)")).toBe(1);
+      // Must listen on "change" — not "resize" or anything else.
+      expect([...mm.eventTypes]).toEqual(["change"]);
       dispose();
     });
     expect(mm.listenerCount("(max-width: 640px)")).toBe(0);
@@ -120,6 +129,17 @@ describe("useLayoutMode", () => {
       expect(mode()).toBe("desktop");
       mm.set(LONG_QUERY, true);
       expect(mode()).toBe("long");
+      dispose();
+    });
+  });
+
+  it("reacts to a viewport shrink into mobile", () => {
+    const mm = installMatchMedia({ [MOBILE_QUERY]: false, [LONG_QUERY]: false });
+    createRoot((dispose) => {
+      const mode = useLayoutMode();
+      expect(mode()).toBe("desktop");
+      mm.set(MOBILE_QUERY, true);
+      expect(mode()).toBe("mobile");
       dispose();
     });
   });
