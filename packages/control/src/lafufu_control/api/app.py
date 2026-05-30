@@ -86,6 +86,15 @@ def create_app(
 
         # SPA fallback: any non-API GET that isn't a real asset returns index.html
         # so SolidJS client-side router takes over for /face, /admin, /admin/xyz, etc.
+        # Everything reaching spa_fallback is a NON-hashed asset (index.html,
+        # favicon, /lafufu-bg.mp4, …) — the hashed Vite bundle is served by the
+        # /assets mount above and can cache forever. These stable URLs must NOT
+        # be pinned in the browser cache: the kiosk's chromium once served a
+        # stale /lafufu-bg.mp4 across reboots until the URL was versioned. Send
+        # no-cache so the browser revalidates (cheap 304) and picks up a swapped
+        # asset or a freshly-deployed index.html without a code change.
+        _NO_CACHE = {"Cache-Control": "no-cache"}
+
         @app.get("/{full_path:path}", include_in_schema=False)
         async def spa_fallback(full_path: str):
             # Reject API/WS paths (shouldn't reach here, but defensive)
@@ -94,7 +103,7 @@ def create_app(
             # If a real file exists at the path, serve it (e.g. favicon.ico)
             candidate = STATIC_PATH / full_path
             if candidate.is_file():
-                return FileResponse(str(candidate))
-            return FileResponse(str(index_file))
+                return FileResponse(str(candidate), headers=_NO_CACHE)
+            return FileResponse(str(index_file), headers=_NO_CACHE)
 
     return app

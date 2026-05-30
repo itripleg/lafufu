@@ -5,7 +5,11 @@ import { emotionToColor } from "../shared/design";
 import { stateBadge } from "../shared/agent_state";
 import { Caption } from "./caption";
 
-const BG_VIDEO_SRC = "/lafufu-bg.mp4";
+// Versioned query so the kiosk's chromium can't serve a stale cached copy when
+// the (non-hashed, public/) video is swapped — bump `v` whenever lafufu-bg.mp4
+// changes. A bare /lafufu-bg.mp4 URL got pinned to an old clip in the kiosk
+// cache and survived reboots + cache-dir wipes; the query forces a fresh key.
+const BG_VIDEO_SRC = "/lafufu-bg.mp4?v=2min";
 
 /** Browsers + TS lib variants. */
 type FsDoc = Document & {
