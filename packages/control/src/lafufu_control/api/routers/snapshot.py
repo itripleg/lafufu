@@ -5,7 +5,7 @@ import time
 from fastapi import APIRouter, Request
 from sqlmodel import Session, select
 
-from ...models.setting import Setting
+from ...models.setting import Setting, is_internal_key
 
 router = APIRouter()
 
@@ -18,8 +18,13 @@ def snapshot(req: Request):
     # Include server's notion of "now" so the client can compute heartbeat
     # age relative to the server clock (no skew issues if browser clock differs).
     return {
+        # Hide internal bookkeeping rows (bootstrap.*) — same filter the settings
+        # CRUD API applies — so the migration flag never leaks to the browser
+        # through the seed snapshot.
         "settings": [
-            {"key": x.key, "value": x.value, "value_type": x.value_type} for x in settings_rows
+            {"key": x.key, "value": x.value, "value_type": x.value_type}
+            for x in settings_rows
+            if not is_internal_key(x.key)
         ],
         "services": getattr(req.app.state, "service_status", {}),
         "last_pose": getattr(req.app.state, "last_pose", None),

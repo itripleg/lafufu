@@ -183,3 +183,43 @@ def test_put_accepts_known_value_types(client):
     for vt in ("str", "int", "float", "bool", "json"):
         r = client.put(f"/api/settings/k.{vt}", json={"value": "1", "value_type": vt})
         assert r.status_code == 200, f"{vt} should be accepted, got {r.status_code}"
+
+
+def test_snapshot_excludes_bootstrap_internal_keys(client_with_engine):
+    """The /api/state/snapshot payload must hide internal bookkeeping rows
+    (bootstrap.*) just like the settings CRUD API — otherwise the migration
+    flag row leaks to the browser via the seed snapshot even though
+    GET /api/settings hides it."""
+    c, engine = client_with_engine
+    _insert(engine, "agent.silence_threshold", "1500", "int", "silence threshold ms")
+    _insert(engine, "bootstrap.migrations.wakeword_lafufu_v1", "1", "str", "migration bookkeeping")
+    r = c.get("/api/state/snapshot")
+    assert r.status_code == 200
+    keys = [row["key"] for row in r.json()["settings"]]
+    assert "agent.silence_threshold" in keys
+    assert "bootstrap.migrations.wakeword_lafufu_v1" not in keys
+
+
+async def test_rebroadcast_skips_bootstrap_internal_keys(tmp_path):
+    """control._rebroadcast_all_settings must not publish config.changed for
+    internal bootstrap.* rows — they'd otherwise cross the WS bridge into the
+    browser config firehose even though the settings API + snapshot hide them."""
+    from lafufu_control.service import ControlService
+
+    engine = create_engine_for_path(str(tmp_path / "rb.sqlite"))
+    init_db(engine)
+    _insert(engine, "agent.silence_threshold", "1500", "int", "x")
+    _insert(engine, "bootstrap.migrations.wakeword_lafufu_v1", "1", "str", "x")
+
+    published: list[str] = []
+
+    class _FakeNats:
+        async def publish(self, subject, data):
+            published.append(subject)
+
+    svc = ControlService()
+    svc.nats = _FakeNats()
+    await svc._rebroadcast_all_settings(engine)
+
+    assert "config.changed.agent.silence_threshold" in published
+    assert not any("bootstrap.migrations" in s for s in published)
