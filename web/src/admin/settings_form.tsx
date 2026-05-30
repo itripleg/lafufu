@@ -5,6 +5,7 @@ import { lsGet, lsRemove, lsSet, lsKeys } from "../shared/local_storage";
 import { toast } from "../shared/toast";
 import { Panel } from "./panel";
 import { LetterheadCard, ComposeFortuneCard } from "./printer_card";
+import { useLayoutMode } from "../shared/use_media";
 
 interface Row {
   key: string;
@@ -163,6 +164,10 @@ interface Props {
 }
 
 export const SettingsForm: Component<Props> = (props) => {
+  const layout = useLayoutMode();
+  // On a tall portrait monitor the default 62vh cap leaves the lower ~40% of
+  // the screen empty — let the list grow to fill it.
+  const panelHeight = () => (layout() === "long" ? "80vh" : "62vh");
   // Stored as a store (not signal) so granular property updates don't change
   // row identity. <For> reconciles by reference; a fresh object on every
   // keystroke would destroy and rebuild the row's DOM — that's what made
@@ -587,8 +592,8 @@ export const SettingsForm: Component<Props> = (props) => {
       title="Settings"
       eyebrow="tunables · per-key drafts → localStorage"
       accent="var(--c-amber)"
-      height="62vh"
-      style={{ "min-height": "62vh" }}
+      height={panelHeight()}
+      style={{ "min-height": panelHeight() }}
       actions={
         <>
           <Show when={dirtyCount() > 0}>

@@ -2,6 +2,7 @@ import { Component, createSignal, onCleanup, onMount, For, Show, createMemo } fr
 import { NatsWs } from "../shared/nats_ws";
 import { lsGet, lsSet } from "../shared/local_storage";
 import { Panel } from "./panel";
+import { useLayoutMode } from "../shared/use_media";
 
 interface Line { ts: number; topic: string; payload: any; }
 
@@ -24,6 +25,10 @@ const topicColor = (topic: string): string => {
 };
 
 export const SystemPulse: Component<{ nats: NatsWs }> = (props) => {
+  const layout = useLayoutMode();
+  // The firehose is a fixed 320px window on desktop; on a tall portrait screen
+  // let it stretch so the pulse uses the spare vertical room.
+  const feedMaxHeight = () => (layout() === "long" ? "62vh" : "320px");
   const [lines, setLines] = createSignal<Line[]>([]);
   const [filter, setFilter] = createSignal(lsGet<string>(FILTER_KEY, ""));
   const [paused, setPaused] = createSignal(lsGet<boolean>(PAUSED_KEY, false));
@@ -92,7 +97,7 @@ export const SystemPulse: Component<{ nats: NatsWs }> = (props) => {
         class="f-mono scroll-warm"
         style={{
           "font-size": "11px",
-          "max-height": "320px",
+          "max-height": feedMaxHeight(),
           "overflow-y": "auto",
           background: "var(--c-shell)",
           "border-radius": "12px",

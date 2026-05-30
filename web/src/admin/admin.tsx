@@ -9,6 +9,7 @@ import { ServiceStatus } from "./service_status";
 import { SettingsForm } from "./settings_form";
 import { StudioSection } from "./studio_section";
 import { SystemPulse } from "./system_pulse";
+import { useLayoutMode } from "../shared/use_media";
 
 /**
  * Control deck — premium organic surface, packs everything an operator (or
@@ -29,6 +30,7 @@ const ADMIN_TABS: { id: AdminTab; label: string; accent: string }[] = [
 
 const Admin: Component = () => {
   const nats = new NatsWs();
+  const layout = useLayoutMode();
   const [draftCount, setDraftCount] = createSignal(0);
   const [connState, setConnState] = createSignal<"live" | "pending">("pending");
   // Guard against a stale persisted tab id (e.g. the old "body") so a renamed
@@ -200,8 +202,8 @@ const Admin: Component = () => {
         aria-label="control sections"
         style={{
           display: "flex",
-          gap: "5px",
-          padding: "5px",
+          gap: layout() === "mobile" ? "3px" : "5px",
+          padding: layout() === "mobile" ? "3px" : "5px",
           background: "var(--c-shell)",
           border: "1px solid var(--c-edge)",
           "border-radius": "16px",
@@ -212,6 +214,7 @@ const Admin: Component = () => {
           {(t) => {
             const active = () => tab() === t.id;
             const showDraftDot = () => t.id === "settings" && draftCount() > 0;
+            const mobile = () => layout() === "mobile";
             return (
               <button
                 role="tab"
@@ -220,11 +223,14 @@ const Admin: Component = () => {
                 style={{
                   position: "relative",
                   flex: "1 1 0",
+                  /* Let the flex children shrink past their content width so
+                     four tabs always fit one row on a ~360px phone. */
+                  "min-width": 0,
                   display: "flex",
                   "align-items": "center",
                   "justify-content": "center",
-                  gap: "8px",
-                  padding: "13px 16px",
+                  gap: mobile() ? "5px" : "8px",
+                  padding: mobile() ? "10px 6px" : "13px 16px",
                   "border-radius": "12px",
                   border: `1px solid ${active() ? t.accent : "transparent"}`,
                   background: active()
@@ -232,7 +238,7 @@ const Admin: Component = () => {
                     : "transparent",
                   color: active() ? "var(--c-bone)" : "var(--c-mist)",
                   "font-family": "var(--f-display-roman, var(--f-display))",
-                  "font-size": "16px",
+                  "font-size": mobile() ? "13px" : "16px",
                   "letter-spacing": ".01em",
                   cursor: "pointer",
                   transition:
@@ -245,35 +251,62 @@ const Admin: Component = () => {
                   if (!active()) e.currentTarget.style.color = "var(--c-mist)";
                 }}
               >
-                <span
-                  style={{
-                    width: "7px",
-                    height: "7px",
-                    "border-radius": "50%",
-                    background: active() ? t.accent : "var(--c-edge)",
-                    "box-shadow": active() ? `0 0 8px ${t.accent}` : "none",
-                    transition: "background var(--t-fast), box-shadow var(--t-fast)",
-                  }}
-                />
+                {/* The status dot is decorative; drop it on phones to buy the
+                    label the width it needs. */}
+                <Show when={!mobile()}>
+                  <span
+                    style={{
+                      width: "7px",
+                      height: "7px",
+                      "flex-shrink": 0,
+                      "border-radius": "50%",
+                      background: active() ? t.accent : "var(--c-edge)",
+                      "box-shadow": active() ? `0 0 8px ${t.accent}` : "none",
+                      transition: "background var(--t-fast), box-shadow var(--t-fast)",
+                    }}
+                  />
+                </Show>
                 {t.label}
                 {/* Absolutely positioned so the unsaved-draft count never
                     nudges the tab label as it appears/disappears. */}
                 <Show when={showDraftDot()}>
-                  <span
-                    class="f-mono"
-                    style={{
-                      position: "absolute",
-                      top: "50%",
-                      right: "10px",
-                      transform: "translateY(-50%)",
-                      "font-size": "10px",
-                      color: "var(--c-amber)",
-                      "letter-spacing": ".04em",
-                      "pointer-events": "none",
-                    }}
+                  {/* On phones the tab is too narrow for the count to sit beside
+                      a centered label without overlapping it — show a small amber
+                      dot instead; the exact number still lives in the header. */}
+                  <Show
+                    when={!mobile()}
+                    fallback={
+                      <span
+                        style={{
+                          position: "absolute",
+                          top: "6px",
+                          right: "6px",
+                          width: "6px",
+                          height: "6px",
+                          "border-radius": "50%",
+                          background: "var(--c-amber)",
+                          "box-shadow": "0 0 4px var(--c-amber)",
+                          "pointer-events": "none",
+                        }}
+                      />
+                    }
                   >
-                    {draftCount()}
-                  </span>
+                    <span
+                      class="f-mono"
+                      style={{
+                        position: "absolute",
+                        top: "50%",
+                        right: "10px",
+                        transform: "translateY(-50%)",
+                        "font-size": "10px",
+                        color: "var(--c-amber)",
+                        "letter-spacing": ".04em",
+                        "pointer-events": "none",
+                      }}
+                    >
+                      {draftCount()}
+                    </span>
+                  </Show>
                 </Show>
               </button>
             );
