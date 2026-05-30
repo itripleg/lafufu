@@ -90,6 +90,9 @@ class AnimatorService(BaseService):
         self._lipsync_watchdog_task: asyncio.Task | None = None
         self._keyframe_player_task: asyncio.Task | None = None
         self._idle_request_task: asyncio.Task | None = None
+        # Deferred jaw-apply tasks (lipsync offset). Held so they aren't
+        # garbage-collected mid-flight; each removes itself when done.
+        self._pending_jaw_tasks: set[asyncio.Task] = set()
         # The servo stepper runs in a DEDICATED THREAD (not an asyncio task) that
         # exclusively owns the DXL bus. Bus writes are blocking serial round-trips;
         # running them on the event loop stalled it and made the stepper's wall-clock
@@ -231,6 +234,12 @@ class AnimatorService(BaseService):
             schemas.ConfigChanged,
             self._on_config_lipsync_offset,
         )
+        await nats_helper.subscribe_model(
+            self.nats,
+            f"{topics.CONFIG_CHANGED}.animator.lipsync.gamma",
+            schemas.ConfigChanged,
+            self._on_config_lipsync_gamma,
+        )
 
         # Sync to DB on startup so idle_animation_enabled reflects admin's
         # current value rather than the in-code default.
@@ -338,6 +347,18 @@ class AnimatorService(BaseService):
         # Backward "advance" would need look-ahead in the agent pipeline.
         self._lipsync_offset_s = max(0.0, ms / 1000.0)
         self.log.info("animator.lipsync.offset_ms.set value=%.0f", ms)
+
+    async def _on_config_lipsync_gamma(self, subject: str, msg: schemas.ConfigChanged) -> None:
+        try:
+            g = float(msg.value)
+        except (TypeError, ValueError):
+            self.log.warning("animator.lipsync.gamma.bad_value value=%r", msg.value)
+            return
+        # gamma < 1 opens the mouth more on soft/mid syllables (perceptual
+        # loudness curve); 1.0 = linear. Smaller = more articulate on quiet
+        # speech. Clamp to a sane range.
+        self._envelope.gamma = max(0.1, min(1.0, g))
+        self.log.info("animator.lipsync.gamma.set value=%.2f", self._envelope.gamma)
 
     async def _on_config_idle_animation(self, subject: str, msg: schemas.ConfigChanged) -> None:
         # value may be bool, "true"/"false" str, or 0/1
@@ -605,19 +626,35 @@ class AnimatorService(BaseService):
     async def _on_tts_rms(self, subject: str, msg: schemas.AgentTtsRms) -> None:
         # Drive the jaw via the attack/release envelope. mouth_target is already
         # the adaptively-normalized 0..1 value from the agent's LipsyncNormalizer.
-        # Optional delay so the operator can shift the whole jaw track in time
-        # relative to audio. The NATS callback runs in its own task per message,
-        # so sleeping here delays *this* apply without stalling later messages —
-        # they queue behind in arrival order and stay correctly ordered.
-        if self._lipsync_offset_s > 0:
-            await asyncio.sleep(self._lipsync_offset_s)
+        # Step the envelope INLINE (in arrival order, fast), but when an offset
+        # is configured, apply the jaw via a SEPARATE task. NATS delivers a
+        # subscription's messages serially — it awaits this callback before the
+        # next — so an inline `await asyncio.sleep(offset)` here throttled the
+        # jaw to one update per offset while RMS arrives every ~40ms: the backlog
+        # grew (jaw drifted behind the audio) and drained after audio stopped
+        # (mouth kept moving). Deferring only the apply keeps delivery prompt.
         smoothed = self._envelope.step(target=msg.mouth_target, dt=_LIPSYNC_DT)
         jaw_pos = lipsync.rms_to_jaw_dxl(smoothed)
-        new = self._current_pose.model_copy(update={"jaw": jaw_pos})
-        await self._safe_apply(new)
         # Wall-clock stamp so the idle/expression loops' "is speaking" checks
         # (which compare against time.monotonic()) actually work.
         self._last_rms_ts = time.monotonic()
+        if self._lipsync_offset_s > 0:
+            task = asyncio.create_task(self._apply_jaw_after(jaw_pos, self._lipsync_offset_s))
+            self._pending_jaw_tasks.add(task)
+            task.add_done_callback(self._pending_jaw_tasks.discard)
+        else:
+            await self._apply_jaw(jaw_pos)
+
+    async def _apply_jaw_after(self, jaw_pos: int, delay: float) -> None:
+        """Apply a jaw position ``delay`` s later, off the RMS subscription's
+        message loop — so the offset shifts the jaw track in time without
+        stalling message delivery (which would back the jaw up)."""
+        await asyncio.sleep(delay)
+        await self._apply_jaw(jaw_pos)
+
+    async def _apply_jaw(self, jaw_pos: int) -> None:
+        new = self._current_pose.model_copy(update={"jaw": jaw_pos})
+        await self._safe_apply(new)
 
     async def _pose_publish_loop(self) -> None:
         """Publish current pose at 20 Hz for live UI."""

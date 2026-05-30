@@ -185,6 +185,12 @@ DEFAULTS: list[tuple[str, str, str, str]] = [
         "int",
         "Delay applied to each RMS event before driving the jaw (0..500 ms). Bump up if the mouth still moves before audio is heard.",
     ),
+    (
+        "animator.lipsync.gamma",
+        "0.5",
+        "float",
+        "Mouth-open curve (0.1..1.0). Below 1 opens the mouth more on soft/mid syllables; 1.0 = linear. Lower = more articulate on quiet speech.",
+    ),
     # Printer
     (
         "printer.auto_print",
