@@ -99,6 +99,11 @@ class AgentService(BaseService):
         # Speaker mixer settings; updated live by config.changed.speaker.* subscribers.
         self._speaker_card = "USB"
         self._speaker_control = "PCM"
+        # aplay output-device selection: "auto" (resolver picks the USB/non-HDMI
+        # card), a bare ALSA card name, or a full device string. Seeded from the
+        # injected player; updated live by config.changed.speaker.output_device and
+        # re-applied to any player rebuilt on a voice/sample-rate swap.
+        self._output_device = getattr(speaker_play, "device", "auto")
         # Cached "operator wants wakeword enabled?" state. Defaults to True
         # because the bootstrap default for agent.wakeword.enabled is true.
         # Updated whenever _on_config_wakeword_enabled parses a value, and
@@ -259,6 +264,12 @@ class AgentService(BaseService):
             schemas.ConfigChanged,
             self._on_config_control_name,
         )
+        await nats_helper.subscribe_model(
+            self.nats,
+            f"{topics.CONFIG_CHANGED}.speaker.output_device",
+            schemas.ConfigChanged,
+            self._on_config_output_device,
+        )
 
         # Mic auto-listen toggle — live-driven by the agent.auto_listen setting,
         # so the admin UI can start/stop the mic loop without restarting agent.
@@ -375,6 +386,16 @@ class AgentService(BaseService):
         self._speaker_control = str(msg.value)
         self.log.info("speaker.control.set value=%s", self._speaker_control)
 
+    async def _on_config_output_device(self, subject: str, msg: schemas.ConfigChanged) -> None:
+        value = str(msg.value).strip() or "auto"
+        self._output_device = value
+        # Apply to the live player; the resolver runs per-utterance so the next
+        # reply uses the new device without a restart. NoOp/PyAudio players lack
+        # a `device` attr — harmless to skip (their output is the OS default).
+        if hasattr(self._speaker_play, "device"):
+            self._speaker_play.device = value
+        self.log.info("speaker.output_device.set value=%s", value)
+
     async def _on_config_llm_model(self, subject: str, msg: schemas.ConfigChanged) -> None:
         new_model = str(msg.value).strip()
         if not new_model:
@@ -483,6 +504,10 @@ class AgentService(BaseService):
         if self._player_factory is not None and new_rate is not None and new_rate != old_rate:
             old_player = self._speaker_play
             self._speaker_play = self._player_factory(new_rate)
+            # Carry the operator's current output-device choice onto the new
+            # player so a voice swap doesn't revert to the env/auto default.
+            if hasattr(self._speaker_play, "device"):
+                self._speaker_play.device = self._output_device
             # _PyAudioPlayer and _AplayPlayer both implement close(); only
             # _NoOpPlayer lacks it — hasattr guards that case.
             if hasattr(old_player, "close"):

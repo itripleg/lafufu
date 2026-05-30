@@ -261,10 +261,21 @@ DEFAULTS: list[tuple[str, str, str, str]] = [
         "USB speaker playback volume (0-100%). Applied to ALSA mixer 'PCM' on card 'USB'.",
     ),
     (
+        "speaker.output_device",
+        "auto",
+        "str",
+        "aplay output device. 'auto' picks the USB/non-HDMI card — works across the "
+        "bench headset and the Lafufu's built-in speaker with no hardcoded name, and "
+        "never auto-selects HDMI. Or set a specific ALSA card name from `aplay -l` "
+        "(e.g. 'Device', or 'vc4hdmi0' to force HDMI), or a full device string "
+        "(plughw:CARD=...,DEV=0). Applied live; next reply uses it.",
+    ),
+    (
         "speaker.alsa_card",
         "USB",
         "str",
-        "ALSA card name for the playback device (run `aplay -l` to see options).",
+        "ALSA card name for the volume mixer (amixer -c). Run `aplay -l` to see options. "
+        "Separate from speaker.output_device, which selects the playback device.",
     ),
     (
         "speaker.alsa_control",

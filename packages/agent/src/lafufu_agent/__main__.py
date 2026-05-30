@@ -13,6 +13,7 @@ import pyaudio
 from lafufu_shared.prompts import DEFAULT_SYSTEM_PROMPT as SYSTEM_PROMPT
 
 from .audio_capture import get_pyaudio, select_input_device
+from .audio_output import resolve_output_device
 from .llm import Ollama
 from .service import AgentService
 from .trigger import InteractionMode, TriggerConfig
@@ -349,12 +350,16 @@ class _AplayPlayer:
     The pipeline calls play() per chunk and end() after the last chunk.
     """
 
-    def __init__(self, sample_rate: int = 22050) -> None:
+    def __init__(self, sample_rate: int = 22050, device: str = "auto") -> None:
         import subprocess
 
         self._subprocess = subprocess
         self._proc: subprocess.Popen | None = None
         self._sample_rate = int(sample_rate)
+        # Operator's device choice: "auto" (pick the USB/non-HDMI card), a bare
+        # ALSA card name, or a full aplay device string. Resolved per-utterance in
+        # play(). Updated live by AgentService when speaker.output_device changes.
+        self.device = device or "auto"
         # ALSA starts playback once one PERIOD is buffered, so period_size sets
         # first-audible-sample latency. 40 ms matches Piper's chunk cadence so
         # the first chunk goes audible right when the pipeline ticks to the
@@ -370,7 +375,7 @@ class _AplayPlayer:
             return
         fresh = self._proc is None or self._proc.poll() is not None
         if fresh:
-            device = os.environ.get("LAFUFU_APLAY_DEVICE", "default")
+            device = resolve_output_device(self.device)
             self._proc = self._subprocess.Popen(
                 [
                     "aplay",
@@ -556,7 +561,12 @@ def main() -> None:
         if forced_silent:
             return _NoOpPlayer(sample_rate=sample_rate)
         if shutil.which("aplay") is not None:
-            return _AplayPlayer(sample_rate=sample_rate)
+            # Seed from env for back-compat, but default to "auto" (resolver picks
+            # the USB/non-HDMI card). The DB setting speaker.output_device arrives
+            # via the config snapshot and becomes the live source of truth.
+            return _AplayPlayer(
+                sample_rate=sample_rate, device=os.environ.get("LAFUFU_APLAY_DEVICE") or "auto"
+            )
         try:
             return _PyAudioPlayer(sample_rate=sample_rate)
         except Exception as e:
