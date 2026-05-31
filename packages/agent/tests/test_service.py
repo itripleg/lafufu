@@ -988,7 +988,6 @@ async def test_degraded_state_published_only_on_transition(nats_server):
     only on the first degraded tick, not on every subsequent sleep iteration.
     Repeated 1Hz publishes flood NATS and the journal."""
     import nats as nats_lib
-
     from lafufu_agent.trigger import InteractionMode
 
     svc = AgentService(
@@ -1012,7 +1011,7 @@ async def test_degraded_state_published_only_on_transition(nats_server):
 
     await nc.subscribe("agent.state.*", cb=cb_state)
 
-    # Run for ~2.5s — if degraded fires every 1s that would be 2–3 publishes
+    # Run for ~2.5s -- if degraded fires every 1s that would be 2-3 publishes
     await asyncio.sleep(2.5)
     await nc.drain()
 

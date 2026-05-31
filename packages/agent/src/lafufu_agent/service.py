@@ -1,6 +1,7 @@
 """AgentService: BaseService that runs the voice loop and accepts text intents."""
 
 import asyncio
+import contextlib
 import json
 import logging
 import subprocess
@@ -784,10 +785,8 @@ class AgentService(BaseService):
             self.log.info("mic_loop.started reason=config")
         elif not want and running:
             self._mic_loop_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._mic_loop_task
-            except (asyncio.CancelledError, Exception):
-                pass
             self._mic_loop_task = None
             self.log.info("mic_loop.stopped reason=config")
 
