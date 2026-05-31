@@ -189,6 +189,11 @@ class WsBridge:
         for ws in dead:
             with contextlib.suppress(Exception):
                 await ws.close()
+            # Remove the dead socket from all subscription state so the NATS
+            # ref-count is decremented and _pattern_listeners stays clean.
+            for t in list(self._ws_patterns.get(ws, set())):
+                await self._remove_sub(ws, t)
+            self._ws_patterns.pop(ws, None)
 
     # --- Inspection (used by tests) ---
 
