@@ -1411,6 +1411,36 @@ async def test_rebuild_tts_closes_old_player(nats_server):
     await asyncio.wait_for(task, timeout=3)
 
 
+async def test_auto_listen_disable_awaits_task_before_clearing():
+    """Disabling auto_listen must await the cancelled task so the task's finally-block
+    (and any run_in_executor threads it holds) finish before the reference is discarded."""
+    from lafufu_shared import schemas
+
+    cleanup_ran = asyncio.Event()
+
+    async def _blocking_loop() -> None:
+        try:
+            await asyncio.sleep(10)
+        finally:
+            cleanup_ran.set()
+
+    svc = AgentService(
+        mic=FakeMicForService([]),
+        ollama=FakeOllama(scripts=[]),
+        piper=FakePiper(chunks=[]),
+    )
+    svc._mic_loop_task = asyncio.create_task(_blocking_loop())
+    await asyncio.sleep(0)  # yield so the task starts
+
+    msg = schemas.ConfigChanged(key="agent.auto_listen", value="false", source="test")
+    await svc._on_config_auto_listen("config.changed.agent.auto_listen", msg)
+
+    assert cleanup_ran.is_set(), (
+        "task's finally block must run before _on_config_auto_listen returns"
+    )
+    assert svc._mic_loop_task is None
+
+
 async def test_rebuild_stt_runs_factory_off_event_loop():
     """_rebuild_stt must run the STT factory in a worker thread so blocking model
     loads (whisper.load_model) don't freeze the asyncio event loop and NATS bus."""
