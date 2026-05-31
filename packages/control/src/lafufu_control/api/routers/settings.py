@@ -1,6 +1,7 @@
 """Settings CRUD. PATCH/PUT publish `config.changed.<key>` to NATS."""
 
 import json
+from collections.abc import Callable
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
@@ -56,6 +57,37 @@ def _encode(value: Any, vt: str) -> str:
     return str(value)
 
 
+def apply_setting(
+    engine,
+    nats_publish: Callable[[str, dict], None],
+    key: str,
+    value: Any,
+    value_type: str = "str",
+) -> str:
+    """Persist a setting and broadcast ``config.changed.<key>`` over NATS.
+
+    The single write+publish path the settings PATCH/PUT use — reused by other
+    control routers (e.g. the prompt switcher) so any setting they touch reaches
+    the running agent's live-reload listener exactly like an admin PATCH would.
+
+    Upserts the row, encodes per ``value_type``, then publishes the same
+    ``{"key", "value", "source"}`` payload the CRUD endpoints emit. Returns the
+    encoded value as stored.
+    """
+    encoded = _encode(value, value_type)
+    with Session(engine) as s:
+        row = s.get(Setting, key)
+        if row is None:
+            row = Setting(key=key, value=encoded, value_type=value_type)
+            s.add(row)
+        else:
+            row.value = encoded
+            row.value_type = value_type
+        s.commit()
+    nats_publish(f"config.changed.{key}", {"key": key, "value": value, "source": "admin"})
+    return encoded
+
+
 @router.get("/_defaults", response_model=list[SettingOut])
 def list_defaults():
     """Factory defaults from bootstrap. Used by admin UI for reset-to-default."""
@@ -97,22 +129,12 @@ def put_setting(key: str, body: SettingIn, req: Request):
         raise HTTPException(
             404, detail={"error_code": "not_found", "message": f"setting {key} not found"}
         )
-    encoded = _encode(body.value, body.value_type)
+    apply_setting(
+        req.app.state.engine, req.app.state.nats_publish, key, body.value, body.value_type
+    )
     with Session(req.app.state.engine) as s:
         row = s.get(Setting, key)
-        if row is None:
-            row = Setting(key=key, value=encoded, value_type=body.value_type)
-            s.add(row)
-        else:
-            row.value = encoded
-            row.value_type = body.value_type
-        s.commit()
-        s.refresh(row)
-        out = SettingOut(**row.model_dump())
-    req.app.state.nats_publish(
-        f"config.changed.{key}", {"key": key, "value": body.value, "source": "admin"}
-    )
-    return out
+        return SettingOut(**row.model_dump())
 
 
 @router.patch("/{key}", response_model=SettingOut)
@@ -126,22 +148,16 @@ def patch_setting(key: str, body: SettingIn, req: Request):
             404, detail={"error_code": "not_found", "message": f"setting {key} not found"}
         )
     with Session(req.app.state.engine) as s:
-        row = s.get(Setting, key)
-        if not row:
+        if s.get(Setting, key) is None:
             raise HTTPException(
                 404, detail={"error_code": "not_found", "message": f"setting {key} not found"}
             )
-        row.value = _encode(body.value, body.value_type)
-        if body.value_type:
-            row.value_type = body.value_type
-        s.add(row)
-        s.commit()
-        s.refresh(row)
-        out = SettingOut(**row.model_dump())
-    req.app.state.nats_publish(
-        f"config.changed.{key}", {"key": key, "value": body.value, "source": "admin"}
+    apply_setting(
+        req.app.state.engine, req.app.state.nats_publish, key, body.value, body.value_type
     )
-    return out
+    with Session(req.app.state.engine) as s:
+        row = s.get(Setting, key)
+        return SettingOut(**row.model_dump())
 
 
 @router.delete("/{key}", status_code=204)

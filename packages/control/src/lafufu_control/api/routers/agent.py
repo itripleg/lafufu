@@ -3,11 +3,16 @@
 import json
 import os
 from pathlib import Path
-from typing import Literal
+from typing import Literal, NamedTuple
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
+from lafufu_shared.prompts import DEFAULT_SYSTEM_PROMPT, FORTUNE_TELLER_PROMPT
 from pydantic import BaseModel, Field
+from sqlmodel import Session
+
+from ...models.setting import Setting
+from .settings import apply_setting
 
 _EMOTIONS = Literal["happy", "sad", "angry", "surprised", "neutral", "agree", "disagree"]
 
@@ -246,3 +251,114 @@ def speak_text(body: SpeakTextBody, req: Request):
     """
     req.app.state.nats_publish("agent.intent.speak_text", body.model_dump())
     return {"ok": True}
+
+
+# ─────────────────────── prompt switcher ──────────────────
+#
+# Two built-in presets. `agent.system_prompt` (seeded in bootstrap) stays the
+# LIVE value the agent consumes; the active preset's text is mirrored into it.
+# Selecting / editing / restoring the ACTIVE preset writes agent.system_prompt
+# through `apply_setting`, which publishes config.changed.agent.system_prompt so
+# the running agent live-reloads.
+
+PromptId = Literal["street_oracle", "fortune_teller"]
+
+_PRESET_KEY_ACTIVE = "agent.prompt_preset"
+_PRESET_KEY_LIVE = "agent.system_prompt"
+
+
+class _Preset(NamedTuple):
+    """A built-in prompt preset: display label, the canonical (shipped) text
+    used as the restore-to-default target, and the settings key holding the
+    operator-editable saved text."""
+
+    label: str
+    canonical_text: str
+    setting_key: str
+
+
+# id -> preset. Insertion order (street_oracle, fortune_teller) is the API order.
+_PRESETS: dict[str, _Preset] = {
+    "street_oracle": _Preset("Street Oracle", DEFAULT_SYSTEM_PROMPT, "agent.prompt.street_oracle"),
+    "fortune_teller": _Preset(
+        "Fortune Teller", FORTUNE_TELLER_PROMPT, "agent.prompt.fortune_teller"
+    ),
+}
+
+
+class PromptSelectBody(BaseModel):
+    id: PromptId
+
+
+class PromptEditBody(BaseModel):
+    # Cap matches the agent text bound + the Setting.value DB column (max 4000).
+    text: str = Field(max_length=4000)
+
+
+def _read_value(engine, key: str, fallback: str = "") -> str:
+    with Session(engine) as s:
+        row = s.get(Setting, key)
+        return row.value if row is not None else fallback
+
+
+def _prompts_payload(engine) -> dict:
+    """The GET /prompts response — active preset + both presets' saved text."""
+    active = _read_value(engine, _PRESET_KEY_ACTIVE, "street_oracle")
+    presets = []
+    for pid, preset in _PRESETS.items():
+        text = _read_value(engine, preset.setting_key, preset.canonical_text)
+        presets.append(
+            {
+                "id": pid,
+                "label": preset.label,
+                "text": text,
+                "is_default": text == preset.canonical_text,
+            }
+        )
+    return {"active": active, "presets": presets}
+
+
+@router.get("/prompts")
+def get_prompts(req: Request):
+    """List both built-in presets, the active one, and each preset's saved text."""
+    return _prompts_payload(req.app.state.engine)
+
+
+@router.post("/prompts/select")
+def select_prompt(body: PromptSelectBody, req: Request):
+    """Switch the active preset. Sets agent.prompt_preset AND mirrors the
+    preset's saved text into agent.system_prompt (the live value) so the agent
+    reloads it via config.changed.agent.system_prompt."""
+    engine = req.app.state.engine
+    publish = req.app.state.nats_publish
+    preset = _PRESETS[body.id]
+    text = _read_value(engine, preset.setting_key, preset.canonical_text)
+    apply_setting(engine, publish, _PRESET_KEY_ACTIVE, body.id, "str")
+    apply_setting(engine, publish, _PRESET_KEY_LIVE, text, "str")
+    return _prompts_payload(engine)
+
+
+@router.put("/prompts/{prompt_id}")
+def edit_prompt(prompt_id: PromptId, body: PromptEditBody, req: Request):
+    """Save edited text for a preset. If it's the active preset, also mirror it
+    into the live agent.system_prompt."""
+    engine = req.app.state.engine
+    publish = req.app.state.nats_publish
+    preset = _PRESETS[prompt_id]
+    apply_setting(engine, publish, preset.setting_key, body.text, "str")
+    if _read_value(engine, _PRESET_KEY_ACTIVE, "street_oracle") == prompt_id:
+        apply_setting(engine, publish, _PRESET_KEY_LIVE, body.text, "str")
+    return _prompts_payload(engine)
+
+
+@router.post("/prompts/{prompt_id}/restore")
+def restore_prompt(prompt_id: PromptId, req: Request):
+    """Reset a preset's saved text to its shipped canonical text. If it's the
+    active preset, also restore the live agent.system_prompt."""
+    engine = req.app.state.engine
+    publish = req.app.state.nats_publish
+    preset = _PRESETS[prompt_id]
+    apply_setting(engine, publish, preset.setting_key, preset.canonical_text, "str")
+    if _read_value(engine, _PRESET_KEY_ACTIVE, "street_oracle") == prompt_id:
+        apply_setting(engine, publish, _PRESET_KEY_LIVE, preset.canonical_text, "str")
+    return _prompts_payload(engine)

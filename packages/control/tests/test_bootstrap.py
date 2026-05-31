@@ -13,6 +13,7 @@ from lafufu_control import bootstrap as bootstrap_mod
 from lafufu_control.bootstrap import seed_default_settings
 from lafufu_control.db import init_db
 from lafufu_control.models.setting import Setting
+from lafufu_shared.prompts import DEFAULT_SYSTEM_PROMPT, FORTUNE_TELLER_PROMPT
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlmodel import Session, create_engine, select
 
@@ -51,6 +52,26 @@ def test_seeds_all_expected_keys(tmp_path):
     }
     missing = expected_new - keys
     assert not missing, f"bootstrap missing keys: {sorted(missing)}"
+
+
+def test_seeds_prompt_switcher_and_fortune_keys(tmp_path):
+    """The prompt switcher + fortune settings rows seed with the expected
+    values and value_types."""
+    engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}")
+    init_db(engine)
+    seed_default_settings(engine)
+
+    with Session(engine) as s:
+        rows = {row.key: (row.value, row.value_type) for row in s.exec(select(Setting)).all()}
+
+    assert rows["agent.prompt_preset"] == ("street_oracle", "str")
+    assert rows["agent.prompt.street_oracle"] == (DEFAULT_SYSTEM_PROMPT, "str")
+    assert rows["agent.prompt.fortune_teller"] == (FORTUNE_TELLER_PROMPT, "str")
+    assert rows["agent.fortune.lucky_numbers_count"] == ("4", "int")
+    assert rows["agent.fortune.lucky_number_max"] == ("99", "int")
+    assert rows["agent.fortune.lucky_subway_stop"] == ("Tinker St.", "str")
+    # The live prompt the agent consumes mirrors the active (street_oracle) preset.
+    assert rows["agent.system_prompt"] == (DEFAULT_SYSTEM_PROMPT, "str")
 
 
 def test_servo_defaults_match_canonical_idle_pose(tmp_path):

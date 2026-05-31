@@ -10,6 +10,7 @@ import time
 from lafufu_shared import nats_helper, schemas, topics
 from lafufu_shared.base_service import BaseService
 
+from .fortune import generate_lucky_numbers
 from .pipeline import VoicePipeline
 from .trigger import InteractionMode, TriggerConfig, is_affirmative
 
@@ -106,6 +107,12 @@ class AgentService(BaseService):
         # injected player; updated live by config.changed.speaker.output_device and
         # re-applied to any player rebuilt on a voice/sample-rate swap.
         self._output_device = getattr(speaker_play, "device", "auto")
+        # Fortune-card settings (trigger-mode print path). Seeded with in-memory
+        # defaults so a missing config snapshot still produces a sensible card;
+        # the agent.fortune.* config.changed subscribers update these live.
+        self._fortune_lucky_count: int = 4  # 0 = omit the lucky-numbers line
+        self._fortune_lucky_max: int = 99
+        self._fortune_subway_stop: str = "Tinker St."  # blank = omit the stop line
         # Cached "operator wants wakeword enabled?" state. Defaults to True
         # because the bootstrap default for agent.wakeword.enabled is true.
         # Updated whenever _on_config_wakeword_enabled parses a value, and
@@ -339,6 +346,21 @@ class AgentService(BaseService):
             ("agent.trigger.rounds", self._on_config_trigger_rounds),
             ("agent.trigger.print_mode", self._on_config_trigger_print_mode),
             ("agent.trigger.print_prompt", self._on_config_trigger_print_prompt),
+        ):
+            await nats_helper.subscribe_model(
+                self.nats,
+                f"{topics.CONFIG_CHANGED}.{field}",
+                schemas.ConfigChanged,
+                handler,
+            )
+
+        # Fortune-card config — lucky numbers + subway stop printed on the card.
+        # Mirrors the trigger-config subscribers: each parses/validates, logs,
+        # and stores on self; bad values warn and keep the current value.
+        for field, handler in (
+            ("agent.fortune.lucky_numbers_count", self._on_config_fortune_lucky_count),
+            ("agent.fortune.lucky_number_max", self._on_config_fortune_lucky_max),
+            ("agent.fortune.lucky_subway_stop", self._on_config_fortune_subway_stop),
         ):
             await nats_helper.subscribe_model(
                 self.nats,
@@ -793,6 +815,35 @@ class AgentService(BaseService):
         self._trigger = dataclasses.replace(self._trigger, print_prompt=str(msg.value))
         self.log.info("agent.trigger.print_prompt.set len=%d", len(self._trigger.print_prompt))
 
+    async def _on_config_fortune_lucky_count(self, subject, msg: schemas.ConfigChanged) -> None:
+        try:
+            value = int(msg.value)
+        except (TypeError, ValueError):
+            self.log.warning("agent.fortune.lucky_numbers_count.bad_value value=%r", msg.value)
+            return
+        if value < 0:
+            self.log.warning("agent.fortune.lucky_numbers_count.bad_value value=%r", msg.value)
+            return
+        self._fortune_lucky_count = value
+        self.log.info("agent.fortune.lucky_numbers_count.set value=%d", value)
+
+    async def _on_config_fortune_lucky_max(self, subject, msg: schemas.ConfigChanged) -> None:
+        try:
+            value = int(msg.value)
+        except (TypeError, ValueError):
+            self.log.warning("agent.fortune.lucky_number_max.bad_value value=%r", msg.value)
+            return
+        if value < 1:
+            self.log.warning("agent.fortune.lucky_number_max.bad_value value=%r", msg.value)
+            return
+        self._fortune_lucky_max = value
+        self.log.info("agent.fortune.lucky_number_max.set value=%d", value)
+
+    async def _on_config_fortune_subway_stop(self, subject, msg: schemas.ConfigChanged) -> None:
+        value = str(msg.value)
+        self._fortune_subway_stop = value
+        self.log.info("agent.fortune.lucky_subway_stop.set len=%d", len(value.strip()))
+
     async def _on_config_auto_listen(self, subject: str, msg: schemas.ConfigChanged) -> None:
         v = msg.value
         if isinstance(v, str):
@@ -1073,12 +1124,25 @@ class AgentService(BaseService):
             await tmp.speak(body, emotion or "neutral")
             return clean, body
 
-    async def _send_print(self, text: str) -> None:
-        """Publish a print-text intent for the receipt printer."""
+    async def _send_fortune(self, text: str) -> None:
+        """Publish a compose-fortune intent for the printer (fortune-card path).
+
+        Auto-generates lucky numbers and attaches the configured lucky subway
+        stop. The printer resolves its own letterhead/font; we only send the
+        fortune body + lucky info. Empty lucky lists / a blank stop are sent as
+        ``None`` so the card omits those lines entirely.
+        """
+        numbers = generate_lucky_numbers(self._fortune_lucky_count, self._fortune_lucky_max)
+        stop = self._fortune_subway_stop.strip() or None
         await nats_helper.publish_model(
             self.nats,
-            topics.PRINTER_INTENT_PRINT_TEXT,
-            schemas.PrinterIntentPrintText(text=text),
+            topics.PRINTER_INTENT_COMPOSE_FORTUNE,
+            schemas.PrinterIntentComposeFortune(
+                text=text,
+                lucky_numbers=numbers or None,
+                lucky_subway_stop=stop,
+                title="lafufu fortune",
+            ),
         )
 
     async def _handle_trigger_print(
@@ -1094,7 +1158,7 @@ class AgentService(BaseService):
         if mode == "none" or not last_reply_text:
             return
         if mode == "auto":
-            await self._send_print(last_reply_text)
+            await self._send_fortune(last_reply_text)
             return
 
         # ask mode: speak the prompt under the lock — short and bounded.
@@ -1115,4 +1179,4 @@ class AgentService(BaseService):
             await self._publish_state("transcribing")
             transcript = await loop.run_in_executor(None, self.stt.transcribe, audio)
             if is_affirmative(transcript or ""):
-                await self._send_print(last_reply_text)
+                await self._send_fortune(last_reply_text)

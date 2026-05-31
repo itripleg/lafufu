@@ -218,6 +218,12 @@ class PrinterService(BaseService):
             schemas.PrinterIntentCompose,
             self._on_compose,
         )
+        await nats_helper.subscribe_model(
+            self.nats,
+            topics.PRINTER_INTENT_COMPOSE_FORTUNE,
+            schemas.PrinterIntentComposeFortune,
+            self._on_compose_fortune,
+        )
         # Subscribe to live config changes so auto_print toggle takes effect without restart.
         await nats_helper.subscribe_model(
             self.nats,
@@ -337,6 +343,11 @@ class PrinterService(BaseService):
     async def _on_agent_reply(self, subject: str, msg: schemas.AgentReply) -> None:
         if not self.auto_print:
             return
+        # System/opening lines (e.g. the trigger-mode wake-word acknowledgment,
+        # published with source="system") are not content to print — only the
+        # actual reply (llm) or operator puppet text should auto-print.
+        if msg.source == "system":
+            return
         text = format_reply(text=msg.text, emotion=msg.emotion, ts=datetime.now())
         await self._safe_print(text, title="lafufu reply")
 
@@ -355,41 +366,87 @@ class PrinterService(BaseService):
             self.log.warning("printer.busy — dropping compose intent")
             return
         async with self._job_lock:
-            await self._on_compose_locked(msg)
+            lh = Path(msg.letterhead_path)
+            # Untrusted NATS-supplied path: must resolve inside the data dir.
+            if not _path_within_allowed_roots(lh):
+                await self._publish_state(
+                    "error", detail=f"letterhead path not allowed: {msg.letterhead_path}"
+                )
+                await self._publish_state("idle")
+                return
+            if not lh.exists():
+                await self._publish_state(
+                    "error", detail=f"letterhead not found: {msg.letterhead_path}"
+                )
+                await self._publish_state("idle")
+                return
+            await self._compose_and_print(
+                letterhead=lh,
+                text=msg.text,
+                lucky_subway_stop=msg.lucky_subway_stop,
+                lucky_numbers=msg.lucky_numbers,
+                title=msg.title,
+                font_name=msg.font,
+            )
 
-    async def _on_compose_locked(self, msg: schemas.PrinterIntentCompose) -> None:
+    async def _on_compose_fortune(
+        self, subject: str, msg: schemas.PrinterIntentComposeFortune
+    ) -> None:
+        """Compose a fortune onto the printer's *active* letterhead + font and
+        print it. Unlike `_on_compose`, the letterhead Path and font name are
+        resolved SERVICE-side (the operator's active selection) rather than
+        taken from the message — so they're trusted and skip the data-dir
+        path-safety check (the white-card fallback legitimately lives outside
+        the data dir, exactly like the composed temp file printed below)."""
+        if self._job_lock.locked():
+            self.log.warning("printer.busy — dropping compose_fortune intent")
+            return
+        async with self._job_lock:
+            from lafufu_shared import printer_assets
+
+            await self._compose_and_print(
+                letterhead=printer_assets.active_letterhead_path(),
+                text=msg.text,
+                lucky_subway_stop=msg.lucky_subway_stop,
+                lucky_numbers=msg.lucky_numbers,
+                title=msg.title,
+                font_name=printer_assets.active_font_name(),
+            )
+
+    async def _compose_and_print(
+        self,
+        *,
+        letterhead: Path,
+        text: str,
+        lucky_subway_stop: str | None,
+        lucky_numbers: list[int] | None,
+        title: str | None,
+        font_name: str | None,
+    ) -> None:
+        """Shared compose+print body for both compose intents. The caller has
+        already resolved (and, for the untrusted intent, validated) the
+        `letterhead` Path; `font_name` is a bare filename resolved here against
+        the font dirs (None → composer default). Must run under `_job_lock`."""
         from .composer import compose_fortune
 
-        lh = Path(msg.letterhead_path)
-        if not _path_within_allowed_roots(lh):
-            await self._publish_state(
-                "error", detail=f"letterhead path not allowed: {msg.letterhead_path}"
-            )
-            await self._publish_state("idle")
-            return
-        if not lh.exists():
-            await self._publish_state(
-                "error", detail=f"letterhead not found: {msg.letterhead_path}"
-            )
-            await self._publish_state("idle")
-            return
         if not self._cups.default_printer():
             await self._publish_state("offline")
             return
         # Resolve the requested font by name; None falls through to the
         # composer's bundled default.
-        font_path = _resolve_font(msg.font)
+        font_path = _resolve_font(font_name)
         font_kwargs = {"font_path": font_path, "lucky_font_path": font_path} if font_path else {}
+        composed: Path | None = None
         try:
             # PIL composition is CPU-bound (~200ms-2s on a Pi for full card).
             # Run in a worker thread so heartbeats + other NATS handlers
             # don't stall on the event loop while we draw.
             composed = await asyncio.to_thread(
                 compose_fortune,
-                lh,
-                body_text=msg.text,
-                lucky_subway_stop=msg.lucky_subway_stop,
-                lucky_numbers=msg.lucky_numbers,
+                letterhead,
+                body_text=text,
+                lucky_subway_stop=lucky_subway_stop,
+                lucky_numbers=lucky_numbers,
                 **font_kwargs,
             )
         except Exception as e:
@@ -407,7 +464,7 @@ class PrinterService(BaseService):
             job_id = await asyncio.to_thread(
                 self._cups.print_file,
                 composed,
-                title=msg.title or "lafufu fortune",
+                title=title or "lafufu fortune",
                 extra_lp_options=self._build_lp_options(),
                 target_size_px=target_px,
                 dead_zone_top_px=dz_top_px,

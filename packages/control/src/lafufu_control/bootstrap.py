@@ -6,7 +6,7 @@ Existing values are never overwritten.
 
 import logging
 
-from lafufu_shared.prompts import DEFAULT_SYSTEM_PROMPT
+from lafufu_shared.prompts import DEFAULT_SYSTEM_PROMPT, FORTUNE_TELLER_PROMPT
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlmodel import Session, select
 
@@ -41,6 +41,46 @@ DEFAULTS: list[tuple[str, str, str, str]] = [
         DEFAULT_SYSTEM_PROMPT,
         "str",
         "Personality prompt sent to the LLM with every request.",
+    ),
+    # Prompt switcher: which built-in preset is active + the saved text for each
+    # preset. agent.system_prompt above stays the live value the agent consumes
+    # and mirrors the active preset; selecting/editing/restoring the active
+    # preset writes it (and publishes config.changed.agent.system_prompt).
+    (
+        "agent.prompt_preset",
+        "street_oracle",
+        "str",
+        "Which built-in prompt preset is active: street_oracle | fortune_teller.",
+    ),
+    (
+        "agent.prompt.street_oracle",
+        DEFAULT_SYSTEM_PROMPT,
+        "str",
+        "Saved text for the Street Oracle preset; restore-to-default resets it to the shipped text.",
+    ),
+    (
+        "agent.prompt.fortune_teller",
+        FORTUNE_TELLER_PROMPT,
+        "str",
+        "Saved text for the Fortune Teller preset.",
+    ),
+    (
+        "agent.fortune.lucky_numbers_count",
+        "4",
+        "int",
+        "How many random lucky numbers to print on the fortune card; 0 = omit the line.",
+    ),
+    (
+        "agent.fortune.lucky_number_max",
+        "99",
+        "int",
+        "Lucky numbers are drawn from 1..this value.",
+    ),
+    (
+        "agent.fortune.lucky_subway_stop",
+        "Tinker St.",
+        "str",
+        "Lucky subway stop printed on the fortune card; blank = omit the line.",
     ),
     (
         "agent.llm_model",

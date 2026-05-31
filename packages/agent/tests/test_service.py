@@ -578,16 +578,21 @@ async def test_trigger_mode_speaks_opening_runs_round_and_auto_prints(nats_serve
 
     nc = await nats.connect(nats_server)
     replies: list[schemas.AgentReply] = []
-    prints: list[schemas.PrinterIntentPrintText] = []
+    fortunes: list[schemas.PrinterIntentComposeFortune] = []
+    plain_prints: list[schemas.PrinterIntentPrintText] = []
 
     async def cb_reply(msg):
         replies.append(schemas.AgentReply.model_validate_json(msg.data))
 
-    async def cb_print(msg):
-        prints.append(schemas.PrinterIntentPrintText.model_validate_json(msg.data))
+    async def cb_fortune(msg):
+        fortunes.append(schemas.PrinterIntentComposeFortune.model_validate_json(msg.data))
+
+    async def cb_plain(msg):
+        plain_prints.append(schemas.PrinterIntentPrintText.model_validate_json(msg.data))
 
     await nc.subscribe(topics.AGENT_REPLY, cb=cb_reply)
-    await nc.subscribe(topics.PRINTER_INTENT_PRINT_TEXT, cb=cb_print)
+    await nc.subscribe(topics.PRINTER_INTENT_COMPOSE_FORTUNE, cb=cb_fortune)
+    await nc.subscribe(topics.PRINTER_INTENT_PRINT_TEXT, cb=cb_plain)
 
     task = asyncio.create_task(svc.run())
     await asyncio.sleep(0.3)
@@ -606,8 +611,18 @@ async def test_trigger_mode_speaks_opening_runs_round_and_auto_prints(nats_serve
     llm_reply = next(r for r in replies if r.source == "llm")
     assert llm_reply.text == "Great fortune awaits."
 
-    assert len(prints) == 1, f"auto-print should emit exactly one print job, got {len(prints)}"
-    assert prints[0].text == "Great fortune awaits."
+    # Auto-print now goes through the compose-fortune card path, NOT plain text.
+    assert not plain_prints, "trigger print should no longer publish plain print_text"
+    assert len(fortunes) == 1, (
+        f"auto-print should emit exactly one fortune job, got {len(fortunes)}"
+    )
+    assert fortunes[0].text == "Great fortune awaits."
+    # Default lucky_numbers_count is 4 → a sorted, in-range list rides along.
+    assert fortunes[0].lucky_numbers is not None
+    assert len(fortunes[0].lucky_numbers) == 4
+    assert fortunes[0].lucky_numbers == sorted(fortunes[0].lucky_numbers)
+    assert all(1 <= n <= 99 for n in fortunes[0].lucky_numbers)
+    assert fortunes[0].lucky_subway_stop == "Tinker St."
 
 
 class _ScriptedSTT:
@@ -869,6 +884,63 @@ async def test_trigger_subscribers_mutate_config(nats_server):
     assert svc._trigger.emotion == "drunk"
     await push("agent.trigger.print_mode", "always")
     assert svc._trigger.print_mode == "auto"
+
+    await nc.drain()
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)
+
+
+async def test_fortune_subscribers_mutate_config(nats_server):
+    """agent.fortune.* settings live-update the fortune-card knobs on the
+    service. Bad values are rejected (logged + ignored), keeping the last good
+    value."""
+    from lafufu_agent.trigger import TriggerConfig
+
+    svc = AgentService(
+        mic=FakeMicForService([]),
+        ollama=FakeOllama(),
+        piper=FakePiper(),
+        nats_url=nats_server,
+        trigger_config=TriggerConfig.from_env({}),
+    )
+    # In-memory defaults seeded in __init__ so a missing snapshot still works.
+    assert svc._fortune_lucky_count == 4
+    assert svc._fortune_lucky_max == 99
+    assert svc._fortune_subway_stop == "Tinker St."
+
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.5)
+
+    nc = await nats.connect(nats_server)
+
+    async def push(key: str, value: str) -> None:
+        await publish_model(
+            nc,
+            f"{topics.CONFIG_CHANGED}.{key}",
+            schemas.ConfigChanged(key=key, value=value, source="test"),
+        )
+        await asyncio.sleep(0.15)
+
+    await push("agent.fortune.lucky_numbers_count", "6")
+    assert svc._fortune_lucky_count == 6
+
+    await push("agent.fortune.lucky_number_max", "49")
+    assert svc._fortune_lucky_max == 49
+
+    await push("agent.fortune.lucky_subway_stop", "Bedford Ave.")
+    assert svc._fortune_subway_stop == "Bedford Ave."
+
+    # 0 means "omit the numbers line" and is valid; negative / non-int are not.
+    await push("agent.fortune.lucky_numbers_count", "0")
+    assert svc._fortune_lucky_count == 0
+    await push("agent.fortune.lucky_numbers_count", "-2")
+    assert svc._fortune_lucky_count == 0  # unchanged
+    await push("agent.fortune.lucky_numbers_count", "nope")
+    assert svc._fortune_lucky_count == 0  # unchanged
+
+    # max must be >= 1.
+    await push("agent.fortune.lucky_number_max", "0")
+    assert svc._fortune_lucky_max == 49  # unchanged
 
     await nc.drain()
     svc._shutdown.set()

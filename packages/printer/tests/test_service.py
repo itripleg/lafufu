@@ -330,3 +330,126 @@ async def test_concurrent_safe_print_drops_second_while_locked():
     # Only the first print went through.
     assert len(cups.printed) == 1
     assert "First" in cups.printed[0][0]
+
+
+# ---------------------------------------------------------------------------
+# compose_fortune intent: letterhead + font resolved service-side
+# ---------------------------------------------------------------------------
+
+
+async def test_compose_fortune_uses_active_letterhead_and_prints(
+    nats_server, tmp_path, monkeypatch
+):
+    """A PrinterIntentComposeFortune composes onto the SERVICE-resolved active
+    letterhead (here the white-card fallback, which legitimately lives outside
+    the data dir) and prints — without rejecting on path-safety, and passing
+    the lucky info through to the composer."""
+    data_dir = tmp_path / "printer-data"
+    data_dir.mkdir()
+    monkeypatch.setenv("LAFUFU_PRINTER_DATA_DIR", str(data_dir))
+
+    # Capture what reaches the composer so we can assert the lucky info passes
+    # through and the resolved (trusted) letterhead is used as-is.
+    captured: dict = {}
+
+    def fake_compose_fortune(letterhead_path, body_text, **kwargs):
+        captured["letterhead_path"] = letterhead_path
+        captured["body_text"] = body_text
+        captured.update(kwargs)
+        out = tmp_path / "composed.png"
+        out.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+        return out
+
+    monkeypatch.setattr("lafufu_printer.composer.compose_fortune", fake_compose_fortune)
+
+    cups = FakeCups(available=True)
+    svc = PrinterService(cups=cups, nats_url=nats_server, auto_print=False)
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.4)
+    nc = await nats.connect(nats_server)
+    await publish_model(
+        nc,
+        topics.PRINTER_INTENT_COMPOSE_FORTUNE,
+        schemas.PrinterIntentComposeFortune(
+            text="your destiny awaits",
+            lucky_subway_stop="Bedford Av",
+            lucky_numbers=[7, 11, 23],
+            title="lafufu fortune",
+        ),
+    )
+    await asyncio.sleep(0.5)
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=2)
+
+    # Reached the print call (no path-safety rejection of the white fallback).
+    assert len(cups.printed_files) == 1
+    # The lucky info was threaded through to the composer.
+    assert captured["body_text"] == "your destiny awaits"
+    assert captured["lucky_subway_stop"] == "Bedford Av"
+    assert captured["lucky_numbers"] == [7, 11, 23]
+    # Letterhead is the service-resolved active path (white fallback here).
+    assert captured["letterhead_path"].name == "white.png"
+
+
+async def test_compose_fortune_drops_when_busy(nats_server, tmp_path, monkeypatch):
+    """When the job lock is already held, a compose_fortune intent is dropped
+    (no print) — mirroring the existing compose busy-drop behaviour."""
+    data_dir = tmp_path / "printer-data"
+    data_dir.mkdir()
+    monkeypatch.setenv("LAFUFU_PRINTER_DATA_DIR", str(data_dir))
+
+    cups = FakeCups(available=True)
+    svc = PrinterService(cups=cups, nats_url=nats_server, auto_print=False)
+    # Hold the lock so the incoming intent must drop.
+    await svc._job_lock.acquire()
+    try:
+        msg = schemas.PrinterIntentComposeFortune(text="hello")
+        await svc._on_compose_fortune("subject", msg)
+    finally:
+        svc._job_lock.release()
+
+    assert cups.printed_files == [], "busy compose_fortune should have been dropped"
+
+
+# ---------------------------------------------------------------------------
+# auto_print source-gating: system/opening lines must not auto-print
+# ---------------------------------------------------------------------------
+
+
+async def test_agent_reply_source_system_does_not_print(nats_server):
+    """The wake-word/opening reply (source='system') must NEVER auto-print,
+    even with auto_print enabled."""
+    cups = FakeCups(available=True)
+    svc = PrinterService(cups=cups, nats_url=nats_server, auto_print=True)
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.4)
+    nc = await nats.connect(nats_server)
+    await publish_model(
+        nc,
+        topics.AGENT_REPLY,
+        schemas.AgentReply(text="yo what's good", emotion="neutral", source="system"),
+    )
+    await asyncio.sleep(0.3)
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=2)
+    assert cups.printed == [], "system-source reply must not auto-print"
+
+
+async def test_agent_reply_source_llm_still_prints(nats_server):
+    """A normal LLM reply (source='llm') still auto-prints — guard against
+    over-gating the source check."""
+    cups = FakeCups(available=True)
+    svc = PrinterService(cups=cups, nats_url=nats_server, auto_print=True)
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.4)
+    nc = await nats.connect(nats_server)
+    await publish_model(
+        nc,
+        topics.AGENT_REPLY,
+        schemas.AgentReply(text="here is your fortune", emotion="happy", source="llm"),
+    )
+    await asyncio.sleep(0.3)
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=2)
+    assert len(cups.printed) == 1
+    assert "here is your fortune" in cups.printed[0][0]
