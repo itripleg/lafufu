@@ -362,13 +362,26 @@ async def test_on_shutdown_cancels_pending_jaw_tasks():
     from lafufu_animator.service import AnimatorService
 
     class _FakeBus:
-        def open(self) -> None: pass
-        def close(self) -> None: pass
-        def enable_torque(self) -> None: pass
-        def disable_torque(self) -> None: pass
-        def configure_limits(self) -> None: pass
-        def write(self, name: str, position: int) -> None: pass
-        def read(self, name: str) -> int: return 2048
+        def open(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+        def enable_torque(self) -> None:
+            pass
+
+        def disable_torque(self) -> None:
+            pass
+
+        def configure_limits(self) -> None:
+            pass
+
+        def write(self, name: str, position: int) -> None:
+            pass
+
+        def read(self, name: str) -> int:
+            return 2048
 
     svc = AnimatorService(bus=_FakeBus())
     # Manually create a couple of pending jaw tasks to simulate in-flight offset sleeps
@@ -404,16 +417,30 @@ async def test_on_shutdown_cancels_pending_jaw_tasks():
 async def test_pose_publish_loop_exits_promptly_on_shutdown():
     """_pose_publish_loop must exit within ~500ms of _shutdown being set."""
     import time
+
     from lafufu_animator.service import AnimatorService
 
     class _FakeBus:
-        def open(self) -> None: pass
-        def close(self) -> None: pass
-        def enable_torque(self) -> None: pass
-        def disable_torque(self) -> None: pass
-        def configure_limits(self) -> None: pass
-        def write(self, name: str, position: int) -> None: pass
-        def read(self, name: str) -> int: return 2048
+        def open(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+        def enable_torque(self) -> None:
+            pass
+
+        def disable_torque(self) -> None:
+            pass
+
+        def configure_limits(self) -> None:
+            pass
+
+        def write(self, name: str, position: int) -> None:
+            pass
+
+        def read(self, name: str) -> int:
+            return 2048
 
     class _FakeNats:
         async def publish(self, subject: str, data: bytes) -> None:
@@ -437,16 +464,30 @@ async def test_pose_publish_loop_exits_promptly_on_shutdown():
 async def test_keyframe_player_loop_exits_promptly_on_shutdown():
     """_keyframe_player_loop must exit within 500ms of _shutdown being set."""
     import time
+
     from lafufu_animator.service import AnimatorService
 
     class _FakeBus:
-        def open(self) -> None: pass
-        def close(self) -> None: pass
-        def enable_torque(self) -> None: pass
-        def disable_torque(self) -> None: pass
-        def configure_limits(self) -> None: pass
-        def write(self, name: str, position: int) -> None: pass
-        def read(self, name: str) -> int: return 2048
+        def open(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+        def enable_torque(self) -> None:
+            pass
+
+        def disable_torque(self) -> None:
+            pass
+
+        def configure_limits(self) -> None:
+            pass
+
+        def write(self, name: str, position: int) -> None:
+            pass
+
+        def read(self, name: str) -> int:
+            return 2048
 
     svc = AnimatorService(bus=_FakeBus())
     svc._shutdown.clear()

@@ -280,6 +280,7 @@ class ExpressionBody(BaseModel):
     steps: list[ExpressionStep] = []
     random_walk_config: RandomWalkConfigBody | None = None
     emotion: str | None = None
+    display_media: str | None = None
     description: str | None = None
 
 
@@ -306,6 +307,7 @@ def _e2d(e: Expression) -> dict:
         "steps": steps,
         "random_walk_config": rwc,
         "emotion": e.emotion,
+        "display_media": e.display_media,
         "description": e.description,
         "is_builtin": e.is_builtin,
     }
@@ -379,6 +381,7 @@ def create_expression(body: ExpressionBody, req: Request):
             default_easing=body.default_easing,
             steps_json=_expression_steps_json(body),
             emotion=body.emotion,
+            display_media=body.display_media,
             description=body.description,
         )
         s.add(e)
@@ -404,6 +407,7 @@ def update_expression(name: str, body: ExpressionBody, req: Request):
         e.default_easing = body.default_easing
         e.steps_json = _expression_steps_json(body)
         e.emotion = body.emotion
+        e.display_media = body.display_media
         e.description = body.description
         s.add(e)
         s.commit()

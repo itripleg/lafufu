@@ -66,7 +66,6 @@ def test_output_always_in_unit_range():
 def test_bisect_window_stays_sorted_as_deque_wraps():
     """When the sliding window wraps (oldest element evicted), the internal
     sorted list must stay consistent with the deque contents."""
-    import bisect
 
     norm = LipsyncNormalizer(window=5)
     values = [100.0, 200.0, 300.0, 400.0, 500.0, 150.0, 250.0]

@@ -118,8 +118,8 @@ def test_check_schema_version_updates_stale_stamp(tmp_path):
     """After init_db has run its migrations, a stale schema version stamp must
     be updated to CURRENT_SCHEMA_VERSION so subsequent boots don't spam warnings."""
     from lafufu_control.db import (
-        CURRENT_SCHEMA_VERSION,
         _SCHEMA_VERSION_KEY,
+        CURRENT_SCHEMA_VERSION,
         check_schema_version,
         create_engine_for_path,
         init_db,

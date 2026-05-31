@@ -45,6 +45,50 @@ def test_create_expression(client):
     assert items[0]["name"] == "agree"
 
 
+def test_display_media_round_trips(client):
+    """display_media is persisted on create, surfaced on GET, and clearable
+    (null) on update — the single image/mp4 shown on the pet screen."""
+    body = {
+        "name": "happy",
+        "playback": "loop",
+        "steps": [{"frame": "happy_a"}],
+        "emotion": "happy",
+        "display_media": "sprites/default/happy_lafufu.mp4",
+    }
+    r = client.post("/api/animator/expressions", json=body)
+    assert r.status_code == 200, r.text
+    assert r.json()["display_media"] == "sprites/default/happy_lafufu.mp4"
+
+    got = client.get("/api/animator/expressions").json()["items"][0]
+    assert got["display_media"] == "sprites/default/happy_lafufu.mp4"
+
+    # Omitting display_media on update clears it (falls back to the flipbook).
+    r2 = client.put(
+        "/api/animator/expressions/happy",
+        json={
+            "name": "happy",
+            "playback": "loop",
+            "steps": [{"frame": "happy_a"}],
+            "emotion": "happy",
+        },
+    )
+    assert r2.status_code == 200
+    assert r2.json()["display_media"] is None
+
+
+def test_seed_sets_display_media_defaults(client):
+    """Built-in emotions default to single-media mode so the operator gets one
+    mp4 per emotion out of the box."""
+    from lafufu_control.animation.seed import seed_animations
+
+    seed_animations(client.app.state.engine)
+    by_emotion = {e["emotion"]: e for e in client.get("/api/animator/expressions").json()["items"]}
+    assert by_emotion["happy"]["display_media"] == "sprites/default/happy_lafufu.mp4"
+    assert by_emotion["agree"]["display_media"] == "sprites/default/laughing_lafufu.mp4"
+    assert by_emotion["angry"]["display_media"] == "sprites/default/angry_lafufu.mp4"
+    assert by_emotion["disagree"]["display_media"] == "sprites/default/angry_lafufu.mp4"
+
+
 def test_update_expression_steps(client):
     body = {
         "name": "happy",

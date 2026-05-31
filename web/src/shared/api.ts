@@ -105,6 +105,10 @@ export type ExpressionDTO = {
   steps: ExpressionStepDTO[];
   random_walk_config: RandomWalkConfig | null;
   emotion: string | null;
+  /** Single image/mp4 ref ("bucket/kind/name") shown on the pet/chat screen for
+   *  this emotion. When set, the screen shows just this one media instead of the
+   *  per-frame flipbook; servos still animate frame-by-frame. null → flipbook. */
+  display_media: string | null;
   description: string | null;
   is_builtin: boolean;
 };

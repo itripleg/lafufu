@@ -94,6 +94,50 @@ def test_upload_serve_delete_sprite(client):
     assert r4.status_code == 404
 
 
+def _mp4_bytes() -> bytes:
+    """Minimal bytes that pass the ftyp-box sniff (offset 4 == b'ftyp')."""
+    return b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 32
+
+
+def test_upload_serve_list_mp4_sprite(client):
+    """An mp4 uploads, serves with video/mp4, and shows up in the sprite list —
+    the single-media clip path for emotions."""
+    r = client.post(
+        "/api/images/sprites/upload",
+        files={"file": ("happy_lafufu.mp4", _mp4_bytes(), "video/mp4")},
+    )
+    assert r.status_code == 200, r.text
+    name = r.json()["name"]
+    assert name.endswith(".mp4")
+
+    r2 = client.get(f"/api/images/sprites/upload/{name}")
+    assert r2.status_code == 200
+    assert r2.headers["content-type"] == "video/mp4"
+
+    names = [i["name"] for i in client.get("/api/images/sprites").json()["items"]]
+    assert name in names
+
+
+def test_upload_rejects_non_mp4_video(client):
+    """A video content-type we don't allow is rejected (only mp4)."""
+    r = client.post(
+        "/api/images/sprites/upload",
+        files={"file": ("clip.mov", b"\x00" * 64, "video/quicktime")},
+    )
+    assert r.status_code == 400
+    assert r.json()["detail"]["error_code"] == "bad_media_type"
+
+
+def test_upload_rejects_mp4_without_ftyp(client):
+    """A file claiming video/mp4 but lacking the ftyp box is rejected."""
+    r = client.post(
+        "/api/images/sprites/upload",
+        files={"file": ("fake.mp4", b"not really an mp4 file at all", "video/mp4")},
+    )
+    assert r.status_code == 400
+    assert r.json()["detail"]["error_code"] == "bad_video_bytes"
+
+
 def test_unknown_bucket_404(client):
     """GET /api/images/wat returns 404 (bad_bucket)."""
     r = client.get("/api/images/wat")

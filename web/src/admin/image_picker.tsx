@@ -12,6 +12,8 @@ type Props = {
 const refOf = (bucket: ImageBucket, item: ImageAsset) =>
   `${bucket}/${item.kind}/${item.name}`;
 
+const isVideoName = (name: string) => /\.mp4$/i.test(name);
+
 export const ImagePicker: Component<Props> = (props) => {
   const [items, { refetch }] = createResource(
     () => props.bucket,
@@ -41,7 +43,7 @@ export const ImagePicker: Component<Props> = (props) => {
         <input
           ref={fileInput}
           type="file"
-          accept="image/*"
+          accept="image/*,video/mp4"
           class="hidden"
           onChange={handleUpload}
         />
@@ -82,12 +84,30 @@ export const ImagePicker: Component<Props> = (props) => {
                   }`}
                   title={`${item.kind}/${item.name}`}
                 >
-                  <img
-                    src={api.imageFileUrl(props.bucket, item.kind, item.name)}
-                    alt={item.name}
-                    class="object-contain h-20 w-full"
-                    loading="lazy"
-                  />
+                  <Show
+                    when={isVideoName(item.name)}
+                    fallback={
+                      <img
+                        src={api.imageFileUrl(props.bucket, item.kind, item.name)}
+                        alt={item.name}
+                        class="object-contain h-20 w-full"
+                        loading="lazy"
+                      />
+                    }
+                  >
+                    <video
+                      src={api.imageFileUrl(props.bucket, item.kind, item.name)}
+                      class="object-contain h-20 w-full"
+                      muted
+                      playsinline
+                      preload="metadata"
+                      onMouseEnter={(e) => void e.currentTarget.play().catch(() => {})}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.pause();
+                        e.currentTarget.currentTime = 0;
+                      }}
+                    />
+                  </Show>
                   <div class="text-[10px] text-stone-400 truncate mt-1">
                     {item.name}
                   </div>

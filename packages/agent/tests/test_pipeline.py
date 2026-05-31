@@ -465,9 +465,7 @@ async def test_speak_calls_end_on_original_speaker_after_rebuild(nats_server):
     await swap_task
     await nc.drain()
 
-    assert old_player.end_called, (
-        "end() must be called on the ORIGINAL player, not the replacement"
-    )
+    assert old_player.end_called, "end() must be called on the ORIGINAL player, not the replacement"
     assert not new_player.end_called, (
         "end() must NOT be called on the replacement player that was never started"
     )

@@ -71,12 +71,26 @@ export const PetDevice: Component<{ nats: NatsWs }> = (props) => {
     setTimeout(() => setPopping(false), 240);
   });
 
-  // ── frame playback (mirrors the studio) ──
-  // When an emotion arrives, play that expression's frames client-side and
-  // show each frame's image. The animator only moves servos and is dark
-  // without hardware, so the pet drives its own image animation here. Falls
-  // back to the per-emotion sprite when idle or no matching expression.
+  // ── screen visual: single display-media OR per-frame flipbook ──
+  // Each emotion's expression may carry a single `display_media` (one image or
+  // mp4) shown on the screen instead of cycling the per-frame images. When set,
+  // the flipbook is skipped and the one media drives the visual; the servos
+  // still animate frame-by-frame (driven by the animator over `animator.pose`).
+  // When unset — or the media file is missing (onError) — we fall back to the
+  // per-frame flipbook, then to the static per-emotion sprite.
   const [playImage, setPlayImage] = createSignal<string | null>(null);
+  // Resolved URL of the current emotion's single media, or null for flipbook.
+  const [mediaUrl, setMediaUrl] = createSignal<string | null>(null);
+  // Set when the single media fails to load → drop back to the flipbook.
+  const [mediaError, setMediaError] = createSignal(false);
+  const mediaIsVideo = createMemo(() => {
+    const u = mediaUrl();
+    return !!u && /\.mp4(\?|$)/i.test(u);
+  });
+  // Resting moods loop their clip (it's the ambient screen); a fired emotion's
+  // mp4 plays once then hands back to neutral (see onEnded below).
+  const isRestingEmotion = (emo: string) => emo === "neutral" || emo === "idle";
+
   let exprList: ExpressionDTO[] = [];
   let frameMap = new Map<string, FrameDTO>();
   let playbackTimer: ReturnType<typeof setTimeout> | undefined;
@@ -87,6 +101,17 @@ export const PetDevice: Component<{ nats: NatsWs }> = (props) => {
     stopFramePlayback();
     // The animator resolves an emotion to the expression of the same name.
     const expr = exprList.find((e) => e.name === emo);
+
+    // Single-media mode: one image/mp4 takes over the screen. Skip the flipbook
+    // entirely (unless the media already failed to load this emotion).
+    const media = expr?.display_media ? refToUrl(expr.display_media) : null;
+    if (media && !mediaError()) {
+      setMediaUrl(media);
+      setPlayImage(null);
+      return;
+    }
+    setMediaUrl(null);
+
     if (!expr || expr.playback === "random_walk" || expr.steps.length === 0) {
       setPlayImage(null); // → falls back to the static per-emotion sprite
       return;
@@ -109,7 +134,14 @@ export const PetDevice: Component<{ nats: NatsWs }> = (props) => {
     };
     run(0);
   };
-  createEffect(() => { playEmotionFrames(emotion()); });
+  // Reset the media-load failure flag whenever the emotion changes so a new
+  // emotion gets a fresh attempt at its own clip.
+  createEffect((prev) => {
+    const emo = emotion();
+    if (prev !== undefined && prev !== emo) setMediaError(false);
+    return emo;
+  });
+  createEffect(() => { mediaError(); playEmotionFrames(emotion()); });
   onCleanup(stopFramePlayback);
 
   // ── head tilt / servo drive ──
@@ -282,22 +314,49 @@ export const PetDevice: Component<{ nats: NatsWs }> = (props) => {
               animation: resting() && !dragging() ? "breathe 5s ease-in-out infinite" : "none",
             }}
           >
-            <img
-              src={playImage() ?? (config() ? spriteUrl(emotion()) : "/lafufu.png")}
-              alt={`lafufu ${statusText()}`}
-              draggable={false}
-              style={{
-                width: "100%",
-                height: "100%",
-                "object-fit": "cover",
-                transform: transform(),
-                "transform-style": "preserve-3d",
-                transition: dragging() ? "none" : "transform 0.3s ease-out",
-                "user-select": "none",
-                "pointer-events": "none",
-                opacity: config() ? 1 : 0.55,
-              }}
-            />
+            <Show
+              when={mediaIsVideo()}
+              fallback={
+                <img
+                  src={mediaUrl() ?? playImage() ?? (config() ? spriteUrl(emotion()) : "/lafufu.png")}
+                  alt={`lafufu ${statusText()}`}
+                  draggable={false}
+                  onError={() => { if (mediaUrl()) setMediaError(true); }}
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    "object-fit": "cover",
+                    transform: transform(),
+                    "transform-style": "preserve-3d",
+                    transition: dragging() ? "none" : "transform 0.3s ease-out",
+                    "user-select": "none",
+                    "pointer-events": "none",
+                    opacity: config() ? 1 : 0.55,
+                  }}
+                />
+              }
+            >
+              <video
+                src={mediaUrl()!}
+                autoplay
+                muted
+                playsinline
+                loop={isRestingEmotion(emotion())}
+                onError={() => setMediaError(true)}
+                onEnded={() => { if (!isRestingEmotion(emotion())) setMood("neutral"); }}
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  "object-fit": "cover",
+                  transform: transform(),
+                  "transform-style": "preserve-3d",
+                  transition: dragging() ? "none" : "transform 0.3s ease-out",
+                  "user-select": "none",
+                  "pointer-events": "none",
+                  opacity: config() ? 1 : 0.55,
+                }}
+              />
+            </Show>
           </div>
           <div
             style={{

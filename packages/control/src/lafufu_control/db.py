@@ -7,7 +7,7 @@ from sqlmodel import Session, SQLModel, create_engine
 
 log = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 _SCHEMA_VERSION_KEY = "bootstrap.schema_version"
 
 
@@ -98,6 +98,11 @@ def init_db(engine) -> None:
                 conn.exec_driver_sql(
                     f"ALTER TABLE {table} ADD COLUMN is_builtin INTEGER NOT NULL DEFAULT 0"
                 )
+        # Schema v2: per-emotion single display media (image/mp4) for the pet
+        # screen. Nullable; existing rows default to NULL → per-frame flipbook.
+        expr_cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(expression)")}
+        if "display_media" not in expr_cols:
+            conn.exec_driver_sql("ALTER TABLE expression ADD COLUMN display_media VARCHAR")
         conn.commit()
 
 

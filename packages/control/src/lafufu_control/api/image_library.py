@@ -25,12 +25,20 @@ from lafufu_shared.paths import (
 ALLOWED_IMAGE_MIME = {"image/png", "image/jpeg", "image/webp"}
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
 MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB
+# Video — single-media emotion clips on the pet screen (sprites bucket only in
+# practice). Larger cap; validated by content-type + extension, not PIL.
+ALLOWED_VIDEO_MIME = {"video/mp4"}
+VIDEO_EXTS = {".mp4"}
+MAX_VIDEO_BYTES = 50 * 1024 * 1024  # 50 MB
+# Everything the library will list/serve (images + video).
+MEDIA_EXTS = IMAGE_EXTS | VIDEO_EXTS
 BUCKETS = ("letterheads", "sprites")
 _MEDIA = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
     ".webp": "image/webp",
+    ".mp4": "video/mp4",
 }
 
 
@@ -114,7 +122,7 @@ def list_bucket(bucket: str):
         if not d.is_dir():
             continue
         for f in sorted(d.iterdir(), key=lambda x: x.name.lower()):
-            if f.is_file() and f.suffix.lower() in IMAGE_EXTS:
+            if f.is_file() and f.suffix.lower() in MEDIA_EXTS:
                 items.append({"kind": kind, "name": f.name, "size_bytes": f.stat().st_size})
     return {"items": items}
 
@@ -122,10 +130,10 @@ def list_bucket(bucket: str):
 @router.get("/images/{bucket}/{kind}/{name}")
 def get_file(bucket: str, kind: str, name: str):
     p = bucket_dir(bucket, kind) / safe_name(name)
-    if not p.is_file() or p.suffix.lower() not in IMAGE_EXTS:
+    if not p.is_file() or p.suffix.lower() not in MEDIA_EXTS:
         raise HTTPException(
             404,
-            detail={"error_code": "not_found", "message": f"no image {bucket}/{kind}/{name}"},
+            detail={"error_code": "not_found", "message": f"no media {bucket}/{kind}/{name}"},
         )
     return FileResponse(str(p), media_type=media_type(p))
 
@@ -136,23 +144,43 @@ async def upload(bucket: str, file: Annotated[UploadFile, File()]):
         raise HTTPException(
             404, detail={"error_code": "bad_bucket", "message": f"unknown bucket {bucket!r}"}
         )
-    if file.content_type not in ALLOWED_IMAGE_MIME:
+    is_video = file.content_type in ALLOWED_VIDEO_MIME
+    if file.content_type not in ALLOWED_IMAGE_MIME and not is_video:
         raise HTTPException(
             400,
             detail={
-                "error_code": "bad_image_type",
-                "message": f"unsupported content-type {file.content_type!r}; need png/jpeg/webp",
+                "error_code": "bad_media_type",
+                "message": (
+                    f"unsupported content-type {file.content_type!r}; need png/jpeg/webp or mp4"
+                ),
             },
         )
     data = await file.read()
-    if len(data) > MAX_IMAGE_BYTES:
+    cap = MAX_VIDEO_BYTES if is_video else MAX_IMAGE_BYTES
+    if len(data) > cap:
         raise HTTPException(
             413,
             detail={
-                "error_code": "image_too_large",
-                "message": f"image > {MAX_IMAGE_BYTES} bytes",
+                "error_code": "media_too_large",
+                "message": f"{'video' if is_video else 'image'} > {cap} bytes",
             },
         )
+
+    if is_video:
+        # No PIL for video — sniff the ISO-BMFF/MP4 'ftyp' box at offset 4 so a
+        # mislabeled file can't smuggle in arbitrary bytes. Cheap and dependency-free.
+        if len(data) < 12 or data[4:8] != b"ftyp":
+            raise HTTPException(
+                400,
+                detail={
+                    "error_code": "bad_video_bytes",
+                    "message": "file is not a valid mp4 (missing ftyp box)",
+                },
+            )
+        name = sanitize_upload_name(file.filename, bucket.rstrip("s"), ".mp4")
+        atomic_write(bucket_dir(bucket, "upload") / name, data)
+        return {"ok": True, "kind": "upload", "name": name, "size_bytes": len(data)}
+
     from PIL import Image, UnidentifiedImageError
 
     try:

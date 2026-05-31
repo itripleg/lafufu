@@ -60,8 +60,28 @@ SEED_FRAMES: dict[str, dict] = {
 # (image path could change between releases). All vid_* frames qualify.
 _ALWAYS_REFRESH_IMAGE = {n for n in SEED_FRAMES if n.startswith("vid_")}
 
+# Default single-media clip per emotion. Built-in emotions default to
+# single-media mode (one mp4 on the pet screen + servos animating frame-by-frame
+# underneath) rather than the per-frame image flipbook. Only four source clips
+# exist, so happy/angry are reused for agree/disagree and idle_lafufu covers the
+# calmer moods. If a clip is missing on disk the pet screen falls back to the
+# per-frame flipbook automatically, so these refs are safe to ship ahead of the
+# files. Edit/clear per emotion in the Studio.
+SEED_DISPLAY_MEDIA: dict[str, str] = {
+    "neutral": "sprites/default/idle_lafufu.mp4",
+    "happy": "sprites/default/happy_lafufu.mp4",
+    "sad": "sprites/default/idle_lafufu.mp4",
+    "angry": "sprites/default/angry_lafufu.mp4",
+    "surprised": "sprites/default/idle_lafufu.mp4",
+    "agree": "sprites/default/laughing_lafufu.mp4",
+    "disagree": "sprites/default/angry_lafufu.mp4",
+    "idle": "sprites/default/idle_lafufu.mp4",
+}
+
 # (name, playback, default_duration_ms, default_delay_ms, easing, frame_names, emotion)
-# Emotion expressions now drive the pet screen through video frame image refs.
+# Emotion expressions now drive the pet screen through a single display_media
+# clip (see SEED_DISPLAY_MEDIA); the frame list still drives the servos and is
+# the fallback visual when no display_media is set / the file is missing.
 # The idle expression stays random_walk (no frame list) for continuous head motion.
 SEED_EXPRESSIONS: list[tuple[str, str, int, int, str, list[str], str]] = [
     (
@@ -199,6 +219,7 @@ def seed_animations(engine) -> None:
                     default_easing=easing,
                     steps_json=steps_json,
                     emotion=emotion,
+                    display_media=SEED_DISPLAY_MEDIA.get(name),
                     is_builtin=True,
                 )
                 s.add(row)
@@ -221,14 +242,26 @@ def seed_animations(engine) -> None:
                         default_easing=easing,
                         steps_json=steps_json,
                         emotion=None,
+                        display_media=SEED_DISPLAY_MEDIA.get(name),
                         is_builtin=True,
                     )
                     s.add(row)
                     s.commit()
-            elif not existing.is_builtin:
-                existing.is_builtin = True
-                s.add(existing)
-                s.commit()
+            else:
+                # Existing built-in row: backfill display_media when the operator
+                # hasn't set one (None) so already-seeded DBs pick up the new
+                # single-media defaults without clobbering a user's own choice.
+                dirty = False
+                if not existing.is_builtin:
+                    existing.is_builtin = True
+                    dirty = True
+                seed_media = SEED_DISPLAY_MEDIA.get(name)
+                if existing.display_media is None and seed_media is not None:
+                    existing.display_media = seed_media
+                    dirty = True
+                if dirty:
+                    s.add(existing)
+                    s.commit()
 
 
 def apply_frame_seed(s: Session, name: str) -> Frame:
@@ -283,6 +316,7 @@ def apply_expression_seed(s: Session, name: str) -> Expression:
     e.default_easing = easing
     e.steps_json = steps_json
     e.emotion = emotion
+    e.display_media = SEED_DISPLAY_MEDIA.get(name)
     e.is_builtin = True
     s.add(e)
     return e

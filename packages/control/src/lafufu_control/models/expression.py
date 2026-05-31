@@ -11,3 +11,12 @@ class Expression(SQLModel, table=True):
     emotion: str | None = Field(default=None, max_length=40, unique=True)
     description: str | None = Field(default=None, max_length=500)
     is_builtin: bool = Field(default=False)
+    # Single image/mp4 ref ("bucket/kind/name") shown on the pet/chat screen for
+    # this emotion. When set, the screen shows just this one media instead of
+    # flipping through the per-frame images, while the servos still animate
+    # frame-by-frame. None → fall back to the per-frame flipbook.
+    # NOTE: declared LAST to match the physical column position that the
+    # `ALTER TABLE ... ADD COLUMN` migration produces on already-deployed DBs —
+    # keeping the model order and on-disk order identical avoids a positional
+    # column mismatch in SQLAlchemy's compiled-statement cache.
+    display_media: str | None = Field(default=None, max_length=200)

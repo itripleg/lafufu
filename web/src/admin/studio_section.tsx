@@ -95,6 +95,7 @@ const exprUpdateBody = (e: ExpressionDTO, patch: Partial<ExpressionDTO>) => ({
   steps: e.steps,
   random_walk_config: e.random_walk_config,
   emotion: e.emotion,
+  display_media: e.display_media,
   description: e.description,
   ...patch,
 });
@@ -509,6 +510,8 @@ const FrameEditorModal: Component<{
   onResetFrame: () => Promise<void>;
   onClose: () => void;
 }> = (props) => {
+  const layout = useLayoutMode();
+  const isMobile = () => layout() === "mobile";
   const [pose, setPose] = createSignal<Pose>(poseOfFrame(props.frame));
   const stepRef = () =>
     props.state.kind === "step" && props.expression
@@ -645,7 +648,13 @@ const FrameEditorModal: Component<{
           </button>
         </header>
 
-        <div style={{ display: "grid", "grid-template-columns": "260px 1fr", gap: "20px" }}>
+        <div
+          style={{
+            display: "grid",
+            "grid-template-columns": isMobile() ? "1fr" : "260px 1fr",
+            gap: isMobile() ? "14px" : "20px",
+          }}
+        >
           {/* Left: image / preview card */}
           <div style={{ display: "flex", "flex-direction": "column", gap: "10px" }}>
             <div
@@ -1004,6 +1013,15 @@ export const StudioSection: Component<{ nats: NatsWs }> = (props) => {
   );
   createEffect(() => { lsSet("studio/galleryView", galleryView()); });
 
+  // Free-text filter over the "all frames" gallery — mirrors the Settings
+  // panel's search field (settings_form.tsx). Matches frame name or description.
+  const [frameFilter, setFrameFilter] = createSignal("");
+
+  // Single display-media (image/mp4) editor for the current expression. When
+  // open, an inline picker lets the operator choose the one clip shown on the
+  // pet/chat screen for this emotion (servos still animate frame-by-frame).
+  const [mediaPickerOpen, setMediaPickerOpen] = createSignal(false);
+
   // animator.base_image — the sprite shown as a thumbnail for any frame with no
   // image of its own. Empty/unset falls back to the bundled default. Studio-only
   // (no compositing, no runtime effect).
@@ -1043,6 +1061,18 @@ export const StudioSection: Component<{ nats: NatsWs }> = (props) => {
       for (const s of e.steps) m.set(s.frame, (m.get(s.frame) ?? 0) + 1);
     }
     return m;
+  });
+
+  // The "all frames" gallery list after applying the free-text filter.
+  const filteredFrames = createMemo<FrameDTO[]>(() => {
+    const all = frames() ?? [];
+    const q = frameFilter().trim().toLowerCase();
+    if (!q) return all;
+    return all.filter(
+      (f) =>
+        f.name.toLowerCase().includes(q) ||
+        (f.description ?? "").toLowerCase().includes(q),
+    );
   });
 
   const currentExpr = createMemo<ExpressionDTO | null>(() => {
@@ -1153,6 +1183,19 @@ export const StudioSection: Component<{ nats: NatsWs }> = (props) => {
     await apiCall(
       () => api.updateExpression(e.name, exprUpdateBody(e, { playback: next })),
       "loop toggle",
+    );
+    await refetchExprs();
+  };
+
+  // Set (or clear, ref=null) the single display-media clip for the current
+  // expression. null restores the per-frame flipbook on the pet screen.
+  const setDisplayMedia = async (ref: string | null) => {
+    const e = currentExpr();
+    if (!e) return;
+    setMediaPickerOpen(false);
+    await apiCall(
+      () => api.updateExpression(e.name, exprUpdateBody(e, { display_media: ref })),
+      "display media",
     );
     await refetchExprs();
   };
@@ -1620,6 +1663,115 @@ export const StudioSection: Component<{ nats: NatsWs }> = (props) => {
                   </Show>
                 </div>
 
+                {/* Screen media — one image/mp4 shown on the pet/chat screen for
+                    this emotion instead of the per-frame flipbook. The servos
+                    still animate through the frames below either way. */}
+                <div
+                  style={{
+                    display: "flex",
+                    "align-items": "center",
+                    gap: "10px",
+                    "flex-wrap": "wrap",
+                    "margin-bottom": "14px",
+                    padding: "8px 10px",
+                    background: "var(--c-shell)",
+                    border: "1px solid var(--c-edge)",
+                    "border-radius": "12px",
+                  }}
+                >
+                  <span class="eyebrow">screen media</span>
+                  <Show
+                    when={e().display_media}
+                    fallback={
+                      <span class="f-mono" style={{ "font-size": "11px", color: "var(--c-stone)" }}>
+                        per-frame images (flipbook)
+                      </span>
+                    }
+                  >
+                    <div style={{ display: "flex", "align-items": "center", gap: "8px" }}>
+                      <Show
+                        when={/\.mp4$/i.test(e().display_media!)}
+                        fallback={
+                          <img
+                            src={imageUrlOf(e().display_media!) ?? ""}
+                            alt="display media"
+                            style={{
+                              width: "40px", height: "40px",
+                              "object-fit": "contain",
+                              "image-rendering": "pixelated",
+                              "border-radius": "6px",
+                              border: "1px solid var(--c-edge)",
+                            }}
+                          />
+                        }
+                      >
+                        <video
+                          src={imageUrlOf(e().display_media!) ?? ""}
+                          muted
+                          loop
+                          autoplay
+                          playsinline
+                          style={{
+                            width: "40px", height: "40px",
+                            "object-fit": "contain",
+                            "border-radius": "6px",
+                            border: "1px solid var(--c-edge)",
+                          }}
+                        />
+                      </Show>
+                      <span
+                        class="f-mono"
+                        style={{
+                          "font-size": "10px",
+                          color: "var(--c-cream)",
+                          "max-width": "180px",
+                          overflow: "hidden",
+                          "text-overflow": "ellipsis",
+                          "white-space": "nowrap",
+                        }}
+                      >
+                        {e().display_media!.split("/").pop()}
+                      </span>
+                    </div>
+                  </Show>
+                  <button
+                    type="button"
+                    class="btn btn--micro"
+                    onClick={() => setMediaPickerOpen((o) => !o)}
+                  >
+                    {mediaPickerOpen() ? "close picker" : e().display_media ? "change" : "set image / mp4"}
+                  </button>
+                  <Show when={e().display_media}>
+                    <button
+                      type="button"
+                      class="btn btn--micro"
+                      onClick={() => setDisplayMedia(null)}
+                      title="Clear the single media and use the per-frame flipbook instead"
+                    >
+                      use frames
+                    </button>
+                  </Show>
+                </div>
+
+                {/* Inline media picker — images + mp4 from the sprites library. */}
+                <Show when={mediaPickerOpen()}>
+                  <div
+                    style={{
+                      "margin-bottom": "14px",
+                      padding: "12px",
+                      background: "var(--c-deep)",
+                      border: "1px solid var(--c-edge)",
+                      "border-radius": "12px",
+                    }}
+                  >
+                    <ImagePicker
+                      bucket="sprites"
+                      current={e().display_media ?? undefined}
+                      onPick={(ref) => setDisplayMedia(ref)}
+                    />
+                  </div>
+                </Show>
+
                 {/* Frames + preview + sliders. A 2-D reflow is exactly what CSS
                     grid is for — explicit tracks avoid the flex-wrap height-
                     distribution guesswork (a fixed 240px frame row + a 1fr
@@ -1859,7 +2011,11 @@ export const StudioSection: Component<{ nats: NatsWs }> = (props) => {
               "flex-shrink": "0",
             }}
           >
-            <span class="eyebrow">all frames ({frames()?.length ?? 0})</span>
+            <span class="eyebrow">
+              all frames ({frameFilter().trim()
+                ? `${filteredFrames().length} / ${frames()?.length ?? 0}`
+                : frames()?.length ?? 0})
+            </span>
             <button
               type="button"
               class="btn btn--micro"
@@ -1871,6 +2027,21 @@ export const StudioSection: Component<{ nats: NatsWs }> = (props) => {
             >
               + snapshot current pose
             </button>
+            {/* Filter the gallery by frame name/description — mirrors the
+                Settings panel's search field. */}
+            <input
+              type="search"
+              class="field"
+              placeholder="filter frames…"
+              value={frameFilter()}
+              onInput={(e) => setFrameFilter(e.currentTarget.value)}
+              style={{
+                flex: isMobile() ? "1 1 100%" : "0 1 220px",
+                padding: "3px 10px",
+                "font-size": "11px",
+                height: "24px",
+              }}
+            />
             <div style={{ flex: "1" }} />
             {/* View mode: image thumbnails (with base fallback) vs pose data */}
             <For each={["thumb", "data"] as const}>
@@ -1954,29 +2125,48 @@ export const StudioSection: Component<{ nats: NatsWs }> = (props) => {
                 background: "var(--c-deep)",
               }}
             >
-              <div
-                style={{
-                  display: "grid",
-                  // Smaller minimum on phones so thumbnails tile a few per row
-                  // instead of forcing a wide track.
-                  "grid-template-columns": `repeat(auto-fill, minmax(${
-                    gallerySize() === 2 ? 160 : isMobile() ? 96 : 124
-                  }px, 1fr))`,
-                  gap: "12px",
-                }}
+              <Show
+                when={filteredFrames().length > 0}
+                fallback={
+                  <div
+                    style={{
+                      padding: "24px",
+                      "text-align": "center",
+                      color: "var(--c-stone)",
+                      "font-style": "italic",
+                      "font-size": "12px",
+                    }}
+                  >
+                    {frameFilter().trim()
+                      ? `no frames matching "${frameFilter()}"`
+                      : "no frames yet"}
+                  </div>
+                }
               >
-                <For each={frames() ?? []}>
-                  {(f) => (
-                    <GalleryFrame
-                      frame={f}
-                      usageCount={frameUsage().get(f.name) ?? 0}
-                      view={galleryView()}
-                      baseImage={effectiveBase()}
-                      onClick={() => openGalleryFrame(f.name)}
-                    />
-                  )}
-                </For>
-              </div>
+                <div
+                  style={{
+                    display: "grid",
+                    // Smaller minimum on phones so thumbnails tile a few per row
+                    // instead of forcing a wide track.
+                    "grid-template-columns": `repeat(auto-fill, minmax(${
+                      gallerySize() === 2 ? 160 : isMobile() ? 96 : 124
+                    }px, 1fr))`,
+                    gap: "12px",
+                  }}
+                >
+                  <For each={filteredFrames()}>
+                    {(f) => (
+                      <GalleryFrame
+                        frame={f}
+                        usageCount={frameUsage().get(f.name) ?? 0}
+                        view={galleryView()}
+                        baseImage={effectiveBase()}
+                        onClick={() => openGalleryFrame(f.name)}
+                      />
+                    )}
+                  </For>
+                </div>
+              </Show>
             </div>
           </Show>
         </div>
