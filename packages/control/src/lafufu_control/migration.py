@@ -57,7 +57,9 @@ def migrate_letterhead_data() -> None:
             if old_value:
                 new_value = f"letterheads/{old_value}"
                 new_pointer.write_text(new_value, encoding="utf-8")
-                old_pointer.unlink()
                 log.info("rewrote active_letterhead pointer: %s -> %s", old_value, new_value)
+            # Always unlink the old pointer — even if the content was empty,
+            # leaving it means the migration re-enters on every subsequent boot.
+            old_pointer.unlink()
         except OSError as e:
             log.warning("failed to rewrite active letterhead pointer: %s", e)
