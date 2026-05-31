@@ -59,6 +59,10 @@ PRINTER_INTENT_PRINT_TRANSCRIPT = f"{PRINTER_INTENT}.print_transcript"
 PRINTER_INTENT_TEST_PAGE = f"{PRINTER_INTENT}.test_page"
 PRINTER_INTENT_PRINT_FILE = f"{PRINTER_INTENT}.print_file"
 PRINTER_INTENT_COMPOSE = f"{PRINTER_INTENT}.compose"
+# Compose onto the printer's *active* letterhead/font (resolved service-side);
+# the publisher supplies only the fortune body + lucky info. See
+# schemas.PrinterIntentComposeFortune.
+PRINTER_INTENT_COMPOSE_FORTUNE = f"{PRINTER_INTENT}.compose_fortune"
 
 PRINTER_EVENT = "printer.event"
 PRINTER_EVENT_JOB_STARTED = f"{PRINTER_EVENT}.job_started"

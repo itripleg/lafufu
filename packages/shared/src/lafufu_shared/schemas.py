@@ -195,6 +195,23 @@ class PrinterIntentCompose(BaseModel):
     font: str | None = Field(default=None, max_length=128)
 
 
+class PrinterIntentComposeFortune(BaseModel):
+    """Compose a fortune onto the printer's *active* letterhead + font and
+    print it.
+
+    Unlike ``PrinterIntentCompose``, the letterhead and font are NOT supplied
+    by the publisher — the printer service resolves them from its own
+    active-asset pointers. This keeps the agent (the publisher) decoupled from
+    printer filesystem layout and means no untrusted path crosses the bus: the
+    caller only provides the fortune body + lucky info.
+    """
+
+    text: str = Field(max_length=_TEXT_MAX)
+    lucky_subway_stop: str | None = Field(default=None, max_length=128)
+    lucky_numbers: list[int] | None = Field(default=None, max_length=10)
+    title: str | None = Field(default=None, max_length=256)
+
+
 class PrinterState(BaseModel):
     state: PrinterStateName
     detail: str | None = None
