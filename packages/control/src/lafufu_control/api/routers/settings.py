@@ -121,6 +121,10 @@ def patch_setting(key: str, body: SettingIn, req: Request):
         raise HTTPException(
             404, detail={"error_code": "not_found", "message": f"setting {key} not found"}
         )
+    if key not in _VALID_KEYS:
+        raise HTTPException(
+            404, detail={"error_code": "not_found", "message": f"setting {key} not found"}
+        )
     with Session(req.app.state.engine) as s:
         row = s.get(Setting, key)
         if not row:

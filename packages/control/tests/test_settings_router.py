@@ -59,6 +59,23 @@ def test_patch_publishes_config_changed(tmp_path):
     assert published[0][1]["value"] == 75
 
 
+def test_patch_unknown_key_returns_404(client_with_engine):
+    """PATCH with a key that exists in the DB but is not in BOOTSTRAP_DEFAULTS must return 404.
+    Without the fix, the row is updated and broadcast over NATS."""
+    c, engine = client_with_engine
+    _insert(engine, "totally.unknown.key", "old", "str")
+    r = c.patch(
+        "/api/settings/totally.unknown.key",
+        json={"value": "new", "value_type": "str"},
+    )
+    assert r.status_code == 404
+    assert r.json()["detail"]["error_code"] == "not_found"
+    with Session(engine) as s:
+        row = s.get(Setting, "totally.unknown.key")
+        assert row is not None
+        assert row.value == "old"
+
+
 def test_put_unknown_key_returns_404(client):
     """PUT with an unknown key (not in BOOTSTRAP_DEFAULTS) must return 404.
     Without the fix, arbitrary keys are silently persisted and broadcast over NATS."""
