@@ -538,6 +538,11 @@ def main() -> None:
     else:
         piper_model_path = models_dir / f"{voice_model}.onnx"
     ollama_url = os.environ.get("LAFUFU_OLLAMA_URL", "http://localhost:11434")
+    # Keep the model resident so warmup stays hot across agent restarts (Ollama
+    # is a separate process, so a long keep_alive means a restart finds the model
+    # already loaded and skips the 30-60s cold load). "-1" = keep loaded
+    # indefinitely; ops can set a duration like "30m" to cap RAM residency.
+    ollama_keep_alive = os.environ.get("LAFUFU_OLLAMA_KEEP_ALIVE", "-1")
 
     def make_piper(name: str) -> Piper:
         """Build + load a Piper for a voice name (resolved against models_dir)."""
@@ -578,7 +583,12 @@ def main() -> None:
             return _NoOpPlayer(sample_rate=sample_rate)
 
     stt = make_stt(stt_backend, model_name=whisper_model)
-    ollama = Ollama(base_url=ollama_url, model=qwen_model, system_prompt=SYSTEM_PROMPT)
+    ollama = Ollama(
+        base_url=ollama_url,
+        model=qwen_model,
+        system_prompt=SYSTEM_PROMPT,
+        keep_alive=ollama_keep_alive,
+    )
     piper = Piper(model_path=piper_model_path)
     piper.load()  # populate sample_rate from the .onnx config
 

@@ -10,6 +10,7 @@ import { SettingsForm } from "./settings_form";
 import { StudioSection } from "./studio_section";
 import { SystemPulse } from "./system_pulse";
 import { useLayoutMode } from "../shared/use_media";
+import { agentTopBadge } from "../shared/agent_state";
 
 /**
  * Control deck — premium organic surface, packs everything an operator (or
@@ -32,7 +33,20 @@ const Admin: Component = () => {
   const nats = new NatsWs();
   const layout = useLayoutMode();
   const [draftCount, setDraftCount] = createSignal(0);
-  const [connState, setConnState] = createSignal<"live" | "pending">("pending");
+  // Top-of-page status reflects the AGENT (lafufu) itself — its live state +
+  // heartbeat liveness — not merely "is the NATS bridge up". Driven by
+  // agent.state.* + system.heartbeat.agent + the WS connection.
+  const [agentState, setAgentState] = createSignal<string | null>(null);
+  const [agentLastSeen, setAgentLastSeen] = createSignal<number | null>(null);
+  const [wsConnected, setWsConnected] = createSignal(nats.isConnected());
+  const [statusTick, setStatusTick] = createSignal(Date.now());
+  const agentBadge = () =>
+    agentTopBadge({
+      wsConnected: wsConnected(),
+      lastSeenMs: agentLastSeen(),
+      now: statusTick(),
+      state: agentState(),
+    });
   // Guard against a stale persisted tab id (e.g. the old "body") so a renamed
   // tab can't leave the deck blank — fall back to chat if it's not a known tab.
   const storedTab = lsGet<AdminTab>("admin/tab", "chat");
@@ -49,9 +63,22 @@ const Admin: Component = () => {
     refreshDraftCount();
     window.addEventListener("storage", refreshDraftCount);
     window.addEventListener("lafufu:drafts-changed", refreshDraftCount);
-    // Heuristic: if any heartbeat arrives within 3s, we say "live".
-    const off = nats.subscribe("system.heartbeat.*", () => setConnState("live"));
-    onCleanup(off);
+    // Header status tracks the agent specifically: its published state, the
+    // freshness of its heartbeat, and whether the bridge is even connected.
+    const offState = nats.subscribe("agent.state.*", (f) => {
+      const tail = f.topic.split(".").pop();
+      if (tail) setAgentState(tail);
+    });
+    const offHb = nats.subscribe("system.heartbeat.agent", () => setAgentLastSeen(Date.now()));
+    const offConn = nats.onConnection((c) => setWsConnected(c));
+    // Recompute heartbeat-staleness once a second (offline window is 60 s).
+    const statusIv = window.setInterval(() => setStatusTick(Date.now()), 1000);
+    onCleanup(() => {
+      offState();
+      offHb();
+      offConn();
+      clearInterval(statusIv);
+    });
   });
   onCleanup(() => {
     nats.stop();
@@ -161,20 +188,18 @@ const Admin: Component = () => {
               "font-size": "11px",
               color: "var(--c-mist)",
             }}
-            title={connState() === "live" ? "NATS bridge online" : "waiting for first heartbeat"}
+            title={`lafufu · ${agentBadge().label}`}
           >
             <span
               style={{
                 width: "8px", height: "8px",
                 "border-radius": "50%",
-                background: connState() === "live" ? "var(--c-moss)" : "var(--c-amber)",
-                "box-shadow": connState() === "live"
-                  ? "0 0 8px var(--c-moss)"
-                  : "0 0 6px var(--c-amber)",
-                animation: connState() === "live" ? "breathe 2.4s ease-in-out infinite" : undefined,
+                background: agentBadge().color,
+                "box-shadow": `0 0 8px ${agentBadge().color}`,
+                animation: agentBadge().pulse ? "breathe 2.4s ease-in-out infinite" : undefined,
               }}
             />
-            {connState() === "live" ? "live" : "waiting…"}
+            {agentBadge().label}
           </div>
 
           <Show when={draftCount() > 0}>

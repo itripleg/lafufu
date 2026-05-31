@@ -48,6 +48,23 @@ class Ollama:
             await self._client.aclose()
         self._client = None
 
+    @property
+    def _keep_alive_value(self) -> int | str:
+        """Normalize keep_alive for the Ollama payload.
+
+        Ollama accepts a duration string ("10m") OR a number of seconds, where a
+        negative number (e.g. -1) keeps the model loaded indefinitely. The string
+        "-1" is NOT parsed as the int -1, so coerce numeric strings to ints; leave
+        duration strings ("10m", "24h") untouched.
+        """
+        ka = self.keep_alive
+        if isinstance(ka, str):
+            s = ka.strip()
+            if s.lstrip("-").isdigit():
+                return int(s)
+            return s
+        return ka
+
     async def warmup(self) -> float:
         """Hit the model with a no-op request to load it. Returns seconds taken."""
         t0 = time.monotonic()
@@ -58,7 +75,7 @@ class Ollama:
                 {"role": "user", "content": "warmup"},
             ],
             "stream": False,
-            "keep_alive": self.keep_alive,
+            "keep_alive": self._keep_alive_value,
             "options": {"num_predict": 1},
         }
         # Warmup uses a dedicated long-timeout client — model cold-loading can take
@@ -90,7 +107,7 @@ class Ollama:
             "model": self.model,
             "messages": messages,
             "stream": False,
-            "keep_alive": self.keep_alive,
+            "keep_alive": self._keep_alive_value,
         }
         client = self._get_client()
         r = await client.post(f"{self.base_url}/api/chat", json=payload)

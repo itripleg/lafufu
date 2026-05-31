@@ -327,6 +327,73 @@ async def test_on_startup_warms_stt(nats_server):
     await asyncio.wait_for(task, timeout=3)
 
 
+async def test_warmups_run_concurrently(nats_server):
+    """Ollama (async HTTP) and STT (blocking, in an executor) warmups are
+    independent, so on_startup must run them concurrently — warming wall-clock
+    time should be ~max(ollama, stt), not their sum. We prove concurrency by
+    asserting the two warmup intervals OVERLAP.
+    """
+    import time
+
+    class _TimedOllama:
+        model = "fake"
+
+        def __init__(self) -> None:
+            self.t0: float | None = None
+            self.t1: float | None = None
+
+        async def warmup(self) -> float:
+            self.t0 = time.monotonic()
+            await asyncio.sleep(0.3)
+            self.t1 = time.monotonic()
+            return 0.3
+
+    class _TimedStt:
+        backend_id = "fake"
+        model_name = "fake"
+
+        def __init__(self) -> None:
+            self.t0: float | None = None
+            self.t1: float | None = None
+            self.warmup_count = 0
+
+        def load(self) -> None: ...
+
+        def warmup(self) -> float:
+            self.t0 = time.monotonic()
+            time.sleep(0.3)  # blocking — runs in the executor thread
+            self.t1 = time.monotonic()
+            self.warmup_count += 1
+            return 0.3
+
+        def transcribe(self, audio) -> str:
+            return ""
+
+    ollama = _TimedOllama()
+    stt = _TimedStt()
+    svc = AgentService(
+        mic=FakeMicForService([]),
+        ollama=ollama,
+        piper=FakePiper(),
+        nats_url=nats_server,
+        stt=stt,
+    )
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(1.0)  # let both warmups finish
+
+    assert ollama.t1 is not None and stt.t1 is not None, "both warmups should complete"
+    assert stt.warmup_count == 1
+    overlap = ollama.t0 < stt.t1 and stt.t0 < ollama.t1
+    assert overlap, (
+        "ollama and stt warmups should overlap (run concurrently), but ran "
+        f"sequentially: ollama=[{ollama.t0:.3f},{ollama.t1:.3f}] "
+        f"stt=[{stt.t0:.3f},{stt.t1:.3f}]"
+    )
+
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)
+
+
 async def test_text_intent_processes_while_mic_is_waiting_for_onset(nats_server):
     """Text intent should NOT wait for the mic to give up on silence.
 

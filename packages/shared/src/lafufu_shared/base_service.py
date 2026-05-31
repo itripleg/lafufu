@@ -140,10 +140,15 @@ class BaseService:
         self.nats = await nats_helper.connect_with_retry(self.nats_url, name=f"lafufu-{self.name}")
         await self._publish_service_event(topics.SYSTEM_SERVICE_STARTING)
 
+        # Start heartbeats BEFORE on_startup so a service with a slow init (e.g.
+        # the agent cold-loading Whisper/Ollama in its warmup) still reports
+        # liveness — and re-emits its cached state, like agent.state.warming —
+        # throughout startup instead of looking dead until on_startup returns.
+        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+
         try:
             await self.on_startup()
             await self._publish_service_event(topics.SYSTEM_SERVICE_READY)
-            self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
             await self.main_loop()
         except Exception as e:
             self.log.exception("service.main.crashed")

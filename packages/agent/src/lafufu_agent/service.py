@@ -146,28 +146,12 @@ class AgentService(BaseService):
             )
 
         await self._publish_state("warming")
-        # Hot-warm Ollama if it has a warmup method
-        if hasattr(self._ollama, "warmup"):
-            try:
-                elapsed = await self._ollama.warmup()
-                self.log.info("ollama.warmed_up elapsed_s=%.1f", elapsed)
-            except Exception as e:
-                self.log.warning("ollama.warmup.failed error=%s", e)
-
-        # Hot-warm STT in an executor — same idea as Ollama warmup. Done off
-        # the loop because whisper.load_model + a 0.5s dummy decode is blocking
-        # C code that would freeze NATS subscribers otherwise.
-        if self.stt is not None and hasattr(self.stt, "warmup"):
-            try:
-                loop = asyncio.get_running_loop()
-                elapsed = await loop.run_in_executor(None, self.stt.warmup)
-                self.log.info(
-                    "stt.warmed_up backend=%s elapsed_s=%.1f",
-                    getattr(self.stt, "backend_id", "?"),
-                    elapsed,
-                )
-            except Exception as e:
-                self.log.warning("stt.warmup.failed error=%s", e)
+        # Warm Ollama (async HTTP to a separate process) and STT (blocking model
+        # load, offloaded to a thread) CONCURRENTLY — they're independent, so the
+        # warming wall-clock is ~max(ollama, stt) instead of their sum. Each
+        # helper swallows its own errors so one failing backend can't abort the
+        # other's warmup.
+        await asyncio.gather(self._warm_ollama(), self._warm_stt())
 
         self._pipeline = VoicePipeline(
             self.nats, self._mic, self._ollama, self._piper, self._speaker_play
@@ -365,6 +349,35 @@ class AgentService(BaseService):
 
         # Note: we do NOT auto-start the mic loop in tests (FakeMicForService blocks).
         # Real `main.py` calls start_mic_loop() explicitly after construction.
+
+    async def _warm_ollama(self) -> None:
+        """Hot-warm Ollama (no-op if it has no warmup method). Errors are logged,
+        not raised, so a cold/unreachable Ollama doesn't abort the STT warmup it
+        runs concurrently with."""
+        if not hasattr(self._ollama, "warmup"):
+            return
+        try:
+            elapsed = await self._ollama.warmup()
+            self.log.info("ollama.warmed_up elapsed_s=%.1f", elapsed)
+        except Exception as e:
+            self.log.warning("ollama.warmup.failed error=%s", e)
+
+    async def _warm_stt(self) -> None:
+        """Hot-warm STT in an executor — whisper.load_model + a dummy decode is
+        blocking C code that would freeze NATS subscribers if run on the loop.
+        Errors are logged, not raised (see _warm_ollama)."""
+        if self.stt is None or not hasattr(self.stt, "warmup"):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+            elapsed = await loop.run_in_executor(None, self.stt.warmup)
+            self.log.info(
+                "stt.warmed_up backend=%s elapsed_s=%.1f",
+                getattr(self.stt, "backend_id", "?"),
+                elapsed,
+            )
+        except Exception as e:
+            self.log.warning("stt.warmup.failed error=%s", e)
 
     async def _on_config_volume(self, subject: str, msg: schemas.ConfigChanged) -> None:
         try:
