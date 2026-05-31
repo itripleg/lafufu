@@ -14,8 +14,13 @@ clipped it wide open.
 keeps a rolling window of recent RMS values and normalizes against the
 window's percentiles. The window persists across utterances, so it stays
 warm — only the very first utterance after start-up sees a cold window.
+
+The sorted view of the window is maintained in parallel using ``bisect.insort``
+(O(n) insertion) rather than re-sorting the full deque on every call
+(O(n log n) + heap allocation at 25 Hz on a Pi).
 """
 
+import bisect
 from collections import deque
 
 
@@ -49,6 +54,8 @@ class LipsyncNormalizer:
         min_span: float = 500.0,
     ) -> None:
         self._win: deque[float] = deque(maxlen=window)
+        self._sorted: list[float] = []
+        self._maxlen = window
         self._p_low = p_low
         self._p_high = p_high
         self._deadzone = deadzone
@@ -57,11 +64,20 @@ class LipsyncNormalizer:
     def update(self, raw_rms: float) -> float:
         """Record a raw RMS sample and return its 0..1 mouth-open target."""
         raw = max(0.0, float(raw_rms))
-        self._win.append(raw)
 
-        ordered = sorted(self._win)
-        floor = percentile_sorted(ordered, self._p_low)
-        ceil = percentile_sorted(ordered, self._p_high)
+        # If the window is full, the oldest value is about to be evicted from
+        # the deque. Remove it from the sorted list before appending the new one.
+        if len(self._win) == self._maxlen:
+            evicted = self._win[0]
+            idx = bisect.bisect_left(self._sorted, evicted)
+            if idx < len(self._sorted):
+                self._sorted.pop(idx)
+
+        self._win.append(raw)
+        bisect.insort(self._sorted, raw)
+
+        floor = percentile_sorted(self._sorted, self._p_low)
+        ceil = percentile_sorted(self._sorted, self._p_high)
         span = max(ceil - floor, self._min_span)
 
         x = (raw - floor) / span
