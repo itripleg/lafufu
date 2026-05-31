@@ -278,6 +278,12 @@ class AnimatorService(BaseService):
             t.cancel()
         # Await them so no task writes to the bus after we disable torque.
         await asyncio.gather(*tasks, return_exceptions=True)
+        # Cancel deferred jaw-apply tasks before disabling the bus — these sleep
+        # through the lipsync offset and must not call bus.write() after bus.close().
+        for t in list(self._pending_jaw_tasks):
+            t.cancel()
+        if self._pending_jaw_tasks:
+            await asyncio.gather(*self._pending_jaw_tasks, return_exceptions=True)
         # Stop + join the stepper THREAD before touching the bus, so no write can
         # race disable_torque/close (mirrors the await-tasks-before-close rule).
         # Joined off the loop so we don't block it; the thread is a daemon, so a
@@ -285,6 +291,11 @@ class AnimatorService(BaseService):
         self._stepper_stop.set()
         if self._stepper_thread is not None:
             await asyncio.to_thread(self._stepper_thread.join, 2.0)
+            if self._stepper_thread.is_alive():
+                self.log.warning(
+                    "dxl.stepper.join_timeout — thread still running after 2s; "
+                    "bus ops may race on shutdown"
+                )
         try:
             self._bus.disable_torque()
         except Exception as e:

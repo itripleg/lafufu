@@ -356,6 +356,46 @@ async def test_animator_caches_idle_payload_from_play_expression(running_animato
     assert svc._idle_payload.playback == "random_walk"
 
 
+async def test_on_shutdown_cancels_pending_jaw_tasks():
+    """on_shutdown must cancel deferred jaw-apply tasks so they don't call
+    bus.write() after bus.close() (which would raise OSError on the serial port)."""
+    from lafufu_animator.service import AnimatorService
+
+    class _FakeBus:
+        def open(self) -> None: pass
+        def close(self) -> None: pass
+        def enable_torque(self) -> None: pass
+        def disable_torque(self) -> None: pass
+        def configure_limits(self) -> None: pass
+        def write(self, name: str, position: int) -> None: pass
+        def read(self, name: str) -> int: return 2048
+
+    svc = AnimatorService(bus=_FakeBus())
+    # Manually create a couple of pending jaw tasks to simulate in-flight offset sleeps
+    ran_after_shutdown: list[bool] = []
+
+    async def _sleepy_jaw() -> None:
+        await asyncio.sleep(5)
+        ran_after_shutdown.append(True)
+
+    svc._pending_jaw_tasks = {
+        asyncio.create_task(_sleepy_jaw()),
+        asyncio.create_task(_sleepy_jaw()),
+    }
+    # Patch the methods that need a running loop to no-op
+    svc._loop = asyncio.get_running_loop()
+    svc._stepper_stop.set()  # prevent the stepper thread from starting
+
+    await svc.on_shutdown()
+
+    # Give any escaped tasks a chance to run (they shouldn't)
+    await asyncio.sleep(0.1)
+
+    assert ran_after_shutdown == [], (
+        "pending jaw tasks must be cancelled in on_shutdown and must NOT run after bus.close()"
+    )
+
+
 async def test_shutdown_awaits_tasks_before_closing_bus(nats_server):
     """On shutdown: all background tasks must be done, torque disabled, and
     the bus closed — in that order — so no task can write to the bus after
