@@ -378,10 +378,8 @@ async def test_on_shutdown_cancels_pending_jaw_tasks():
         await asyncio.sleep(5)
         ran_after_shutdown.append(True)
 
-    svc._pending_jaw_tasks = {
-        asyncio.create_task(_sleepy_jaw()),
-        asyncio.create_task(_sleepy_jaw()),
-    }
+    jaw_tasks = [asyncio.create_task(_sleepy_jaw()), asyncio.create_task(_sleepy_jaw())]
+    svc._pending_jaw_tasks = set(jaw_tasks)
     # Patch the methods that need a running loop to no-op
     svc._loop = asyncio.get_running_loop()
     svc._stepper_stop.set()  # prevent the stepper thread from starting
@@ -394,6 +392,13 @@ async def test_on_shutdown_cancels_pending_jaw_tasks():
     assert ran_after_shutdown == [], (
         "pending jaw tasks must be cancelled in on_shutdown and must NOT run after bus.close()"
     )
+    # Verify the tasks were actually CANCELLED, not merely abandoned.
+    # A task sleeping for 5 s would not have run in 0.1 s regardless, so the
+    # ran_after_shutdown check above cannot distinguish cancel from abandon.
+    # task.cancelled() is True only if CancelledError was raised inside it —
+    # i.e. on_shutdown called t.cancel() and then awaited the task to confirm.
+    for t in jaw_tasks:
+        assert t.cancelled(), "each pending jaw task must be cancelled, not merely abandoned"
 
 
 async def test_shutdown_awaits_tasks_before_closing_bus(nats_server):
