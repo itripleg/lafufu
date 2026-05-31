@@ -24,9 +24,13 @@ _db_input_device: str = "auto"
 
 def set_db_input_device(value: str) -> None:
     """Set the DB-snapshot mic device. Called by AgentService on
-    config.changed.agent.input_device."""
-    global _db_input_device
-    _db_input_device = (value or "auto").strip() or "auto"
+    config.changed.agent.input_device. Resets the selection log flag when
+    the value actually changes so the next selection is logged."""
+    global _db_input_device, _selector_logged
+    new_val = (value or "auto").strip() or "auto"
+    if new_val != _db_input_device:
+        _selector_logged = False
+    _db_input_device = new_val
 
 
 def get_pyaudio() -> pyaudio.PyAudio:
