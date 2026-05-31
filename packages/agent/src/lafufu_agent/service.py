@@ -1,6 +1,7 @@
 """AgentService: BaseService that runs the voice loop and accepts text intents."""
 
 import asyncio
+import contextlib
 import json
 import logging
 import subprocess
@@ -96,6 +97,7 @@ class AgentService(BaseService):
         self._pipeline: VoicePipeline | None = None
         self._cycle_lock = asyncio.Lock()
         self._mic_loop_task: asyncio.Task | None = None
+        self._in_degraded: bool = False
         # Speaker mixer settings; updated live by config.changed.speaker.* subscribers.
         self._speaker_card = "USB"
         self._speaker_control = "PCM"
@@ -418,21 +420,21 @@ class AgentService(BaseService):
         if not new_backend or new_backend == self._stt_backend:
             return
         self._stt_backend = new_backend
-        self._rebuild_stt(reason="backend")
+        await self._rebuild_stt(reason="backend")
 
     async def _on_config_whisper_model(self, subject: str, msg: schemas.ConfigChanged) -> None:
         new_model = str(msg.value).strip()
         if not new_model or new_model == self._stt_model:
             return
         self._stt_model = new_model
-        self._rebuild_stt(reason="model")
+        await self._rebuild_stt(reason="model")
 
-    def _rebuild_stt(self, reason: str) -> None:
+    async def _rebuild_stt(self, reason: str) -> None:
         if self._stt_factory is None:
             self.log.warning("stt.rebuild.skipped reason=%s factory_missing", reason)
             return
         prev = self.stt
-        self.stt = self._stt_factory(self._stt_backend, self._stt_model)
+        self.stt = await asyncio.to_thread(self._stt_factory, self._stt_backend, self._stt_model)
         actual_backend = getattr(self.stt, "backend_id", self._stt_backend)
         if actual_backend != self._stt_backend:
             self.log.warning(
@@ -784,6 +786,8 @@ class AgentService(BaseService):
             self.log.info("mic_loop.started reason=config")
         elif not want and running:
             self._mic_loop_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._mic_loop_task
             self._mic_loop_task = None
             self.log.info("mic_loop.stopped reason=config")
 
@@ -816,6 +820,11 @@ class AgentService(BaseService):
                 self._speaker_play.close()
             except Exception as e:
                 self.log.warning("speaker_play.close.failed error=%s", e)
+        if hasattr(self._ollama, "aclose"):
+            try:
+                await self._ollama.aclose()
+            except Exception as e:
+                self.log.warning("ollama.close.failed error=%s", e)
 
     async def _publish_state(self, name: str) -> None:
         await self.publish_state(name, schemas.AgentState(state=name))  # type: ignore[arg-type]
@@ -860,11 +869,15 @@ class AgentService(BaseService):
                     # a detector is (re-)attached, and interaction_mode stays
                     # honest to the operator's stored intent.
                     if not self._has_usable_wake_detector():
-                        await self._publish_state("degraded")
+                        if not self._in_degraded:
+                            await self._publish_state("degraded")
+                            self._in_degraded = True
                         await asyncio.sleep(1.0)
                         continue
+                    self._in_degraded = False
                     await self._trigger_session()
                 else:
+                    self._in_degraded = False
                     await self._voice_cycle_with_split_lock()
             except Exception as e:
                 self.log.exception("voice_cycle.failed error=%s", e)

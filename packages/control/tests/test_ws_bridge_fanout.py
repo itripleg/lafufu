@@ -6,7 +6,7 @@ exercise the iteration-safety + error-isolation paths that are hard to
 hit through a real socket.
 """
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from lafufu_control.api.ws_bridge import WsBridge
@@ -78,3 +78,37 @@ async def test_fanout_one_bad_socket_does_not_block_others():
     await bridge._fanout(pattern, pattern, b'{"value": 7}')
 
     assert good.sent == [{"topic": pattern, "payload": {"value": 7}}]
+
+
+@pytest.mark.asyncio
+async def test_fanout_removes_dead_socket_from_pattern_listeners():
+    """A WS that raises during send must be removed from _pattern_listeners so
+    subsequent fanout calls don't iterate it again and the NATS ref-count isn't
+    permanently inflated."""
+    bridge = WsBridge(nats_client=MagicMock(), allowed_patterns=frozenset({"x.y"}))
+    pattern = "x.y"
+    bad = _RaisingWs()
+    good = _GoodWs()
+
+    # Wire up internal state as if both sockets subscribed to the pattern
+    bridge._ws_patterns[bad] = {pattern}
+    bridge._ws_patterns[good] = {pattern}
+    bridge._pattern_listeners[pattern] = {bad, good}
+    # Set ref-count to 2 (one per socket)
+    mock_sub = MagicMock()
+    mock_sub.unsubscribe = AsyncMock()
+    bridge._subs[pattern] = (mock_sub, 2)
+
+    await bridge._fanout(pattern, pattern, b'{"v": 1}')
+
+    assert bad not in bridge._pattern_listeners.get(pattern, set()), (
+        "dead WS must be removed from _pattern_listeners after send failure"
+    )
+    assert bad not in bridge._ws_patterns, (
+        "dead WS must be removed from _ws_patterns after send failure"
+    )
+    # Ref-count must have been decremented for the dead socket
+    remaining_count = bridge._subs.get(pattern, (None, 0))[1]
+    assert remaining_count == 1, (
+        f"NATS ref-count must drop from 2 to 1 after dead socket cleanup; got {remaining_count}"
+    )

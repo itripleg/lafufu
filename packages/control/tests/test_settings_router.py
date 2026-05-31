@@ -35,26 +35,67 @@ def test_list_settings_empty(client):
 
 
 def test_create_setting(client):
-    r = client.put("/api/settings/agent.tts.speed", json={"value": 0.85, "value_type": "float"})
+    # tts.length_scale is a real key in BOOTSTRAP_DEFAULTS (float, default 0.95)
+    r = client.put("/api/settings/tts.length_scale", json={"value": 0.85, "value_type": "float"})
     assert r.status_code == 200
-    assert r.json()["key"] == "agent.tts.speed"
+    assert r.json()["key"] == "tts.length_scale"
     assert r.json()["value"] == "0.85"
 
 
-def test_patch_publishes_config_changed(client, tmp_path):
+def test_patch_publishes_config_changed(tmp_path):
     published: list[tuple[str, dict]] = []
     engine = create_engine_for_path(str(tmp_path / "t2.sqlite"))
     init_db(engine)
     app = create_app(engine=engine, nats_publish=lambda s, p: published.append((s, p)))
     c = TestClient(app)
-    c.put("/api/settings/k", json={"value": "v1", "value_type": "str"})
+    # Use a real key: speaker.volume (int, default 80)
+    c.put("/api/settings/speaker.volume", json={"value": 80, "value_type": "int"})
     published.clear()
-    r = c.patch("/api/settings/k", json={"value": "v2"})
+    r = c.patch("/api/settings/speaker.volume", json={"value": 75, "value_type": "int"})
     assert r.status_code == 200
-    assert r.json()["value"] == "v2"
+    assert r.json()["value"] == "75"
     assert len(published) == 1
-    assert published[0][0].startswith("config.changed.k")
-    assert published[0][1]["value"] == "v2"
+    assert published[0][0].startswith("config.changed.speaker.volume")
+    assert published[0][1]["value"] == 75
+
+
+def test_delete_unknown_key_returns_404(client_with_engine):
+    """DELETE with a key that exists in the DB but is not in BOOTSTRAP_DEFAULTS must return 404.
+    Without the fix, the row is silently deleted even though PUT/PATCH both reject it."""
+    c, engine = client_with_engine
+    _insert(engine, "totally.unknown.key", "value", "str")
+    r = c.delete("/api/settings/totally.unknown.key")
+    assert r.status_code == 404
+    with Session(engine) as s:
+        assert s.get(Setting, "totally.unknown.key") is not None, "row must be untouched"
+
+
+def test_patch_unknown_key_returns_404(client_with_engine):
+    """PATCH with a key that exists in the DB but is not in BOOTSTRAP_DEFAULTS must return 404.
+    Without the fix, the row is updated and broadcast over NATS."""
+    c, engine = client_with_engine
+    _insert(engine, "totally.unknown.key", "old", "str")
+    r = c.patch(
+        "/api/settings/totally.unknown.key",
+        json={"value": "new", "value_type": "str"},
+    )
+    assert r.status_code == 404
+    assert r.json()["detail"]["error_code"] == "not_found"
+    with Session(engine) as s:
+        row = s.get(Setting, "totally.unknown.key")
+        assert row is not None
+        assert row.value == "old"
+
+
+def test_put_unknown_key_returns_404(client):
+    """PUT with an unknown key (not in BOOTSTRAP_DEFAULTS) must return 404.
+    Without the fix, arbitrary keys are silently persisted and broadcast over NATS."""
+    r = client.put(
+        "/api/settings/totally.unknown.key",
+        json={"value": "oops", "value_type": "str"},
+    )
+    assert r.status_code == 404
+    assert r.json()["detail"]["error_code"] == "not_found"
 
 
 def test_get_missing_404(client):
@@ -63,10 +104,10 @@ def test_get_missing_404(client):
 
 
 def test_delete_setting(client):
-    client.put("/api/settings/k", json={"value": "x", "value_type": "str"})
-    r = client.delete("/api/settings/k")
+    client.put("/api/settings/speaker.output_device", json={"value": "auto", "value_type": "str"})
+    r = client.delete("/api/settings/speaker.output_device")
     assert r.status_code == 204
-    assert client.get("/api/settings/k").status_code == 404
+    assert client.get("/api/settings/speaker.output_device").status_code == 404
 
 
 def test_list_settings_excludes_bootstrap_internal_keys(client_with_engine):
@@ -175,13 +216,16 @@ def test_put_internal_key_does_not_leak_via_404_vs_422_split(client):
 
 
 def test_put_rejects_unknown_value_type(client):
-    r = client.put("/api/settings/agent.tts.speed", json={"value": 0.85, "value_type": "jsonn"})
+    r = client.put("/api/settings/tts.length_scale", json={"value": 0.85, "value_type": "jsonn"})
     assert r.status_code == 422, f"unknown value_type must be 422, got {r.status_code}"
 
 
 def test_put_accepts_known_value_types(client):
+    # Use one real key (tts.length_scale) and cycle through all value_types.
+    # PUT is idempotent so each call overwrites the previous one — we just need
+    # to confirm every Literal value_type is accepted (not 422).
     for vt in ("str", "int", "float", "bool", "json"):
-        r = client.put(f"/api/settings/k.{vt}", json={"value": "1", "value_type": vt})
+        r = client.put("/api/settings/tts.length_scale", json={"value": "1", "value_type": vt})
         assert r.status_code == 200, f"{vt} should be accepted, got {r.status_code}"
 
 

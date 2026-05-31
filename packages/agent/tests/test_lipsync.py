@@ -61,3 +61,22 @@ def test_output_always_in_unit_range():
     norm = LipsyncNormalizer(window=50)
     for v in (0, 100, 8000, 19999, 32000, 50):
         assert 0.0 <= norm.update(float(v)) <= 1.0
+
+
+def test_bisect_window_stays_sorted_as_deque_wraps():
+    """When the sliding window wraps (oldest element evicted), the internal
+    sorted list must stay consistent with the deque contents."""
+    import bisect
+
+    norm = LipsyncNormalizer(window=5)
+    values = [100.0, 200.0, 300.0, 400.0, 500.0, 150.0, 250.0]
+    for v in values:
+        norm.update(v)
+
+    # The internal sorted list must exactly match sorted(deque contents).
+    # After 7 inserts into a window-5, the deque holds the last 5 values:
+    # [300.0, 400.0, 500.0, 150.0, 250.0]
+    expected_sorted = sorted([300.0, 400.0, 500.0, 150.0, 250.0])
+    assert norm._sorted == expected_sorted, (
+        f"internal sorted list {norm._sorted} doesn't match expected {expected_sorted}"
+    )

@@ -12,6 +12,9 @@ from ...models.setting import Setting, is_internal_key
 
 router = APIRouter()
 
+# Build the allowlist once at module load from the bootstrap defaults.
+_VALID_KEYS: frozenset[str] = frozenset(k for k, _, _, _ in BOOTSTRAP_DEFAULTS)
+
 # `is_internal_key` (defined on the Setting model so the snapshot router and the
 # config.changed rebroadcast share the same predicate) hides internal
 # bookkeeping rows from CRUD.
@@ -90,6 +93,10 @@ def put_setting(key: str, body: SettingIn, req: Request):
         raise HTTPException(
             404, detail={"error_code": "not_found", "message": f"setting {key} not found"}
         )
+    if key not in _VALID_KEYS:
+        raise HTTPException(
+            404, detail={"error_code": "not_found", "message": f"setting {key} not found"}
+        )
     encoded = _encode(body.value, body.value_type)
     with Session(req.app.state.engine) as s:
         row = s.get(Setting, key)
@@ -111,6 +118,10 @@ def put_setting(key: str, body: SettingIn, req: Request):
 @router.patch("/{key}", response_model=SettingOut)
 def patch_setting(key: str, body: SettingIn, req: Request):
     if is_internal_key(key):
+        raise HTTPException(
+            404, detail={"error_code": "not_found", "message": f"setting {key} not found"}
+        )
+    if key not in _VALID_KEYS:
         raise HTTPException(
             404, detail={"error_code": "not_found", "message": f"setting {key} not found"}
         )
@@ -136,6 +147,8 @@ def patch_setting(key: str, body: SettingIn, req: Request):
 @router.delete("/{key}", status_code=204)
 def delete_setting(key: str, req: Request):
     if is_internal_key(key):
+        raise HTTPException(404)
+    if key not in _VALID_KEYS:
         raise HTTPException(404)
     with Session(req.app.state.engine) as s:
         row = s.get(Setting, key)

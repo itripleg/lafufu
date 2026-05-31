@@ -67,6 +67,39 @@ class TestIsAffirmative:
     def test_negation_overrides_affirmative_keyword(self, transcript: str) -> None:
         assert is_affirmative(transcript) is False
 
+    @pytest.mark.parametrize(
+        "transcript",
+        [
+            "yes, please",
+            "yes,",
+            "yeah!",
+            "sure.",
+            "okay,",
+            "yes please.",
+        ],
+    )
+    def test_affirmative_with_internal_punctuation(self, transcript: str) -> None:
+        """Affirmatives followed by comma, period, or exclamation must still match.
+        _TRIM_RE only strips leading/trailing punctuation from the whole string,
+        not from individual tokens — 'yes,' would tokenize as 'yes,' (with comma)."""
+        assert is_affirmative(transcript), (
+            f"'{transcript}' should be affirmative but is_affirmative returned False"
+        )
+
+    @pytest.mark.parametrize(
+        "transcript",
+        [
+            "no, please don't",
+            "yes, but not really",
+            "sure, never mind",
+        ],
+    )
+    def test_negation_overrides_punctuation_affirmative(self, transcript: str) -> None:
+        """A negation token must still override even when the affirmative has punctuation."""
+        assert not is_affirmative(transcript), (
+            f"'{transcript}' should NOT be affirmative but is_affirmative returned True"
+        )
+
 
 class TestInteractionModeFromEnv:
     def test_default_is_continuous(self) -> None:

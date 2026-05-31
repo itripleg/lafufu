@@ -168,3 +168,34 @@ def test_env_var_beats_db_setting(monkeypatch):
         assert audio_capture.select_input_device(p) == 0
     finally:
         audio_capture.set_db_input_device("auto")
+
+
+def test_set_db_input_device_resets_selector_log_flag_on_change(monkeypatch):
+    """Changing the input device must reset _selector_logged so the next
+    select_input_device() call logs the new selection. Without the fix,
+    device changes after the first selection are silent in the logs."""
+    import lafufu_agent.audio_capture as _ac
+
+    monkeypatch.setattr(_ac, "_db_input_device", "auto")
+    monkeypatch.setattr(_ac, "_selector_logged", True)
+
+    _ac.set_db_input_device("jabra_headset")
+
+    assert _ac._selector_logged is False, (
+        "_selector_logged must be reset to False when the device value changes"
+    )
+
+
+def test_set_db_input_device_does_not_reset_log_flag_when_value_unchanged(monkeypatch):
+    """If the device value hasn't changed, _selector_logged must NOT be reset —
+    the device is already selected and the 'no new selection' is correct."""
+    import lafufu_agent.audio_capture as _ac
+
+    monkeypatch.setattr(_ac, "_db_input_device", "jabra_headset")
+    monkeypatch.setattr(_ac, "_selector_logged", True)
+
+    _ac.set_db_input_device("jabra_headset")
+
+    assert _ac._selector_logged is True, (
+        "_selector_logged must stay True when the device value hasn't changed"
+    )

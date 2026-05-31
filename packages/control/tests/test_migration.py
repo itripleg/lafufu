@@ -41,6 +41,27 @@ def test_moves_uploads_and_pointer(tmp_path, monkeypatch):
     assert not (old_data / "active_letterhead").exists()
 
 
+def test_empty_pointer_file_is_unlinked(tmp_path, monkeypatch):
+    """An old_pointer file that exists but has only whitespace must still be
+    unlinked so the migration doesn't re-enter on every boot."""
+    monkeypatch.setenv("LAFUFU_PRINTER_DATA_DIR", str(tmp_path / "printer"))
+    _override_image_dir(monkeypatch, tmp_path)
+
+    old_data = tmp_path / "printer"
+    old_data.mkdir(parents=True)
+
+    old_pointer = old_data / "active_letterhead"
+    old_pointer.write_text("   \n", encoding="utf-8")  # whitespace only
+
+    from lafufu_control.migration import migrate_letterhead_data
+
+    migrate_letterhead_data()
+
+    assert not old_pointer.exists(), (
+        "old_pointer must be unlinked even when its content is empty/whitespace"
+    )
+
+
 def test_idempotent(tmp_path, monkeypatch):
     """If new layout exists and has files, the migration is a no-op."""
     monkeypatch.setenv("LAFUFU_PRINTER_DATA_DIR", str(tmp_path / "printer"))

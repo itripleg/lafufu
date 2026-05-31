@@ -52,7 +52,9 @@ def test_check_schema_version_stamps_fresh_db(db, caplog):
     assert "schema" not in caplog.text.lower()  # fresh stamp must NOT warn
 
 
-def test_check_schema_version_warns_when_db_older(db, caplog):
+def test_check_schema_version_updates_when_db_older(db, caplog):
+    """A stale stamp (stored < CURRENT) must be silently updated to CURRENT — not
+    a warning that repeats every boot after init_db has already run migrations."""
     from lafufu_control.db import CURRENT_SCHEMA_VERSION, check_schema_version
     from lafufu_control.models.setting import Setting
     from sqlmodel import Session
@@ -66,9 +68,12 @@ def test_check_schema_version_warns_when_db_older(db, caplog):
             )
         )
         s.commit()
-    with caplog.at_level("WARNING"):
-        check_schema_version(db)  # must NOT raise
-    assert "schema" in caplog.text.lower()
+    check_schema_version(db)  # must NOT raise
+    # Stamp must now be current.
+    with Session(db) as s:
+        row = s.get(Setting, "bootstrap.schema_version")
+    assert row is not None
+    assert int(row.value) == CURRENT_SCHEMA_VERSION
 
 
 def test_check_schema_version_refuses_when_db_newer(db):
@@ -107,6 +112,43 @@ def test_check_schema_version_raises_on_corrupt_value(db):
         s.commit()
     with pytest.raises(RuntimeError):
         check_schema_version(db)
+
+
+def test_check_schema_version_updates_stale_stamp(tmp_path):
+    """After init_db has run its migrations, a stale schema version stamp must
+    be updated to CURRENT_SCHEMA_VERSION so subsequent boots don't spam warnings."""
+    from lafufu_control.db import (
+        CURRENT_SCHEMA_VERSION,
+        _SCHEMA_VERSION_KEY,
+        check_schema_version,
+        create_engine_for_path,
+        init_db,
+    )
+    from lafufu_control.models.setting import Setting
+    from sqlmodel import Session
+
+    engine = create_engine_for_path(str(tmp_path / "t.sqlite"))
+    init_db(engine)
+
+    # Manually set a stale version to simulate a DB created before the current version
+    with Session(engine) as s:
+        row = s.get(Setting, _SCHEMA_VERSION_KEY)
+        if row is None:
+            row = Setting(key=_SCHEMA_VERSION_KEY, value="0", value_type="int")
+            s.add(row)
+        else:
+            row.value = "0"
+        s.commit()
+
+    # check_schema_version should update the stamp after init_db ran migrations
+    check_schema_version(engine)
+
+    with Session(engine) as s:
+        row = s.get(Setting, _SCHEMA_VERSION_KEY)
+        assert row is not None
+        assert int(row.value) == CURRENT_SCHEMA_VERSION, (
+            f"stamp must be updated to {CURRENT_SCHEMA_VERSION} after migration; got {row.value}"
+        )
 
 
 def test_backup_db_creates_rotating_copies(tmp_path):

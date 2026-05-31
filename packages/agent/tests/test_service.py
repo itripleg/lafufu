@@ -983,6 +983,47 @@ async def test_wakeword_threshold_setting_mutates_detector(nats_server):
     await asyncio.wait_for(task, timeout=3)
 
 
+async def test_degraded_state_published_only_on_transition(nats_server):
+    """In trigger mode with no usable detector, _mic_loop must publish 'degraded'
+    only on the first degraded tick, not on every subsequent sleep iteration.
+    Repeated 1Hz publishes flood NATS and the journal."""
+    import nats as nats_lib
+    from lafufu_agent.trigger import InteractionMode
+
+    svc = AgentService(
+        mic=FakeMicForService([]),
+        ollama=FakeOllama(scripts=[]),
+        piper=FakePiper(chunks=[]),
+        nats_url=nats_server,
+        interaction_mode=InteractionMode.TRIGGER,
+        wake_detector=None,
+    )
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.3)  # let the service start
+
+    nc = await nats_lib.connect(nats_server)
+    degraded_count = 0
+
+    async def cb_state(msg) -> None:
+        nonlocal degraded_count
+        if msg.subject.endswith(".degraded"):
+            degraded_count += 1
+
+    await nc.subscribe("agent.state.*", cb=cb_state)
+
+    # Run for ~2.5s -- if degraded fires every 1s that would be 2-3 publishes
+    await asyncio.sleep(2.5)
+    await nc.drain()
+
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)
+
+    assert degraded_count <= 1, (
+        f"degraded state published {degraded_count} times; must publish at most once "
+        f"on the first transition, not on every loop iteration"
+    )
+
+
 async def test_interaction_mode_trigger_refused_without_wake_detector(nats_server):
     """Flipping agent.interaction_mode=trigger when the mic has no
     wake_detector attached must be refused — otherwise the agent silently
@@ -1409,6 +1450,73 @@ async def test_rebuild_tts_closes_old_player(nats_server):
 
     svc._shutdown.set()
     await asyncio.wait_for(task, timeout=3)
+
+
+async def test_auto_listen_disable_awaits_task_before_clearing():
+    """Disabling auto_listen must await the cancelled task so the task's finally-block
+    (and any run_in_executor threads it holds) finish before the reference is discarded."""
+    from lafufu_shared import schemas
+
+    cleanup_ran = asyncio.Event()
+
+    async def _blocking_loop() -> None:
+        try:
+            await asyncio.sleep(10)
+        finally:
+            cleanup_ran.set()
+
+    svc = AgentService(
+        mic=FakeMicForService([]),
+        ollama=FakeOllama(scripts=[]),
+        piper=FakePiper(chunks=[]),
+    )
+    svc._mic_loop_task = asyncio.create_task(_blocking_loop())
+    await asyncio.sleep(0)  # yield so the task starts
+
+    msg = schemas.ConfigChanged(key="agent.auto_listen", value="false", source="test")
+    await svc._on_config_auto_listen("config.changed.agent.auto_listen", msg)
+
+    assert cleanup_ran.is_set(), (
+        "task's finally block must run before _on_config_auto_listen returns"
+    )
+    assert svc._mic_loop_task is None
+
+
+async def test_rebuild_stt_runs_factory_off_event_loop():
+    """_rebuild_stt must run the STT factory in a worker thread so blocking model
+    loads (whisper.load_model) don't freeze the asyncio event loop and NATS bus."""
+    import threading
+
+    factory_thread_idents: list[int] = []
+    main_ident = threading.main_thread().ident
+
+    class _FakeStt:
+        backend_id = "fake"
+        model_name = "small"
+
+    def _factory(backend: str, model: str) -> _FakeStt:
+        factory_thread_idents.append(threading.current_thread().ident)
+        return _FakeStt()
+
+    class _FakeMic:
+        def set_stt(self, stt: object) -> None:
+            pass
+
+    svc = AgentService(
+        mic=_FakeMic(),
+        ollama=FakeOllama(scripts=[]),
+        piper=FakePiper(chunks=[]),
+        stt_factory=_factory,
+    )
+    svc._stt_backend = "openai-whisper"
+    svc._stt_model = "tiny.en"
+
+    await svc._rebuild_stt(reason="test")
+
+    assert len(factory_thread_idents) == 1
+    assert factory_thread_idents[0] != main_ident, (
+        "STT factory must run in a worker thread, not the asyncio event loop thread"
+    )
 
 
 async def test_shutdown_awaits_mic_loop_before_closing_mic(nats_server):

@@ -356,6 +356,112 @@ async def test_animator_caches_idle_payload_from_play_expression(running_animato
     assert svc._idle_payload.playback == "random_walk"
 
 
+async def test_on_shutdown_cancels_pending_jaw_tasks():
+    """on_shutdown must cancel deferred jaw-apply tasks so they don't call
+    bus.write() after bus.close() (which would raise OSError on the serial port)."""
+    from lafufu_animator.service import AnimatorService
+
+    class _FakeBus:
+        def open(self) -> None: pass
+        def close(self) -> None: pass
+        def enable_torque(self) -> None: pass
+        def disable_torque(self) -> None: pass
+        def configure_limits(self) -> None: pass
+        def write(self, name: str, position: int) -> None: pass
+        def read(self, name: str) -> int: return 2048
+
+    svc = AnimatorService(bus=_FakeBus())
+    # Manually create a couple of pending jaw tasks to simulate in-flight offset sleeps
+    ran_after_shutdown: list[bool] = []
+
+    async def _sleepy_jaw() -> None:
+        await asyncio.sleep(5)
+        ran_after_shutdown.append(True)
+
+    jaw_tasks = [asyncio.create_task(_sleepy_jaw()), asyncio.create_task(_sleepy_jaw())]
+    svc._pending_jaw_tasks = set(jaw_tasks)
+    # Patch the methods that need a running loop to no-op
+    svc._loop = asyncio.get_running_loop()
+    svc._stepper_stop.set()  # prevent the stepper thread from starting
+
+    await svc.on_shutdown()
+
+    # Give any escaped tasks a chance to run (they shouldn't)
+    await asyncio.sleep(0.1)
+
+    assert ran_after_shutdown == [], (
+        "pending jaw tasks must be cancelled in on_shutdown and must NOT run after bus.close()"
+    )
+    # Verify the tasks were actually CANCELLED, not merely abandoned.
+    # A task sleeping for 5 s would not have run in 0.1 s regardless, so the
+    # ran_after_shutdown check above cannot distinguish cancel from abandon.
+    # task.cancelled() is True only if CancelledError was raised inside it —
+    # i.e. on_shutdown called t.cancel() and then awaited the task to confirm.
+    for t in jaw_tasks:
+        assert t.cancelled(), "each pending jaw task must be cancelled, not merely abandoned"
+
+
+async def test_pose_publish_loop_exits_promptly_on_shutdown():
+    """_pose_publish_loop must exit within ~500ms of _shutdown being set."""
+    import time
+    from lafufu_animator.service import AnimatorService
+
+    class _FakeBus:
+        def open(self) -> None: pass
+        def close(self) -> None: pass
+        def enable_torque(self) -> None: pass
+        def disable_torque(self) -> None: pass
+        def configure_limits(self) -> None: pass
+        def write(self, name: str, position: int) -> None: pass
+        def read(self, name: str) -> int: return 2048
+
+    class _FakeNats:
+        async def publish(self, subject: str, data: bytes) -> None:
+            pass
+
+    svc = AnimatorService(bus=_FakeBus())
+    svc.nats = _FakeNats()
+    svc._shutdown.clear()
+
+    task = asyncio.create_task(svc._pose_publish_loop())
+    await asyncio.sleep(0.12)  # let the loop tick a couple of times
+
+    t_stop = time.monotonic()
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=1.0)
+    elapsed = time.monotonic() - t_stop
+
+    assert elapsed < 0.5, f"loop took {elapsed:.3f}s to exit after shutdown; expected < 0.5s"
+
+
+async def test_keyframe_player_loop_exits_promptly_on_shutdown():
+    """_keyframe_player_loop must exit within 500ms of _shutdown being set."""
+    import time
+    from lafufu_animator.service import AnimatorService
+
+    class _FakeBus:
+        def open(self) -> None: pass
+        def close(self) -> None: pass
+        def enable_torque(self) -> None: pass
+        def disable_torque(self) -> None: pass
+        def configure_limits(self) -> None: pass
+        def write(self, name: str, position: int) -> None: pass
+        def read(self, name: str) -> int: return 2048
+
+    svc = AnimatorService(bus=_FakeBus())
+    svc._shutdown.clear()
+
+    task = asyncio.create_task(svc._keyframe_player_loop())
+    await asyncio.sleep(0.12)
+
+    t_stop = time.monotonic()
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=1.0)
+    elapsed = time.monotonic() - t_stop
+
+    assert elapsed < 0.5, f"loop took {elapsed:.3f}s to exit after shutdown; expected < 0.5s"
+
+
 async def test_shutdown_awaits_tasks_before_closing_bus(nats_server):
     """On shutdown: all background tasks must be done, torque disabled, and
     the bus closed — in that order — so no task can write to the bus after

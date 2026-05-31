@@ -9,7 +9,17 @@ log = logging.getLogger(__name__)
 
 
 class Ollama:
-    """Async client for Ollama's /api/chat endpoint."""
+    """Async client for Ollama's /api/chat endpoint.
+
+    A single ``httpx.AsyncClient`` is reused across ``chat()`` calls to avoid
+    the TCP-handshake overhead of creating a new connection per request. The
+    client is created lazily on the first ``chat()`` call and released via
+    ``aclose()``, which ``AgentService.on_shutdown`` calls.
+
+    ``warmup()`` uses its own short-lived client with a longer timeout so that
+    cold model loading (which can take minutes) doesn't share state with the
+    per-request timeout used for interactive chat.
+    """
 
     def __init__(
         self,
@@ -24,6 +34,19 @@ class Ollama:
         self.system_prompt = system_prompt
         self.keep_alive = keep_alive
         self.timeout_s = timeout_s
+        self._client: httpx.AsyncClient | None = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        """Return the persistent client, creating it if needed."""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=self.timeout_s)
+        return self._client
+
+    async def aclose(self) -> None:
+        """Close the persistent client. Called by AgentService.on_shutdown."""
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+        self._client = None
 
     async def warmup(self) -> float:
         """Hit the model with a no-op request to load it. Returns seconds taken."""
@@ -38,6 +61,8 @@ class Ollama:
             "keep_alive": self.keep_alive,
             "options": {"num_predict": 1},
         }
+        # Warmup uses a dedicated long-timeout client — model cold-loading can take
+        # several minutes, and we don't want that to share the per-request timeout.
         async with httpx.AsyncClient(timeout=300.0) as client:
             r = await client.post(f"{self.base_url}/api/chat", json=payload)
             r.raise_for_status()
@@ -67,8 +92,8 @@ class Ollama:
             "stream": False,
             "keep_alive": self.keep_alive,
         }
-        async with httpx.AsyncClient(timeout=self.timeout_s) as client:
-            r = await client.post(f"{self.base_url}/api/chat", json=payload)
-            r.raise_for_status()
-            data = r.json()
+        client = self._get_client()
+        r = await client.post(f"{self.base_url}/api/chat", json=payload)
+        r.raise_for_status()
+        data = r.json()
         return ((data.get("message") or {}).get("content") or "").strip()
