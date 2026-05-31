@@ -97,6 +97,7 @@ class AgentService(BaseService):
         self._pipeline: VoicePipeline | None = None
         self._cycle_lock = asyncio.Lock()
         self._mic_loop_task: asyncio.Task | None = None
+        self._in_degraded: bool = False
         # Speaker mixer settings; updated live by config.changed.speaker.* subscribers.
         self._speaker_card = "USB"
         self._speaker_control = "PCM"
@@ -856,7 +857,6 @@ class AgentService(BaseService):
         self._mic_loop_task = asyncio.create_task(self._mic_loop())
 
     async def _mic_loop(self) -> None:
-        _in_degraded = False  # track whether we're already in the degraded state
         while not self._shutdown.is_set():
             try:
                 if self._interaction_mode == InteractionMode.TRIGGER:
@@ -869,15 +869,15 @@ class AgentService(BaseService):
                     # a detector is (re-)attached, and interaction_mode stays
                     # honest to the operator's stored intent.
                     if not self._has_usable_wake_detector():
-                        if not _in_degraded:
+                        if not self._in_degraded:
                             await self._publish_state("degraded")
-                            _in_degraded = True
+                            self._in_degraded = True
                         await asyncio.sleep(1.0)
                         continue
-                    _in_degraded = False
+                    self._in_degraded = False
                     await self._trigger_session()
                 else:
-                    _in_degraded = False
+                    self._in_degraded = False
                     await self._voice_cycle_with_split_lock()
             except Exception as e:
                 self.log.exception("voice_cycle.failed error=%s", e)

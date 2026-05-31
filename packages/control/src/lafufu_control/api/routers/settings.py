@@ -148,6 +148,8 @@ def patch_setting(key: str, body: SettingIn, req: Request):
 def delete_setting(key: str, req: Request):
     if is_internal_key(key):
         raise HTTPException(404)
+    if key not in _VALID_KEYS:
+        raise HTTPException(404)
     with Session(req.app.state.engine) as s:
         row = s.get(Setting, key)
         if not row:

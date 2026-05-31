@@ -59,6 +59,17 @@ def test_patch_publishes_config_changed(tmp_path):
     assert published[0][1]["value"] == 75
 
 
+def test_delete_unknown_key_returns_404(client_with_engine):
+    """DELETE with a key that exists in the DB but is not in BOOTSTRAP_DEFAULTS must return 404.
+    Without the fix, the row is silently deleted even though PUT/PATCH both reject it."""
+    c, engine = client_with_engine
+    _insert(engine, "totally.unknown.key", "value", "str")
+    r = c.delete("/api/settings/totally.unknown.key")
+    assert r.status_code == 404
+    with Session(engine) as s:
+        assert s.get(Setting, "totally.unknown.key") is not None, "row must be untouched"
+
+
 def test_patch_unknown_key_returns_404(client_with_engine):
     """PATCH with a key that exists in the DB but is not in BOOTSTRAP_DEFAULTS must return 404.
     Without the fix, the row is updated and broadcast over NATS."""
