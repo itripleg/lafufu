@@ -1411,6 +1411,43 @@ async def test_rebuild_tts_closes_old_player(nats_server):
     await asyncio.wait_for(task, timeout=3)
 
 
+async def test_rebuild_stt_runs_factory_off_event_loop():
+    """_rebuild_stt must run the STT factory in a worker thread so blocking model
+    loads (whisper.load_model) don't freeze the asyncio event loop and NATS bus."""
+    import threading
+
+    factory_thread_idents: list[int] = []
+    main_ident = threading.main_thread().ident
+
+    class _FakeStt:
+        backend_id = "fake"
+        model_name = "small"
+
+    def _factory(backend: str, model: str) -> _FakeStt:
+        factory_thread_idents.append(threading.current_thread().ident)
+        return _FakeStt()
+
+    class _FakeMic:
+        def set_stt(self, stt: object) -> None:
+            pass
+
+    svc = AgentService(
+        mic=_FakeMic(),
+        ollama=FakeOllama(scripts=[]),
+        piper=FakePiper(chunks=[]),
+        stt_factory=_factory,
+    )
+    svc._stt_backend = "openai-whisper"
+    svc._stt_model = "tiny.en"
+
+    await svc._rebuild_stt(reason="test")
+
+    assert len(factory_thread_idents) == 1
+    assert factory_thread_idents[0] != main_ident, (
+        "STT factory must run in a worker thread, not the asyncio event loop thread"
+    )
+
+
 async def test_shutdown_awaits_mic_loop_before_closing_mic(nats_server):
     """on_shutdown must await _mic_loop_task before calling mic.close() so the
     loop cannot race mic.close() (e.g. still in run_in_executor calling the mic
