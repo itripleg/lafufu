@@ -816,6 +816,11 @@ class AgentService(BaseService):
                 self._speaker_play.close()
             except Exception as e:
                 self.log.warning("speaker_play.close.failed error=%s", e)
+        if hasattr(self._ollama, "aclose"):
+            try:
+                await self._ollama.aclose()
+            except Exception as e:
+                self.log.warning("ollama.close.failed error=%s", e)
 
     async def _publish_state(self, name: str) -> None:
         await self.publish_state(name, schemas.AgentState(state=name))  # type: ignore[arg-type]
