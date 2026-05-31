@@ -25,6 +25,15 @@ def get_pyaudio():
     return _impl()
 
 
+def list_output_cards():
+    # Lazy import + thin wrapper so the agent dep stays optional and tests can
+    # patch this symbol. Uses the SAME enumeration the agent's resolver does
+    # (aplay -l), so the dropdown values match what `auto` actually picks.
+    from lafufu_agent.audio_output import list_output_cards as _impl
+
+    return _impl()
+
+
 @router.get("/models")
 async def list_models(_: Request):
     """List Ollama models available on the Pi (via /api/tags).
@@ -137,6 +146,26 @@ async def list_input_devices(_: Request):
                     "channels": int(info.get("maxInputChannels", 0)),
                 }
             )
+    return {"devices": devices}
+
+
+@router.get("/output-devices")
+async def list_output_devices(_: Request):
+    """List ALSA playback cards the agent can send TTS audio to.
+
+    First entry is the ``auto`` sentinel — it picks the first NON-HDMI card
+    (HDMI is never auto-selected: Pi HDMI adds lag and the typical monitor has
+    no speakers). Its label names the card ``auto`` currently resolves to. The
+    remaining entries are bare ALSA card short-names — the resolver wraps them
+    as ``plughw:CARD=<name>,DEV=0``. HDMI cards are listed so the operator CAN
+    pick one explicitly, but flagged so they're not chosen by accident.
+    """
+    cards = list_output_cards()
+    first_non_hdmi = next((c for c in cards if "hdmi" not in c.lower()), None)
+    auto_label = f"auto — {first_non_hdmi}" if first_non_hdmi else "auto — no non-HDMI device"
+    devices: list[dict] = [{"name": "auto", "label": auto_label}]
+    for c in cards:
+        devices.append({"name": c, "label": f"{c} (HDMI)" if "hdmi" in c.lower() else c})
     return {"devices": devices}
 
 

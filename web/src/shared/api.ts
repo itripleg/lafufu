@@ -183,6 +183,13 @@ export const api = {
       }>;
       error?: string;
     }>("GET", "/agent/input-devices"),
+  listOutputDevices: () =>
+    req<{
+      devices: Array<{
+        name: string;
+        label: string;
+      }>;
+    }>("GET", "/agent/output-devices"),
 
   // Printer letterhead + font galleries.
   listLetterheads: () => req<{ items: PrinterAsset[] }>("GET", "/printer/letterheads"),

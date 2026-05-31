@@ -113,6 +113,38 @@ def test_input_devices_enumerates_pyaudio():
     assert devices[2]["label"] == "USB Mic"
 
 
+def test_output_devices_auto_first_names_first_non_hdmi():
+    """`auto` is first and its label names the first NON-HDMI card it resolves
+    to — HDMI cards are listed (operator may pick one) but flagged, never auto."""
+    with patch(
+        "lafufu_control.api.routers.agent.list_output_cards",
+        return_value=["vc4hdmi0", "vc4hdmi1", "USB"],
+    ):
+        r = _make_client().get("/api/agent/output-devices")
+    assert r.status_code == 200
+    devices = r.json()["devices"]
+    assert [d["name"] for d in devices] == ["auto", "vc4hdmi0", "vc4hdmi1", "USB"]
+    # auto resolves to the first non-HDMI card (USB), never an HDMI card.
+    assert "USB" in devices[0]["label"]
+    assert "vc4hdmi" not in devices[0]["label"]
+    # HDMI entries are flagged so the operator knows what they're picking.
+    hdmi = next(d for d in devices if d["name"] == "vc4hdmi0")
+    assert "hdmi" in hdmi["label"].lower()
+
+
+def test_output_devices_auto_never_claims_hdmi_when_only_hdmi():
+    """With only HDMI cards present, `auto` must NOT name an HDMI card as its
+    target (the 'never auto-HDMI' guarantee)."""
+    with patch(
+        "lafufu_control.api.routers.agent.list_output_cards",
+        return_value=["vc4hdmi0", "vc4hdmi1"],
+    ):
+        r = _make_client().get("/api/agent/output-devices")
+    devices = r.json()["devices"]
+    assert devices[0]["name"] == "auto"
+    assert "vc4hdmi" not in devices[0]["label"]
+
+
 def test_text_message_rejects_overlong_text(client):
     """POST /api/agent/text_message with text > 2000 chars must return 422."""
     r = client.post("/api/agent/text_message", json={"text": "a" * 2001})

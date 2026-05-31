@@ -120,6 +120,13 @@ const DYNAMIC_OPTIONS: Record<string, () => Promise<OptionEntry[]>> = {
     const { devices } = await api.listInputDevices();
     return devices.map((d) => ({ value: d.name, label: d.label }));
   },
+  // Speaker output picker — backend enumerates ALSA playback cards via the
+  // same resolver the agent uses. First entry is "auto" (labeled with the card
+  // it resolves to); HDMI cards are listed but flagged (never auto-selected).
+  "speaker.output_device": async () => {
+    const { devices } = await api.listOutputDevices();
+    return devices.map((d) => ({ value: d.name, label: d.label }));
+  },
   // Phomemo label media sizes the printer recognizes (the printable-area table
   // in packages/printer/.../service.py). Custom.WIDTHxHEIGHT is still settable
   // via direct edit, but the common label stock is a fixed, known set.
