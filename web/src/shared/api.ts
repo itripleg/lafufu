@@ -190,6 +190,12 @@ export const api = {
         label: string;
       }>;
     }>("GET", "/agent/output-devices"),
+  wifiInfo: () =>
+    req<{ available: boolean; current: string | null; networks: string[] }>(
+      "GET",
+      "/system/wifi",
+    ),
+  wifiConnect: (name: string) => req("POST", "/system/wifi/connect", { name }),
 
   // Printer letterhead + font galleries.
   listLetterheads: () => req<{ items: PrinterAsset[] }>("GET", "/printer/letterheads"),

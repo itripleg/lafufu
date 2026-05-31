@@ -4,4 +4,10 @@
 # restart returns 500 with "Interactive authentication required". Without the
 # journalctl rule, /api/system/services/{name}/logs (and remote diagnostics
 # over ssh) can't read systemd-managed agent/animator/printer logs.
-lafufu ALL=(root) NOPASSWD: /usr/bin/systemctl restart lafufu-agent.service, /usr/bin/systemctl restart lafufu-animator.service, /usr/bin/systemctl restart lafufu-printer.service, /usr/bin/systemctl restart lafufu-control.service, /usr/bin/journalctl -u lafufu-agent*, /usr/bin/journalctl -u lafufu-animator*, /usr/bin/journalctl -u lafufu-printer*, /usr/bin/journalctl -u lafufu-control*
+#
+# The nmcli rule backs the admin Wi-Fi switcher (POST /api/system/wifi/connect):
+# control runs as a daemon with no active login session, so NetworkManager's
+# polkit would reject `nmcli connection up` ("not authorized") without sudo.
+# Scoped to activating a connection by id — the backend only passes a name it
+# validated against the saved-profile list.
+lafufu ALL=(root) NOPASSWD: /usr/bin/systemctl restart lafufu-agent.service, /usr/bin/systemctl restart lafufu-animator.service, /usr/bin/systemctl restart lafufu-printer.service, /usr/bin/systemctl restart lafufu-control.service, /usr/bin/journalctl -u lafufu-agent*, /usr/bin/journalctl -u lafufu-animator*, /usr/bin/journalctl -u lafufu-printer*, /usr/bin/journalctl -u lafufu-control*, /usr/bin/nmcli -w 0 connection up id *

@@ -5,6 +5,7 @@ import { lsGet, lsRemove, lsSet, lsKeys } from "../shared/local_storage";
 import { toast } from "../shared/toast";
 import { Panel } from "./panel";
 import { LetterheadCard, ComposeFortuneCard } from "./printer_card";
+import { WifiCard } from "./wifi_card";
 import { useLayoutMode } from "../shared/use_media";
 
 interface Row {
@@ -733,6 +734,11 @@ export const SettingsForm: Component<Props> = (props) => {
       <Show when={tab() === "printer" && filter().trim() === ""}>
         <LetterheadCard />
         <ComposeFortuneCard />
+      </Show>
+
+      {/* Wi-Fi switcher — lives in "other" alongside the Bluetooth toggle. */}
+      <Show when={tab() === "other" && filter().trim() === ""}>
+        <WifiCard />
       </Show>
 
       <div style={{ display: "flex", "flex-direction": "column", gap: "16px" }}>
