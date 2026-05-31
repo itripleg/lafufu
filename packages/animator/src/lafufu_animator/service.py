@@ -674,8 +674,7 @@ class AnimatorService(BaseService):
                 await nats_helper.publish_model(self.nats, topics.ANIMATOR_POSE, self._current_pose)
             except Exception as e:
                 self.log.warning("pose.publish.failed error=%s", e)
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(self._shutdown.wait(), timeout=0.05)
+            await asyncio.sleep(0.05)
 
     async def _lipsync_watchdog(self) -> None:
         """If no RMS for 500ms, close the jaw."""
@@ -760,5 +759,4 @@ class AnimatorService(BaseService):
             except Exception as e:
                 self.log.warning("keyframe_player.error error=%s", e)
 
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(self._shutdown.wait(), timeout=TICK_DT)
+            await asyncio.sleep(TICK_DT)
