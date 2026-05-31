@@ -5,6 +5,7 @@ import { lsGet, lsRemove, lsSet, lsKeys } from "../shared/local_storage";
 import { toast } from "../shared/toast";
 import { Panel } from "./panel";
 import { LetterheadCard, ComposeFortuneCard } from "./printer_card";
+import { PromptCard } from "./prompt_card";
 import { WifiCard } from "./wifi_card";
 import { useLayoutMode } from "../shared/use_media";
 
@@ -35,6 +36,10 @@ const SLIDER_HINTS: Record<string, { min: number; max: number; step?: number }> 
   // Trigger / wake-word numeric tunables.
   "agent.trigger.rounds":     { min: 1,    max: 10,   step: 1     },
   "agent.wakeword.threshold": { min: 0.0,  max: 1.0,  step: 0.05  },
+  // Fortune lucky-number RNG bounds (agent.fortune.lucky_subway_stop is a plain
+  // text field — it auto-renders without a slider hint).
+  "agent.fortune.lucky_numbers_count": { min: 0, max: 10,  step: 1 },
+  "agent.fortune.lucky_number_max":    { min: 1, max: 999, step: 1 },
   // Servo defaults — ranges mirror packages/animator/.../pose.py CLAMP table.
   // Moving these sliders moves the robot LIVE — descriptions warn the operator.
   "animator.head_lr.default": { min: 1828, max: 2298, step: 1     },
@@ -145,6 +150,16 @@ export const optionParts = (o: OptionEntry): { value: string; label: string } =>
 
 const DRAFT_PREFIX = "settings/draft/";
 
+// Raw prompt keys owned by <PromptCard> — hidden from the generic settings
+// list (and thus from dirty/match counts and save-all/reset-all). PromptCard
+// reads/writes them via the /agent/prompts API instead.
+export const HIDDEN_KEYS = new Set([
+  "agent.system_prompt",
+  "agent.prompt_preset",
+  "agent.prompt.street_oracle",
+  "agent.prompt.fortune_teller",
+]);
+
 type Tab = "agent" | "animator" | "audio" | "printer" | "other";
 
 const TABS: Array<{ id: Tab; label: string; hint: string }> = [
@@ -205,17 +220,19 @@ export const SettingsForm: Component<Props> = (props) => {
     const factoryMap = new Map<string, string>();
     for (const d of defaults as any[]) factoryMap.set(d.key, d.value);
 
-    const hydrated: Row[] = (data as any[]).map((row) => {
-      const draft = lsGet<string | null>(DRAFT_PREFIX + row.key, null);
-      return {
-        key: row.key,
-        value: draft !== null ? draft : row.value,
-        value_type: row.value_type,
-        description: row.description,
-        serverValue: row.value,
-        factoryDefault: factoryMap.get(row.key),
-      };
-    });
+    const hydrated: Row[] = (data as any[])
+      .filter((row) => !HIDDEN_KEYS.has(row.key))
+      .map((row) => {
+        const draft = lsGet<string | null>(DRAFT_PREFIX + row.key, null);
+        return {
+          key: row.key,
+          value: draft !== null ? draft : row.value,
+          value_type: row.value_type,
+          description: row.description,
+          serverValue: row.value,
+          factoryDefault: factoryMap.get(row.key),
+        };
+      });
     // reconcile keys per-row so existing row proxies stay identity-stable —
     // otherwise <For> would tear down every row on each /api/settings poll.
     setRows(reconcile(hydrated, { key: "key", merge: false }));
@@ -728,6 +745,12 @@ export const SettingsForm: Component<Props> = (props) => {
           onInput={(e) => setFilter(e.currentTarget.value)}
         />
       </div>
+
+      {/* Prompt switcher — owns the raw agent.prompt* / system_prompt keys
+          (those are hidden from the generic list). Hidden during search. */}
+      <Show when={tab() === "agent" && filter().trim() === ""}>
+        <PromptCard />
+      </Show>
 
       {/* Printer-only widgets — hidden during a global search so the results
           list isn't pushed down by tab-specific chrome. */}

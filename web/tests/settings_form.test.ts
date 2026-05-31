@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { categoryOf } from "../src/admin/settings_form";
+import { categoryOf, HIDDEN_KEYS } from "../src/admin/settings_form";
 
 describe("categoryOf", () => {
   it("routes agent.* settings to the agent tab", () => {
@@ -37,5 +37,24 @@ describe("categoryOf", () => {
   it("falls back to other for unknown prefixes", () => {
     expect(categoryOf("settings.bootstrap.no_new_settings")).toBe("other");
     expect(categoryOf("custom.foo")).toBe("other");
+  });
+});
+
+describe("HIDDEN_KEYS", () => {
+  it("hides the raw prompt keys owned by PromptCard", () => {
+    for (const key of [
+      "agent.system_prompt",
+      "agent.prompt_preset",
+      "agent.prompt.street_oracle",
+      "agent.prompt.fortune_teller",
+    ]) {
+      expect(HIDDEN_KEYS.has(key)).toBe(true);
+    }
+  });
+
+  it("does not hide the plain fortune settings (they auto-render)", () => {
+    expect(HIDDEN_KEYS.has("agent.fortune.lucky_numbers_count")).toBe(false);
+    expect(HIDDEN_KEYS.has("agent.fortune.lucky_number_max")).toBe(false);
+    expect(HIDDEN_KEYS.has("agent.fortune.lucky_subway_stop")).toBe(false);
   });
 });

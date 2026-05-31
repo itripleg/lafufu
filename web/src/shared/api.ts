@@ -111,6 +111,11 @@ export type ExpressionDTO = {
 
 export type ImageBucket = "letterheads" | "sprites";
 
+/** A single built-in prompt preset from the prompt switcher API. */
+export type PromptPreset = { id: string; label: string; text: string; is_default: boolean };
+/** GET/POST/PUT /agent/prompts response — the active preset id + both presets. */
+export type PromptsState = { active: string; presets: PromptPreset[] };
+
 export const api = {
   /** 200 when this browser is authorized (or auth is disabled / loopback);
    *  401 otherwise — `req` then raises the lock screen. */
@@ -146,6 +151,16 @@ export const api = {
   agentTextMessage: (text: string) => req("POST", "/agent/text_message", { text }),
   agentSpeakText: (text: string, emotion: string = "neutral") =>
     req("POST", "/agent/speak_text", { text, emotion }),
+
+  // Prompt switcher — two built-in presets; selecting/editing/restoring the
+  // active one mirrors into agent.system_prompt and live-reloads the agent.
+  getPrompts: () => req<PromptsState>("GET", "/agent/prompts"),
+  selectPrompt: (id: string) => req<PromptsState>("POST", "/agent/prompts/select", { id }),
+  savePrompt: (id: string, text: string) =>
+    req<PromptsState>("PUT", `/agent/prompts/${id}`, { text }),
+  restorePrompt: (id: string) =>
+    req<PromptsState>("POST", `/agent/prompts/${id}/restore`),
+
   listLlmModels: () =>
     req<{ models: Array<{ name: string; size?: number; modified_at?: string }> }>(
       "GET",
