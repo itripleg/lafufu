@@ -131,18 +131,23 @@ class AgentService(BaseService):
         return wd is not None and callable(getattr(wd, "feed", None))
 
     async def on_startup(self) -> None:
-        # Fail loud if trigger mode is requested without a wake-gated mic —
-        # the loop would otherwise silently fall back to continuous-ish RMS,
-        # which is not what was asked for.
+        # Trigger mode without a usable wake detector starts DEGRADED rather than
+        # crashing — so the agent stays up and self-heals when a detector is
+        # (re)attached live (the openwakeword model reloads, or the mic is
+        # swapped in and the detector reloads). The mic loop publishes 'degraded'
+        # and idles until _has_usable_wake_detector() flips true, then runs
+        # trigger sessions. It will NOT silently fall back to RMS gating — the
+        # loop refuses to run a session without a detector. Crashing here would
+        # defeat live mic plug-in/swap recovery on an unattended device.
         if self._interaction_mode == InteractionMode.TRIGGER and (
             not self._has_usable_wake_detector()
         ):
-            raise RuntimeError(
-                "interaction_mode=trigger requires a wake-word-gated mic, but no "
-                "wake_detector was attached. Check the agent's startup log for "
-                "`wakeword.load_failed`, verify `agent.wakeword.model` points at a "
-                "loadable openwakeword model, and re-run `uv sync` if `openwakeword` "
-                "itself is missing."
+            self.log.warning(
+                "interaction_mode=trigger but no usable wake detector at startup — "
+                "starting degraded; the mic loop will idle and self-heal once a "
+                "detector attaches. Check the startup log for `wakeword.load_failed`, "
+                "verify `agent.wakeword.model` points at a loadable openwakeword "
+                "model, and re-run `uv sync` if `openwakeword` itself is missing."
             )
 
         await self._publish_state("warming")

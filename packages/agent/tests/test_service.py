@@ -3,7 +3,6 @@ import threading
 
 import nats
 import numpy as np
-import pytest
 from lafufu_agent.service import AgentService
 from lafufu_shared import schemas, topics
 from lafufu_shared.nats_helper import publish_model
@@ -611,22 +610,6 @@ async def test_trigger_mode_speaks_opening_runs_round_and_auto_prints(nats_serve
     assert prints[0].text == "Great fortune awaits."
 
 
-async def test_trigger_mode_without_wake_detector_fails_startup(nats_server):
-    """Trigger mode requires a wake-gated mic — bare mics must fail loudly."""
-    from lafufu_agent.trigger import InteractionMode, TriggerConfig
-
-    svc = AgentService(
-        mic=FakeMicForService([]),  # no wake_detector attribute, no wait_for_onset
-        ollama=FakeOllama(),
-        piper=FakePiper(),
-        nats_url=nats_server,
-        interaction_mode=InteractionMode.TRIGGER,
-        trigger_config=TriggerConfig.from_env({}),
-    )
-    with pytest.raises(RuntimeError, match="wake"):
-        await asyncio.wait_for(svc.run(), timeout=3)
-
-
 class _ScriptedSTT:
     """STT that returns a different transcript per call (list order)."""
 
@@ -1048,47 +1031,6 @@ async def test_wakeword_threshold_setting_mutates_detector(nats_server):
     await nc.drain()
     svc._shutdown.set()
     await asyncio.wait_for(task, timeout=3)
-
-
-async def test_degraded_state_published_only_on_transition(nats_server):
-    """In trigger mode with no usable detector, _mic_loop must publish 'degraded'
-    only on the first degraded tick, not on every subsequent sleep iteration.
-    Repeated 1Hz publishes flood NATS and the journal."""
-    import nats as nats_lib
-    from lafufu_agent.trigger import InteractionMode
-
-    svc = AgentService(
-        mic=FakeMicForService([]),
-        ollama=FakeOllama(scripts=[]),
-        piper=FakePiper(chunks=[]),
-        nats_url=nats_server,
-        interaction_mode=InteractionMode.TRIGGER,
-        wake_detector=None,
-    )
-    task = asyncio.create_task(svc.run())
-    await asyncio.sleep(0.3)  # let the service start
-
-    nc = await nats_lib.connect(nats_server)
-    degraded_count = 0
-
-    async def cb_state(msg) -> None:
-        nonlocal degraded_count
-        if msg.subject.endswith(".degraded"):
-            degraded_count += 1
-
-    await nc.subscribe("agent.state.*", cb=cb_state)
-
-    # Run for ~2.5s -- if degraded fires every 1s that would be 2-3 publishes
-    await asyncio.sleep(2.5)
-    await nc.drain()
-
-    svc._shutdown.set()
-    await asyncio.wait_for(task, timeout=3)
-
-    assert degraded_count <= 1, (
-        f"degraded state published {degraded_count} times; must publish at most once "
-        f"on the first transition, not on every loop iteration"
-    )
 
 
 async def test_interaction_mode_trigger_refused_without_wake_detector(nats_server):
@@ -1645,4 +1587,55 @@ async def test_shutdown_awaits_mic_loop_before_closing_mic(nats_server):
     close_idx = close_order.index("close")
     assert task_idx < close_idx, (
         f"mic_loop task must be done BEFORE mic.close(); order={close_order}"
+    )
+
+
+async def test_degraded_state_published_only_on_transition(nats_server):
+    """Graceful degrade: in trigger mode with no usable wake detector, the agent
+    STARTS (no crash) and the mic loop publishes 'degraded' EXACTLY ONCE on the
+    transition — not on every 1s idle tick (which would flood NATS + the
+    journal). It self-heals if a detector is later attached.
+
+    Accuracy notes: we subscribe BEFORE starting the loop so the first
+    (transition) publish is observed, and call start_mic_loop() explicitly —
+    svc.run() alone never starts the loop (only the auto_listen config or the
+    real main() does), so without this the loop would never run and the test
+    would pass vacuously.
+    """
+    import nats as nats_lib
+    from lafufu_agent.trigger import InteractionMode
+
+    svc = AgentService(
+        mic=FakeMicForService([]),
+        ollama=FakeOllama(scripts=[]),
+        piper=FakePiper(chunks=[]),
+        nats_url=nats_server,
+        interaction_mode=InteractionMode.TRIGGER,
+        wake_detector=None,
+    )
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.3)  # let on_startup connect to NATS + finish (no crash)
+
+    nc = await nats_lib.connect(nats_server)
+    degraded_count = 0
+
+    async def cb_state(msg) -> None:
+        nonlocal degraded_count
+        if msg.subject.endswith(".degraded"):
+            degraded_count += 1
+
+    await nc.subscribe("agent.state.*", cb=cb_state)
+
+    # Start the loop AFTER subscribing so we catch its first transition publish.
+    svc.start_mic_loop()
+    # ~2-3 idle ticks at 1Hz — degraded must still publish only once.
+    await asyncio.sleep(2.5)
+    await nc.drain()
+
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)
+
+    assert degraded_count == 1, (
+        f"expected exactly one 'degraded' publish on the transition; got "
+        f"{degraded_count} (0 = loop never degraded; >1 = flooding every tick)"
     )
