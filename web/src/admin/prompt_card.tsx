@@ -85,6 +85,10 @@ export const PromptCard: Component = () => {
   const select = async (id: string) => {
     const s = state();
     if (busy() || !s || id === s.active) return;
+    // Switching reseeds the textarea from the target preset, which would drop
+    // unsaved edits to the current one — confirm first so a stray chip click
+    // can't silently discard in-progress work.
+    if (dirty() && !window.confirm("Discard your unsaved edits to this prompt and switch?")) return;
     setBusy(true);
     try {
       adopt(await api.selectPrompt(id));

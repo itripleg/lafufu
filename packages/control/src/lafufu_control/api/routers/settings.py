@@ -134,6 +134,14 @@ def put_setting(key: str, body: SettingIn, req: Request):
     )
     with Session(req.app.state.engine) as s:
         row = s.get(Setting, key)
+        # apply_setting upserts in its own session, so the row normally exists
+        # here — but guard the read-back (a concurrent DELETE could race the
+        # window between commit and re-fetch) rather than AttributeError on
+        # None. Mirrors the GET handler's not-found shape.
+        if not row:
+            raise HTTPException(
+                404, detail={"error_code": "not_found", "message": f"setting {key} not found"}
+            )
         return SettingOut(**row.model_dump())
 
 
@@ -157,6 +165,14 @@ def patch_setting(key: str, body: SettingIn, req: Request):
     )
     with Session(req.app.state.engine) as s:
         row = s.get(Setting, key)
+        # apply_setting upserts in its own session, so the row normally exists
+        # here — but guard the read-back (a concurrent DELETE could race the
+        # window between commit and re-fetch) rather than AttributeError on
+        # None. Mirrors the GET handler's not-found shape.
+        if not row:
+            raise HTTPException(
+                404, detail={"error_code": "not_found", "message": f"setting {key} not found"}
+            )
         return SettingOut(**row.model_dump())
 
 
