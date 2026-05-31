@@ -316,7 +316,7 @@ def apply_expression_seed(s: Session, name: str) -> Expression:
     e.default_easing = easing
     e.steps_json = steps_json
     e.emotion = emotion
-    e.display_media = SEED_DISPLAY_MEDIA.get(name)
+    e.display_media = SEED_DISPLAY_MEDIA.get(name)  # full-reset: restore seed default
     e.is_builtin = True
     s.add(e)
     return e

@@ -118,6 +118,7 @@ export const ExpressionsSection: Component<{ nats: NatsWs }> = (props) => {
         steps: e.steps,
         random_walk_config: e.random_walk_config,
         emotion: e.emotion,
+        display_media: e.display_media,
         description: e.description,
       });
       // Drive the refetch before clearing localEdits, otherwise the panel

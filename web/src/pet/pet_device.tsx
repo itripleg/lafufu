@@ -246,6 +246,16 @@ export const PetDevice: Component<{ nats: NatsWs }> = (props) => {
       if (!axisOwned("head_lr") && typeof f.payload.head_lr === "number") setHeadLr(f.payload.head_lr);
       if (!axisOwned("head_ud") && typeof f.payload.head_ud === "number") setHeadUd(f.payload.head_ud);
     }));
+    // Re-fetch expressions when any expression changes in the Studio so that
+    // display_media edits become visible on the pet screen without a reload.
+    subs.push(props.nats.subscribe("expressions.changed", () => {
+      void api.listExpressions()
+        .then((ex) => {
+          exprList = ex.items;
+          playEmotionFrames(emotion());
+        })
+        .catch(() => { /* keep stale list on transient error */ });
+    }));
     subs.push(props.nats.subscribe("agent.reply", (f) => setMood(f.payload?.emotion ?? "neutral")));
     subs.push(props.nats.subscribe("agent.state.*", (f) => {
       const tail = f.topic.split(".").pop();
