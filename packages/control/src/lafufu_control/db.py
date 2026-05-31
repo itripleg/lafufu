@@ -44,9 +44,17 @@ def check_schema_version(engine) -> None:
                 f"<data_dir>/backups/ or fix the row manually."
             ) from None
     if stored < CURRENT_SCHEMA_VERSION:
-        log.warning(
-            "db.schema.outdated stored=%d code=%d — a manual migration may be "
-            "needed; the startup backup is in <data_dir>/backups/",
+        # init_db has already run all ALTER TABLE migrations, so the schema IS
+        # up to date — the stamp is just stale. Update it so subsequent boots
+        # don't log "db.schema.outdated" forever on already-migrated DBs.
+        with Session(engine) as s:
+            row = s.get(Setting, _SCHEMA_VERSION_KEY)
+            if row is not None:
+                row.value = str(CURRENT_SCHEMA_VERSION)
+                s.add(row)
+                s.commit()
+        log.info(
+            "db.schema.stamp_updated stored=%d → code=%d",
             stored,
             CURRENT_SCHEMA_VERSION,
         )
