@@ -983,6 +983,48 @@ async def test_wakeword_threshold_setting_mutates_detector(nats_server):
     await asyncio.wait_for(task, timeout=3)
 
 
+async def test_degraded_state_published_only_on_transition(nats_server):
+    """In trigger mode with no usable detector, _mic_loop must publish 'degraded'
+    only on the first degraded tick, not on every subsequent sleep iteration.
+    Repeated 1Hz publishes flood NATS and the journal."""
+    import nats as nats_lib
+
+    from lafufu_agent.trigger import InteractionMode
+
+    svc = AgentService(
+        mic=FakeMicForService([]),
+        ollama=FakeOllama(scripts=[]),
+        piper=FakePiper(chunks=[]),
+        nats_url=nats_server,
+        interaction_mode=InteractionMode.TRIGGER,
+        wake_detector=None,
+    )
+    task = asyncio.create_task(svc.run())
+    await asyncio.sleep(0.3)  # let the service start
+
+    nc = await nats_lib.connect(nats_server)
+    degraded_count = 0
+
+    async def cb_state(msg) -> None:
+        nonlocal degraded_count
+        if msg.subject.endswith(".degraded"):
+            degraded_count += 1
+
+    await nc.subscribe("agent.state.*", cb=cb_state)
+
+    # Run for ~2.5s — if degraded fires every 1s that would be 2–3 publishes
+    await asyncio.sleep(2.5)
+    await nc.drain()
+
+    svc._shutdown.set()
+    await asyncio.wait_for(task, timeout=3)
+
+    assert degraded_count <= 1, (
+        f"degraded state published {degraded_count} times; must publish at most once "
+        f"on the first transition, not on every loop iteration"
+    )
+
+
 async def test_interaction_mode_trigger_refused_without_wake_detector(nats_server):
     """Flipping agent.interaction_mode=trigger when the mic has no
     wake_detector attached must be refused — otherwise the agent silently
