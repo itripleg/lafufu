@@ -83,6 +83,8 @@ def validate_rounds(value) -> int:
 
 # Strip leading/trailing punctuation that's commonly hallucinated by Whisper.
 _TRIM_RE = re.compile(r"^[^\w]+|[^\w]+$")
+# Strip leading/trailing punctuation from individual tokens (e.g. "yes," → "yes").
+_TOKEN_TRIM_RE = re.compile(r"^[^\w']+|[^\w']+$")
 
 
 def is_affirmative(transcript: str) -> bool:
@@ -90,9 +92,8 @@ def is_affirmative(transcript: str) -> bool:
     norm = _TRIM_RE.sub("", transcript.strip().lower())
     if not norm:
         return False
-    tokens = norm.split()
-    # If any negation token appears, treat as non-affirmative even when an
-    # affirmative keyword is also present ("of course not", "yes never mind").
+    tokens = [_TOKEN_TRIM_RE.sub("", t) for t in norm.split() if t]
+    tokens = [t for t in tokens if t]  # drop any empty strings after stripping
     if any(t in _NEGATIONS for t in tokens):
         return False
     if norm in _AFFIRMATIVES:
