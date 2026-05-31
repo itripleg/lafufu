@@ -124,12 +124,17 @@ class VoicePipeline:
         )
         await self._publish_state("speaking")
 
+        # Snapshot the active speaker NOW so the finally block always calls
+        # .end() on the player that was actually started — not whatever
+        # self.speaker_play points to after a mid-utterance rebuild.
+        _active_speaker = self.speaker_play
+
         # speaker_play may be a callable (legacy) or an _AplayPlayer with
         # .play() and .end() methods. Detect and use the right interface.
         play_fn = (
-            self.speaker_play.play
-            if self.speaker_play and hasattr(self.speaker_play, "play")
-            else self.speaker_play
+            _active_speaker.play
+            if _active_speaker and hasattr(_active_speaker, "play")
+            else _active_speaker
         )
         chunk_dt = getattr(self.piper, "chunk_ms", 40) / 1000.0
         loop = asyncio.get_running_loop()
@@ -198,6 +203,6 @@ class VoicePipeline:
             # Always close the speaker + return to idle, even if playback
             # raised — otherwise the aplay subprocess leaks and the agent
             # state is stuck on "speaking".
-            if self.speaker_play and hasattr(self.speaker_play, "end"):
-                self.speaker_play.end()
+            if _active_speaker and hasattr(_active_speaker, "end"):
+                _active_speaker.end()
             await self._publish_state("idle")

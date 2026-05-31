@@ -417,3 +417,57 @@ async def test_run_one_cycle_can_skip_listening_state(nats_server):
         f"'listening' must be suppressed when publish_listening=False; got {state_tails}"
     )
     assert "thinking" in state_tails, f"'thinking' must still be published; got {state_tails}"
+
+
+async def test_speak_calls_end_on_original_speaker_after_rebuild(nats_server):
+    """If speaker_play is replaced mid-utterance, end() must be called on the
+    original player — the one that was actually playing audio — not the replacement.
+    Without the fix, finally re-reads self.speaker_play live and calls end() on
+    the new player while the old aplay subprocess leaks."""
+    import nats
+
+    class _TrackingPlayer:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.end_called = False
+
+        def play(self, chunk: bytes) -> None:
+            pass
+
+        def end(self) -> None:
+            self.end_called = True
+
+    class _SlowPiper:
+        sample_rate = 22050
+        chunk_ms = 40
+
+        def synthesize(self, text: str) -> list[tuple[bytes, float]]:
+            return [(b"\x00" * 100, 0.5)] * 3
+
+    nc = await nats.connect(nats_server)
+    old_player = _TrackingPlayer("old")
+    new_player = _TrackingPlayer("new")
+
+    pipeline = VoicePipeline(
+        nats_client=nc,
+        mic=None,
+        ollama=FakeOllama(scripts=[]),
+        piper=_SlowPiper(),
+        speaker_play=old_player,
+    )
+
+    async def _swap_mid_utterance() -> None:
+        await asyncio.sleep(0.02)
+        pipeline.speaker_play = new_player
+
+    swap_task = asyncio.create_task(_swap_mid_utterance())
+    await pipeline.speak("hi")
+    await swap_task
+    await nc.drain()
+
+    assert old_player.end_called, (
+        "end() must be called on the ORIGINAL player, not the replacement"
+    )
+    assert not new_player.end_called, (
+        "end() must NOT be called on the replacement player that was never started"
+    )
